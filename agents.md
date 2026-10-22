@@ -43,11 +43,12 @@ cargo test --workspace
 cargo test -p pak directories                # single test, filtered by name
 cargo clippy --workspace --all-targets
 cargo run -p pak --example extract -- <main.pak> [out_dir]  # list or extract a pak
+cargo run -p sexy --release --example check_resources -- <main.pak>  # decode every manifest image
 ```
 
 App environment variables:
 - `PVZ_GAME_PATH=<dir|.app|main.pak>` overrides the saved install and skips the setup screen.
-- `PVZ_SCREENSHOT=<file.png>` saves a screenshot after ~120 frames, then exits. Use it to check screens visually; computer-use tools can't drive the bare `target/debug/pvz` binary.
+- `PVZ_SCREENSHOT=<file.png>` saves a screenshot after ~120 frames, then exits; `PVZ_SCREENSHOT_FRAME=<n>` picks another frame. Use it to check screens visually; computer-use tools can't drive the bare `target/debug/pvz` binary.
 
 The chosen install is saved in `config.toml` in the platform config dir (`~/Library/Application Support/pvz-goty-rs/` on macOS). `--clean` deletes the whole app data folder (config, plus future saves and caches) before starting.
 
@@ -55,16 +56,27 @@ The dev profile builds our crates at `opt-level = 1` and dependencies at `3`, be
 
 ## Architecture
 
+`docs/architecture.md` is the short, human-facing overview of the project structure and the reasons for it. When a change alters the structure (a new crate, a new layer, a different approach to logic, drawing or loading), update it too, keeping it brief. The details below are for agents.
+
 A Cargo workspace (`crates/*`) on Bevy 0.20. Bevy's API changes between releases, so check the vendored source in `~/.cargo/registry/src/*/bevy*-0.20.0/` (including `bevy-0.20.0/examples/`) rather than relying on memory of older versions.
 
 - **`pak`** is the pak reader, with no Bevy dependency. It decrypts the whole file into memory and indexes entries by normalised path (lowercase, `/`-separated), matching how SexyFramework resolves paths.
+- **`sexy`** holds engine-independent ports of SexyAppFramework/TodLib, unit-tested without Bevy:
+  - `files`: `GameFiles` reads from the pak first, then loose files beside it (`properties/partner_logo.jpg` ships outside the pak).
+  - `resources`: the `resources.xml` manifest (groups, `SetDefaults` path/id prefixes, image attributes).
+  - `image`: decoding plus PopCap's alpha masks. A mask is `_name` or `name_`, its blue channel becomes alpha, and a mask with no base image becomes a solid `alphacolor` image; also `alphaimage` and per-cel `alphagrid`. Extensions are tried in the original order: tga, jpg, png, gif (the pak has both `titlescreen.jpg` and `.png`).
+  - `tod`: `TodAnimateCurve` and friends. Most screen timing is written as these curves over count-down tick counters.
 - **`pvz`** is the Bevy application.
   - `AppState` runs `Boot → Setup → Title`. `Boot` opens `$PVZ_GAME_PATH` or the saved install, and falls back to `Setup` with `SetupStatus.message` explaining why.
   - `pak_source` registers the `pak://` asset source. Bevy builds asset sources when `AssetPlugin` is added, before the pak location is known, so `PakSourcePlugin` must be added **before** `DefaultPlugins`. Its reader shares a `GamePak` slot (`Arc<RwLock<Option<Arc<Pak>>>>`) that is filled after setup; until then reads return `NotFound`.
   - `install` finds `main.pak` from whatever the player picks (the pak, a Windows/Linux install folder, a `.app` bundle, or the folder containing it), and persists the config. There is no auto-detection: the player always picks the folder through the OS dialog.
   - `setup` is the first-run screen (dark theme, Browse and Quit only): `bevy_ui` with `bevy_ui_widgets` `Button` and `Activate` observers, plus `rfd::AsyncFileDialog`. Picking and pak validation run on `AsyncComputeTaskPool` and are polled with `check_ready`.
   - The camera shows an 800×600 logical space (`ScalingMode::AutoMin`), the original game's resolution.
+  - Game logic runs in `FixedUpdate` at 100 Hz (`TICKS_PER_SECOND`), like the original's `Update()`; drawing runs every frame in `Update`.
+  - `graphics` is an immediate-mode `Graphics` resource modelled on SexyFramework's: screens call `fill_rect`, `draw_image`, `clip_rect`, `push_state`/`pop_state` and `draw_image_matrix` in 800×600 top-left, y-down coordinates, so ported `Draw()` code stays close to the reference. The call list is cleared in `First` and turned into a reused pool of Bevy sprites in `PostUpdate`, depth by call order. Sprites can't skew, so reanimation will need a custom mesh path later.
+  - `resources` turns manifest groups into Bevy `Image` assets (`GameResources::image("IMAGE_...")`). `Init` loads synchronously; `GameResources::start_loading_thread` loads `LoaderBar`, then `LoadingImages`/`LoadingFonts`/`LoadingSounds` on a background task with the original's weighted progress. Fonts and sounds are only checked for presence until their decoders exist.
+  - `title` ports `TitleScreen` (PopCap logo, logo drop, grass bar with rolling sod cap). Still missing: the "Loading..."/"Click to Start" label, sprouts on the bar, sounds, and what happens after the click (the game selector).
 
 Planned direction:
 - Game simulation as plain Rust structs on a fixed timestep, following the original's structure and names as documented by the reference (`Board`, `DataArray<T>` as a generational slot map with ID handles, type enums with `match` rather than trait objects), so code can be compared against it.
-- `bevy_ui` for screens outside the original game (setup, settings, debug). The original's menus use bitmap fonts and pixel-exact drawing, which will need a sprite-based drawing layer modelled on SexyFramework's `Graphics` API, plus a bitmap-font renderer.
+- `bevy_ui` for screens outside the original game (setup, settings, debug). The original's screens use bitmap fonts and pixel-exact drawing; they go through `graphics`, and still need a bitmap-font (`ImageFont`) renderer.

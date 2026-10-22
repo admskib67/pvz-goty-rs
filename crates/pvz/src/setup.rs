@@ -170,7 +170,7 @@ fn poll_pick(
                 if let Err(e) = (Config { game_path: Some(chosen) }).save() {
                     warn!("couldn't save config: {e}");
                 }
-                game_pak.set(pak);
+                game_pak.set(&pak_path, pak);
                 next.set(AppState::Title);
             }
         }

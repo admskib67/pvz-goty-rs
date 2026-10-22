@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 pak.workspace = true
+sexy.workspace = true
 bevy.workspace = true
 rfd.workspace = true
 directories.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "sexy"
+description = "Engine-independent pieces of PopCap's SexyAppFramework and TodLib"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+pak.workspace = true
+thiserror.workspace = true
+roxmltree.workspace = true
+image.workspace = true

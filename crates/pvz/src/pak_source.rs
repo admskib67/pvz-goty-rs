@@ -3,7 +3,8 @@
 //! The source has to be registered before `AssetPlugin` is built, but the pak
 //! location is only known after the setup screen runs. So the reader holds a
 //! shared slot that starts empty and is filled once an install is chosen;
-//! until then every read reports `NotFound`.
+//! until then every read reports `NotFound`. Reads fall back to loose files
+//! beside the pak, like the original engine.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -14,19 +15,21 @@ use bevy::asset::io::{
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::stream;
 use pak::Pak;
+use sexy::files::{Files, GameFiles};
 
 pub const SOURCE: &str = "pak";
 
-/// The loaded pak, shared between the ECS and the asset reader.
+/// The chosen install's files, shared between the ECS and the asset reader.
 #[derive(Resource, Clone, Default)]
-pub struct GamePak(Arc<RwLock<Option<Arc<Pak>>>>);
+pub struct GamePak(Arc<RwLock<Option<GameFiles>>>);
 
 impl GamePak {
-    pub fn set(&self, pak: Pak) {
-        *self.0.write().unwrap() = Some(Arc::new(pak));
+    pub fn set(&self, pak_path: &Path, pak: Pak) {
+        let root = pak_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        *self.0.write().unwrap() = Some(GameFiles { pak: Arc::new(pak), root });
     }
 
-    pub fn get(&self) -> Option<Arc<Pak>> {
+    pub fn get(&self) -> Option<GameFiles> {
         self.0.read().unwrap().clone()
     }
 }
@@ -53,9 +56,9 @@ fn path_str(path: &Path) -> String {
 impl AssetReader for PakAssetReader {
     async fn read<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
         let not_found = || AssetReaderError::NotFound(path.to_path_buf());
-        let pak = self.0.get().ok_or_else(not_found)?;
-        let bytes = pak.get(&path_str(path)).ok_or_else(not_found)?;
-        Ok(VecReader::new(bytes.to_vec()))
+        let files = self.0.get().ok_or_else(not_found)?;
+        let bytes = files.read(&path_str(path)).ok_or_else(not_found)?;
+        Ok(VecReader::new(bytes.into_owned()))
     }
 
     async fn read_meta<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
@@ -67,15 +70,15 @@ impl AssetReader for PakAssetReader {
         &'a self,
         path: &'a Path,
     ) -> Result<Box<PathStream>, AssetReaderError> {
-        let pak = self
+        let files = self
             .0
             .get()
             .ok_or_else(|| AssetReaderError::NotFound(path.to_path_buf()))?;
-        let children: Vec<PathBuf> = pak.read_dir(&path_str(path)).into_iter().map(PathBuf::from).collect();
+        let children: Vec<PathBuf> = files.pak.read_dir(&path_str(path)).into_iter().map(PathBuf::from).collect();
         Ok(Box::new(stream::iter(children)))
     }
 
     async fn is_directory<'a>(&'a self, path: &'a Path) -> Result<bool, AssetReaderError> {
-        Ok(self.0.get().is_some_and(|pak| pak.is_dir(&path_str(path))))
+        Ok(self.0.get().is_some_and(|files| files.pak.is_dir(&path_str(path))))
     }
 }

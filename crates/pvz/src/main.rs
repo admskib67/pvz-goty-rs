@@ -1,6 +1,8 @@
 mod devshot;
+mod graphics;
 mod install;
 mod pak_source;
+mod resources;
 mod setup;
 mod title;
 
@@ -16,6 +18,8 @@ use setup::SetupStatus;
 /// The game's fixed logical resolution; the window scales it.
 pub const GAME_WIDTH: f32 = 800.0;
 pub const GAME_HEIGHT: f32 = 600.0;
+/// The original updates game logic 100 times per second (`FixedUpdate` here).
+pub const TICKS_PER_SECOND: f64 = 100.0;
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AppState {
@@ -56,7 +60,15 @@ fn main() {
         }))
         .init_state::<AppState>()
         .init_resource::<SetupStatus>()
-        .add_plugins((setup::SetupPlugin, title::TitlePlugin, devshot::DevShotPlugin))
+        .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND))
+        .insert_resource(ClearColor(Color::BLACK))
+        .add_plugins((
+            setup::SetupPlugin,
+            graphics::GraphicsPlugin,
+            resources::ResourcesPlugin,
+            title::TitlePlugin,
+            devshot::DevShotPlugin,
+        ))
         .add_systems(Startup, spawn_camera)
         .add_systems(OnEnter(AppState::Boot), boot)
         .run();
@@ -84,7 +96,7 @@ fn boot(game_pak: Res<GamePak>, mut status: ResMut<SetupStatus>, mut next: ResMu
     match install::open_install(&chosen) {
         Ok((pak_path, pak)) => {
             info!("using {} ({} files)", pak_path.display(), pak.entries().len());
-            game_pak.set(pak);
+            game_pak.set(&pak_path, pak);
             next.set(AppState::Title);
         }
         Err(e) => {
