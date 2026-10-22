@@ -1,0 +1,9 @@
+[package]
+name = "pak"
+description = "Reader for PopCap .pak archives (main.pak)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
