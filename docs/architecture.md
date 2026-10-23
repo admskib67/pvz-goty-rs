@@ -17,7 +17,7 @@ Reads PopCap's `.pak` archive, where all the game data lives. It's the smallest,
 
 ## `sexy`
 
-Plain-Rust versions of the parts of PopCap's SexyAppFramework and TodLib that PvZ is built on: the resource manifest, image loading with alpha masks, bitmap fonts, the string table, reanimations, animation curves, the original's random number generator and its ID-based object pool. Keeping these out of Bevy means:
+Plain-Rust versions of the parts of PopCap's SexyAppFramework and TodLib that PvZ is built on: the resource manifest, image loading with alpha masks, bitmap fonts, the string table, reanimations, particle systems, animation curves, the original's random number generator and its ID-based object pool. Keeping these out of Bevy means:
 - they can be checked against the reference decompilation in isolation, with fast unit tests;
 - tools can use them without starting a game window;
 - a Bevy upgrade can't break them.

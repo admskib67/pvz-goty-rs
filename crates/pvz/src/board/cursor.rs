@@ -15,6 +15,7 @@ use bevy::prelude::*;
 
 use crate::audio::{FoleyType, Sounds};
 use crate::graphics::{Graphics, SexyColor};
+use crate::particle::ParticleEffect;
 use crate::plant::SeedType;
 use crate::reanim::EffectSystem;
 use crate::resources::GameResources;
@@ -397,8 +398,16 @@ impl Board {
         let (x, y) = (self.grid_to_pixel_x(grid_x), self.grid_to_pixel_y(grid_x, grid_y));
         let plant = Plant::new(grid_x, grid_y, x, y, seed, effects, res, images, sounds.rng());
         self.plants.alloc(plant);
-        // TODO: the dirt particles (PARTICLE_PLANTING), and water sounds in the pool.
+        // TODO: water sounds and splashes in the pool.
         sounds.play_foley(FoleyType::Plant);
+        let (px, py) = ((x + 41) as f32, (y + 74) as f32);
+        let py = match seed {
+            SeedType::Lilypad => py + 15.0,
+            SeedType::Flowerpot => py + 30.0,
+            _ => py,
+        };
+        // The original passes the bare layer as the render order here.
+        effects.add_particle(px, py, render_layer::TOP, ParticleEffect::Planting, res, images, sounds.rng());
     }
 
     /// `CursorPreview::Update`: shows where the carried plant would go.

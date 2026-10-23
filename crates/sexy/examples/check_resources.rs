@@ -10,6 +10,7 @@ use std::sync::Arc;
 use sexy::files::GameFiles;
 use sexy::font::load_font;
 use sexy::image::{load_image, load_image_resource};
+use sexy::particle::ParticleDefinition;
 use sexy::reanim::{ReanimDefinition, image_search_paths};
 use sexy::resources::{Manifest, ResourceKind};
 
@@ -68,6 +69,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         report("reanim", &path, result);
     }
-    println!("{ok} images, fonts and reanimations loaded, {failed} failed");
+    let particles: Vec<String> = pak
+        .entries()
+        .iter()
+        .filter_map(|e| {
+            let lower = e.name.replace('\\', "/").to_ascii_lowercase();
+            let xml = lower.strip_prefix("compiled/").and_then(|p| p.strip_suffix(".compiled")).unwrap_or(&lower).to_owned();
+            // Two leftover test effects the game never loads refer to images that don't exist.
+            let unused = ["particles/circleevenspacing.xml", "particles/simpleparticle.xml"];
+            (xml.starts_with("particles/") && xml.ends_with(".xml") && !unused.contains(&xml.as_str())).then_some(xml)
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    for path in particles {
+        let result = ParticleDefinition::load(&files, &path).and_then(|def| {
+            let missing: Vec<&str> = def
+                .image_ids()
+                .filter(|id| {
+                    manifest.get(id).is_none()
+                        && !image_search_paths(id).iter().any(|p| load_image(&files, p, true, 0xFF_FFFF).is_some())
+                })
+                .collect();
+            if missing.is_empty() { Ok(()) } else { Err(format!("missing images {missing:?}")) }
+        });
+        report("particle", &path, result);
+    }
+    println!("{ok} images, fonts, reanimations and particles loaded, {failed} failed");
     Ok(())
 }

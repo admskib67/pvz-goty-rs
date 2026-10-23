@@ -11,6 +11,7 @@
 //! `GetFramesForLayer`, `PlayReanim`, `StartBlend`).
 
 use crate::files::Files;
+use crate::definition::{CompiledError, CompiledReader, decompress};
 use crate::matrix::Matrix3;
 use crate::tod::float_round_to_int;
 
@@ -126,19 +127,10 @@ impl ReanimDefinition {
     /// `DefMapReadFromCache`, `DefReadFromCacheArray`/`String`/`Image`).
     /// The schema hash is skipped rather than checked.
     pub fn parse_compiled(bytes: &[u8]) -> Result<Self, ReanimError> {
-        const COOKIE: u32 = 0xDEAD_FED4;
         let err = ReanimError::Compiled;
-        if bytes.len() < 8 || u32::from_le_bytes(bytes[0..4].try_into().unwrap()) != COOKIE {
-            return Err(err("bad header"));
-        }
-        let size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
-        let data = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&bytes[8..], size.max(1))
-            .map_err(|_| err("zlib error"))?;
-        if data.len() != size {
-            return Err(err("wrong uncompressed size"));
-        }
+        let data = decompress(bytes)?;
 
-        let mut r = CompiledReader { data: &data, pos: 0 };
+        let mut r = CompiledReader::new(&data);
         r.u32()?; // schema hash
         // ReanimatorDefinition: tracks ptr, track count, fps, atlas ptr.
         r.u32()?;
@@ -194,7 +186,7 @@ impl ReanimDefinition {
             }
             tracks.push(ReanimTrack { name, transforms });
         }
-        if r.pos != data.len() {
+        if !r.at_end() {
             return Err(err("trailing data"));
         }
         Ok(Self { fps, tracks })
@@ -233,35 +225,17 @@ impl ReanimDefinition {
     }
 }
 
+impl From<CompiledError> for ReanimError {
+    fn from(e: CompiledError) -> Self {
+        Self::Compiled(e.0)
+    }
+}
+
 /// Unset keyframe values in compiled files (`DEFAULT_FIELD_PLACEHOLDER`).
 const DEFAULT_FIELD_PLACEHOLDER: f32 = -10000.0;
 
 fn default_transform() -> ReanimTransform {
     ReanimTransform { x: 0.0, y: 0.0, kx: 0.0, ky: 0.0, sx: 1.0, sy: 1.0, f: 0.0, a: 1.0, image: None, font: None, text: String::new() }
-}
-
-struct CompiledReader<'a> {
-    data: &'a [u8],
-    pos: usize,
-}
-
-impl CompiledReader<'_> {
-    fn skip(&mut self, n: usize) -> Result<&[u8], ReanimError> {
-        let end = self.pos.checked_add(n).filter(|&e| e <= self.data.len()).ok_or(ReanimError::Compiled("truncated"))?;
-        let s = &self.data[self.pos..end];
-        self.pos = end;
-        Ok(s)
-    }
-
-    fn u32(&mut self) -> Result<u32, ReanimError> {
-        Ok(u32::from_le_bytes(self.skip(4)?.try_into().unwrap()))
-    }
-
-    /// Length-prefixed string (Latin-1).
-    fn string(&mut self) -> Result<String, ReanimError> {
-        let len = self.u32()? as usize;
-        Ok(self.skip(len)?.iter().map(|&b| b as char).collect())
-    }
 }
 
 fn parse_track(el: &roxmltree::Node) -> Result<ReanimTrack, ReanimError> {

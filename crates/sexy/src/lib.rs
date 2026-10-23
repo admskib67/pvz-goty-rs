@@ -5,10 +5,12 @@
 //! by tools.
 
 pub mod data_array;
+pub mod definition;
 pub mod files;
 pub mod font;
 pub mod image;
 pub mod matrix;
+pub mod particle;
 pub mod rand;
 pub mod reanim;
 pub mod resources;

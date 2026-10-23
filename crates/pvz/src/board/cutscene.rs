@@ -14,6 +14,7 @@ use bevy::prelude::*;
 use sexy::tod::{TodCurve, animate_curve};
 
 use crate::audio::{FoleyType, Music, MusicTune, Sounds};
+use crate::particle::ParticleEffect;
 use crate::reanim::{EffectSystem, ReanimationType};
 use crate::resources::GameResources;
 
@@ -240,7 +241,16 @@ fn animate_board(
                     Err(e) => error!("{e}"),
                 }
             }
-            // TODO: the dirt particles (PARTICLE_SOD_ROLL) once particles exist.
+            let dirt: &[(f32, f32)] = match board.level {
+                1 => &[(35.0, 348.0)],
+                2 => &[(35.0, 246.0), (35.0, 459.0)],
+                4 => &[(32.0, 150.0), (32.0, 511.0)],
+                _ => &[],
+            };
+            let order = make_render_order(render_layer::TOP, 0, 1);
+            for &(x, y) in dirt {
+                effects.add_particle(x, y, order, ParticleEffect::SodRoll, res, images, sounds.rng());
+            }
         }
         if time == sod_end {
             sounds.stop_foley(FoleyType::Digger);

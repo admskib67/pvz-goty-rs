@@ -33,7 +33,8 @@ use crate::graphics::{Graphics, Justify, SexyColor, SexyRect};
 use crate::input::GameCursor;
 use crate::player::{PlayerInfo, ProfileMgr};
 use crate::plant::{SeedType, seeds_available};
-use crate::reanim::{EffectSystem, ReanimationType};
+use crate::particle::{ParticleEffect, draw_particle_system};
+use crate::reanim::{EffectSystem, ParticleSystemId, ReanimationType};
 use crate::resources::GameResources;
 use crate::widgets::draw_stone_button;
 use crate::{AppState, UiSet};
@@ -200,6 +201,17 @@ pub struct Board {
     /// The mouse in board coordinates, if it's over the window.
     mouse: Option<Vec2>,
     menu_button: MenuButton,
+    /// The level 1 tutorial's bouncing arrow (`mTutorialParticleID`).
+    tutorial_arrow: Option<ParticleSystemId>,
+    /// Particle effects started where the effect system isn't at hand,
+    /// started at the end of the tick or frame.
+    particle_requests: Vec<ParticleRequest>,
+}
+
+/// A queued change to the board's particle effects.
+enum ParticleRequest {
+    Add { x: f32, y: f32, render_order: i32, effect: ParticleEffect, tutorial_arrow: bool },
+    RemoveTutorialArrow,
 }
 
 /// The next adventure level of `player` (`PlayerInfo::GetLevel`).
@@ -252,6 +264,8 @@ impl Board {
             tutorial_timer: -1,
             num_suns_fallen: 0,
             mouse: None,
+            tutorial_arrow: None,
+            particle_requests: Vec::new(),
             menu_button: MenuButton {
                 rect: IRect::new(681, -10, 681 + 117, -10 + 46),
                 label: resources.translate("[MENU_BUTTON]"),
@@ -528,7 +542,7 @@ fn update_board(
         board.menu_button.disabled = !board.can_interact_with_board_buttons();
     }
 
-    effects.update();
+    effects.update(sounds.rng());
     board.advice.update();
     board.update_tutorial(&resources);
 
@@ -543,6 +557,39 @@ fn update_board(
         // TODO: zombie waves and the progress meter.
     }
     board.process_delete_queue();
+    board.flush_particle_requests(&mut effects, &mut resources, &mut images, sounds.rng());
+}
+
+impl Board {
+    /// Queues a particle effect (`LawnApp::AddTodParticle`).
+    fn add_particle(&mut self, x: f32, y: f32, render_order: i32, effect: ParticleEffect) {
+        self.particle_requests.push(ParticleRequest::Add { x, y, render_order, effect, tutorial_arrow: false });
+    }
+
+    /// Starts and removes queued particle effects.
+    fn flush_particle_requests(
+        &mut self,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut sexy::rand::MtRand,
+    ) {
+        for request in std::mem::take(&mut self.particle_requests) {
+            match request {
+                ParticleRequest::Add { x, y, render_order, effect, tutorial_arrow } => {
+                    let id = effects.add_particle(x, y, render_order, effect, res, images, rng);
+                    if tutorial_arrow {
+                        self.tutorial_arrow = id;
+                    }
+                }
+                ParticleRequest::RemoveTutorialArrow => {
+                    if let Some(id) = self.tutorial_arrow.take() {
+                        effects.remove_particle(id);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl Board {
@@ -692,6 +739,7 @@ fn board_input(
         // button leads here.
         do_confirm_back_to_main(&mut dialogs, &resources);
     }
+    board.flush_particle_requests(&mut effects, &mut resources, &mut images, sounds.rng());
 }
 
 /// `LawnApp::DoConfirmBackToMain`.
@@ -714,6 +762,7 @@ enum RenderItem {
     LawnMower(usize),
     Reanimation(crate::reanim::ReanimationId),
     Plant(sexy::data_array::Id<Plant>),
+    Particle(ParticleSystemId),
     Coin(sexy::data_array::Id<Coin>),
     CursorPreview,
 }
@@ -741,6 +790,11 @@ fn draw_board(
     for (id, reanim) in effects.reanimation_ids() {
         if !reanim.is_attachment {
             items.push((reanim.render_order, RenderItem::Reanimation(id)));
+        }
+    }
+    for (id, system) in effects.particle_ids() {
+        if !system.is_attachment {
+            items.push((system.render_order, RenderItem::Particle(id)));
         }
     }
     items.push((CursorPreview::RENDER_ORDER, RenderItem::CursorPreview));
@@ -775,6 +829,11 @@ fn draw_board(
                 }
             }
             RenderItem::CursorPreview => board.draw_cursor_preview(&resources, &mut g),
+            RenderItem::Particle(id) => {
+                if let Some(system) = effects.particle(id) {
+                    draw_particle_system(&mut g, system, &resources);
+                }
+            }
         }
     }
     g.pop_state();

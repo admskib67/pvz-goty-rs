@@ -24,6 +24,51 @@ pub enum TodCurve {
 }
 
 impl TodCurve {
+    /// From `TodCurves`'s numbering (compiled definitions). The original's
+    /// `CURVE_WEAK_FAST_IN_OUT` (8) has no formula; it's read as linear.
+    pub fn from_index(i: u32) -> Option<Self> {
+        use TodCurve::*;
+        Some(match i {
+            0 => Constant,
+            1 => Linear,
+            2 => EaseIn,
+            3 => EaseOut,
+            4 => EaseInOut,
+            5 => EaseInOutWeak,
+            6 => FastInOut,
+            7 => FastInOutWeak,
+            8 => Linear,
+            9 => Bounce,
+            10 => BounceFastMiddle,
+            11 => BounceSlowMiddle,
+            12 => SinWave,
+            13 => EaseSinWave,
+            _ => return None,
+        })
+    }
+
+    /// From the name used in definition files (`EaseInOutWeak`, ...).
+    pub fn from_name(name: &str) -> Option<Self> {
+        use TodCurve::*;
+        let curves = [
+            ("Constant", Constant),
+            ("Linear", Linear),
+            ("EaseIn", EaseIn),
+            ("EaseOut", EaseOut),
+            ("EaseInOut", EaseInOut),
+            ("EaseInOutWeak", EaseInOutWeak),
+            ("FastInOut", FastInOut),
+            ("FastInOutWeak", FastInOutWeak),
+            ("WeakFastInOut", Linear),
+            ("Bounce", Bounce),
+            ("BounceFastMiddle", BounceFastMiddle),
+            ("BounceSlowMiddle", BounceSlowMiddle),
+            ("SinWave", SinWave),
+            ("EaseSinWave", EaseSinWave),
+        ];
+        curves.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|&(_, c)| c)
+    }
+
     /// Curves that end where they started.
     fn returns_to_start(self) -> bool {
         matches!(

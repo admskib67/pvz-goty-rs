@@ -19,6 +19,7 @@ use sexy::files::{Files, GameFiles};
 use sexy::font::{Font, LoadedFont, latin1_to_string, load_font};
 use sexy::image::{DecodedImage, load_image, load_image_resource};
 use sexy::reanim::{ReanimDefinition, image_search_paths};
+use sexy::particle::ParticleDefinition;
 use sexy::resources::{Manifest, ResourceKind};
 use sexy::strings::StringTable;
 
@@ -84,6 +85,7 @@ pub struct GameResources {
     fonts: HashMap<String, FontRes>,
     strings: StringTable,
     reanim_definitions: HashMap<String, Arc<ReanimDefinition>>,
+    particle_definitions: HashMap<String, Arc<ParticleDefinition>>,
     loaded_groups: HashSet<String>,
 }
 
@@ -99,6 +101,7 @@ impl GameResources {
             fonts: HashMap::new(),
             strings: StringTable::default(),
             reanim_definitions: HashMap::new(),
+            particle_definitions: HashMap::new(),
             loaded_groups: HashSet::new(),
         })
     }
@@ -139,6 +142,20 @@ impl GameResources {
         }
 
         self.reanim_definitions.insert(path.to_owned(), def.clone());
+        Ok(def)
+    }
+
+    /// `TodParticleLoadADef`: parses a particle effect and loads its images,
+    /// on first use. (The original loads every effect at startup.)
+    pub fn particle_definition(&mut self, path: &str, assets: &mut Assets<Image>) -> Result<Arc<ParticleDefinition>, String> {
+        if let Some(def) = self.particle_definitions.get(path) {
+            return Ok(def.clone());
+        }
+        let def = Arc::new(ParticleDefinition::load(&self.files, path).map_err(|e| format!("{path}: {e}"))?);
+        for id in def.image_ids() {
+            self.load_image(id, assets).map_err(|e| format!("{path}: {e}"))?;
+        }
+        self.particle_definitions.insert(path.to_owned(), def.clone());
         Ok(def)
     }
 

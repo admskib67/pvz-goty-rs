@@ -196,7 +196,7 @@ fn update_title(
         return;
     }
 
-    effects.update();
+    effects.update(sounds.rng());
 
     let prev_width = t.cur_bar_width;
     t.cur_bar_width += t.bar_vel;

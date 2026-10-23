@@ -8,6 +8,7 @@ mod input;
 mod install;
 mod lawn_app;
 mod pak_source;
+mod particle;
 mod plant;
 mod player;
 mod reanim;

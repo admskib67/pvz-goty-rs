@@ -11,10 +11,13 @@ use std::sync::Arc;
 use bevy::math::Affine2;
 use bevy::prelude::*;
 use sexy::data_array::{DataArray, Id};
+use sexy::particle::ParticleSystem;
+use sexy::rand::MtRand;
 use sexy::matrix::Matrix3;
 use sexy::reanim::{RENDER_GROUP_HIDDEN, RENDER_GROUP_NORMAL, ReanimDefinition};
 use sexy::tod::float_round_to_int;
 
+use crate::particle::ParticleEffect;
 use crate::graphics::{Graphics, SexyColor, SexyRect};
 use crate::resources::GameResources;
 
@@ -331,7 +334,10 @@ pub struct EffectSystem {
     reanimations: DataArray<Reanimation>,
     /// Reanimations attached to each reanimation's tracks: (track, attached).
     attachments: HashMap<ReanimationId, Vec<(usize, ReanimationId)>>,
+    particles: DataArray<ParticleSystem>,
 }
+
+pub type ParticleSystemId = Id<ParticleSystem>;
 
 impl EffectSystem {
     /// `LawnApp::AddReanimation`. Loads the definition on first use.
@@ -385,9 +391,50 @@ impl EffectSystem {
         }
     }
 
+    /// `LawnApp::AddTodParticle`: starts a particle effect at (x, y).
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_particle(
+        &mut self,
+        x: f32,
+        y: f32,
+        render_order: i32,
+        effect: ParticleEffect,
+        resources: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut MtRand,
+    ) -> Option<ParticleSystemId> {
+        match resources.particle_definition(effect.file(), images) {
+            Ok(def) => Some(self.particles.alloc(ParticleSystem::new(x, y, render_order, def, rng))),
+            Err(e) => {
+                error!("{e}");
+                None
+            }
+        }
+    }
+
+    pub fn particle(&self, id: ParticleSystemId) -> Option<&ParticleSystem> {
+        self.particles.get(id)
+    }
+
+    /// `LawnApp::RemoveParticle`.
+    pub fn remove_particle(&mut self, id: ParticleSystemId) {
+        self.particles.free(id);
+    }
+
+    /// Particle systems the board draws itself (not attached to anything).
+    pub fn particle_ids(&self) -> impl Iterator<Item = (ParticleSystemId, &ParticleSystem)> {
+        self.particles.iter()
+    }
+
     /// `EffectSystem::Update`: one 100 Hz tick for everything not owned by
-    /// something else; finished reanimations are removed.
-    pub fn update(&mut self) {
+    /// something else; finished effects are removed.
+    pub fn update(&mut self, rng: &mut MtRand) {
+        for (_, system) in self.particles.iter_mut() {
+            if !system.is_attachment {
+                system.update(rng);
+            }
+        }
+        self.particles.retain(|p| !p.dead);
         let free: Vec<_> = self.reanimations.iter().filter(|(_, r)| !r.is_attachment).map(|(id, _)| id).collect();
         for id in free {
             self.update_reanimation(id);
@@ -430,6 +477,7 @@ impl EffectSystem {
     pub fn clear(&mut self) {
         self.reanimations.clear();
         self.attachments.clear();
+        self.particles.clear();
     }
 
     /// `Reanimation::Draw` with its attachments, each drawn right after the
