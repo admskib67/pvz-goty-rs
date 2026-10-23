@@ -3,6 +3,7 @@ mod graphics;
 mod input;
 mod install;
 mod pak_source;
+mod reanim;
 mod resources;
 mod setup;
 mod title;

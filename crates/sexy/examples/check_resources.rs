@@ -1,5 +1,6 @@
 //! Parses `resources.xml` from a pak and loads every image and font
-//! resource, reporting any that fail.
+//! resource, then every reanimation and the images it uses, reporting any
+//! that fail.
 //!
 //!     cargo run -p sexy --release --example check_resources -- <main.pak>
 
@@ -8,7 +9,9 @@ use std::sync::Arc;
 
 use sexy::files::GameFiles;
 use sexy::font::load_font;
-use sexy::image::load_image_resource;
+use sexy::files::Files;
+use sexy::image::{load_image, load_image_resource};
+use sexy::reanim::{ReanimDefinition, image_search_paths};
 use sexy::resources::{Manifest, ResourceKind};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -46,6 +49,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    println!("{ok} images and fonts loaded, {failed} failed");
+    for entry in pak.entries().iter().filter(|e| e.name.to_ascii_lowercase().ends_with(".reanim")) {
+        let result = files
+            .read(&entry.name)
+            .ok_or_else(|| "unreadable".to_owned())
+            .and_then(|b| String::from_utf8(b.into_owned()).map_err(|e| e.to_string()))
+            .and_then(|text| ReanimDefinition::parse(&text).map_err(|e| e.to_string()))
+            .and_then(|def| {
+                let missing: Vec<&str> = def
+                    .image_ids()
+                    .filter(|id| {
+                        manifest.get(id).is_none()
+                            && !image_search_paths(id).iter().any(|p| load_image(&files, p, true, 0xFF_FFFF).is_some())
+                    })
+                    .collect();
+                if missing.is_empty() { Ok(()) } else { Err(format!("missing images {missing:?}")) }
+            });
+        report("reanim", &entry.name, result);
+    }
+    println!("{ok} images, fonts and reanimations loaded, {failed} failed");
     Ok(())
 }

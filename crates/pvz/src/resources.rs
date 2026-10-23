@@ -16,7 +16,8 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use sexy::files::{Files, GameFiles};
 use sexy::font::{Font, LoadedFont, latin1_to_string, load_font};
-use sexy::image::{DecodedImage, load_image_resource};
+use sexy::image::{DecodedImage, load_image, load_image_resource};
+use sexy::reanim::{ReanimDefinition, image_search_paths};
 use sexy::resources::{Manifest, ResourceKind};
 use sexy::strings::StringTable;
 
@@ -44,11 +45,19 @@ pub struct ImageRes {
     pub handle: Handle<Image>,
     pub width: u32,
     pub height: u32,
-    /// Cel grid, for `DrawImageCel` once a screen needs it.
-    #[expect(dead_code, reason = "no ported screen draws cels yet")]
+    /// Cel grid (`rows`/`cols` in the manifest).
     pub rows: u32,
-    #[expect(dead_code, reason = "no ported screen draws cels yet")]
     pub cols: u32,
+}
+
+impl ImageRes {
+    pub fn cel_width(&self) -> u32 {
+        self.width / self.cols.max(1)
+    }
+
+    pub fn cel_height(&self) -> u32 {
+        self.height / self.rows.max(1)
+    }
 }
 
 /// An image font with each layer's glyph sheet uploaded.
@@ -67,6 +76,7 @@ pub struct GameResources {
     images: HashMap<String, ImageRes>,
     fonts: HashMap<String, FontRes>,
     strings: StringTable,
+    reanim_definitions: HashMap<String, Arc<ReanimDefinition>>,
     loaded_groups: HashSet<String>,
 }
 
@@ -81,6 +91,7 @@ impl GameResources {
             images: HashMap::new(),
             fonts: HashMap::new(),
             strings: StringTable::default(),
+            reanim_definitions: HashMap::new(),
             loaded_groups: HashSet::new(),
         })
     }
@@ -100,6 +111,39 @@ impl GameResources {
 
     pub fn is_group_loaded(&self, group: &str) -> bool {
         self.loaded_groups.contains(group)
+    }
+
+    /// `ReanimatorEnsureDefinitionLoaded`: parses a reanimation file and loads
+    /// every image it uses, on first use. Images missing from the manifest
+    /// are found by path (`DefinitionLoadImage`).
+    pub fn reanim_definition(&mut self, path: &str, assets: &mut Assets<Image>) -> Result<Arc<ReanimDefinition>, String> {
+        if let Some(def) = self.reanim_definitions.get(path) {
+            return Ok(def.clone());
+        }
+        let bytes = self.files.read(path).ok_or_else(|| format!("{path} is missing"))?;
+        let text = std::str::from_utf8(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        let def = Arc::new(ReanimDefinition::parse(text).map_err(|e| format!("{path}: {e}"))?);
+
+        for id in def.image_ids() {
+            if self.images.contains_key(id) {
+                continue;
+            }
+            let image = match self.manifest.get(id).and_then(|r| r.image().map(|info| (r, info))) {
+                Some((res, info)) => load_image_resource(&self.files, &res.path, info)
+                    .map(|i| (i, info.rows, info.cols))
+                    .map_err(|e| format!("{path}: {id}: {e}"))?,
+                None => image_search_paths(id)
+                    .iter()
+                    .find_map(|p| load_image(&self.files, p, true, 0xFF_FFFF))
+                    .map(|i| (i, 1, 1))
+                    .ok_or_else(|| format!("{path}: image {id} not found"))?,
+            };
+            let (image, rows, cols) = image;
+            self.images.insert(id.to_owned(), upload(image, rows, cols, assets));
+        }
+
+        self.reanim_definitions.insert(path.to_owned(), def.clone());
+        Ok(def)
     }
 
     /// Loads a group on the calling thread. Only for tiny groups like `Init`.

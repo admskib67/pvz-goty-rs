@@ -43,7 +43,7 @@ cargo test --workspace
 cargo test -p pak directories                # single test, filtered by name
 cargo clippy --workspace --all-targets
 cargo run -p pak --example extract -- <main.pak> [out_dir]  # list or extract a pak
-cargo run -p sexy --release --example check_resources -- <main.pak>  # load every manifest image and font
+cargo run -p sexy --release --example check_resources -- <main.pak>  # load every manifest image, font and reanim
 ```
 
 App environment variables:
@@ -67,6 +67,7 @@ A Cargo workspace (`crates/*`) on Bevy 0.20. Bevy's API changes between releases
   - `image`: decoding plus PopCap's alpha masks. A mask is `_name` or `name_`, its blue channel becomes alpha, and a mask with no base image becomes a solid `alphacolor` image; also `alphaimage` and per-cel `alphagrid`. Extensions are tried in the original order: tga, jpg, png, gif (the pak has both `titlescreen.jpg` and `.png`).
   - `tod`: `TodAnimateCurve` and friends. Most screen timing is written as these curves over count-down tick counters.
   - `font`: PopCap image fonts. A `data/*.txt` descriptor (a small `Define`/`LayerSet…` script, Latin-1 encoded) describes one or more layers, each a glyph sheet with per-character widths, rects, offsets and kerning. Multi-layer fonts (e.g. outline + main) draw every layer per character. `Font::layout` reproduces `DrawStringEx` (baseline-relative, widest layer wins the advance); only the default point size at scale 1 is supported.
+  - `reanim` + `matrix`: reanimations (`reanim/*.reanim`, top-level XML fragments). Tracks hold one keyframe per frame; empty keyframes inherit earlier values; `anim_*` tracks only mark frame ranges. `Reanimation` ports playback (100 Hz `update`, loop types, interpolation, blending, `play`/`set_frames_for_layer`). `Matrix3` mirrors `SexyMatrix3` (`a * b` applies `b` first). Track image ids not in the manifest are found via `image_search_paths` (`IMAGE_REANIM_X` → `reanim/X`, …).
   - `strings`: `LawnStrings.txt` (Latin-1, `[NAME]` then text); `translate("[NAME]")` mirrors `TodStringTranslate`, including `<Missing NAME>`.
 - **`pvz`** is the Bevy application.
   - `AppState` runs `Boot → Setup → Title`. `Boot` opens `$PVZ_GAME_PATH` or the saved install, and falls back to `Setup` with `SetupStatus.message` explaining why.
@@ -75,10 +76,11 @@ A Cargo workspace (`crates/*`) on Bevy 0.20. Bevy's API changes between releases
   - `setup` is the first-run screen (dark theme, Browse and Quit only): `bevy_ui` with `bevy_ui_widgets` `Button` and `Activate` observers, plus `rfd::AsyncFileDialog`. Picking and pak validation run on `AsyncComputeTaskPool` and are polled with `check_ready`.
   - The camera shows an 800×600 logical space (`ScalingMode::AutoMin`), the original game's resolution.
   - Game logic runs in `FixedUpdate` at 100 Hz (`TICKS_PER_SECOND`), like the original's `Update()`; drawing runs every frame in `Update`.
-  - `graphics` is an immediate-mode `Graphics` resource modelled on SexyFramework's: screens call `fill_rect`, `draw_image`, `draw_string`, `clip_rect`, `push_state`/`pop_state` and `draw_image_matrix` in 800×600 top-left, y-down coordinates, so ported `Draw()` code stays close to the reference. The call list is cleared in `First` and turned into a reused pool of Bevy sprites in `PostUpdate`, depth by call order. Sprites can't skew, so reanimation will need a custom mesh path later.
+  - `graphics` is an immediate-mode `Graphics` resource modelled on SexyFramework's: screens call `fill_rect`, `draw_image`, `draw_string`, `clip_rect`, `push_state`/`pop_state` and `draw_image_matrix` in 800×600 top-left, y-down coordinates, so ported `Draw()` code stays close to the reference. The call list is cleared in `First` and turned into reused entities in `PostUpdate`, depth by call order: axis-aligned draws become sprites; `draw_image_matrix`/`draw_image_matrix_src` (which may skew) become quad meshes with vertex colors and our own `QuadMaterial` (`quad_material.wesl`), pooled per texture.
   - `resources` turns manifest groups into Bevy assets: `GameResources::image("IMAGE_...")`, `font("FONT_...")` and `translate("[NAME]")`. `Init` loads synchronously; `GameResources::start_loading_thread` loads `LoaderBar` and `LawnStrings.txt`, then `LoadingImages`/`LoadingFonts`/`LoadingSounds` on a background task with the original's weighted progress. Sounds are only checked for presence until audio exists.
+  - `reanim` maps `ReanimationType` to files (only types in use so far), loads definitions and their images on demand (`GameResources::reanim_definition`), and draws tracks (`draw_reanimation`, a port of `DrawTrack`; text and "fullscreen" tracks are still TODO). `EffectSystem` holds running reanimations, like the original's effect system.
   - `input` keeps `GameCursor`, the mouse in 800×600 game coordinates.
-  - `title` ports `TitleScreen` (PopCap logo, logo drop, grass bar with rolling sod cap, "LOADING..."/"CLICK TO START!" link with hover color). Still missing: sprouts on the bar, sounds, and what happens after the click (the game selector).
+  - `title` ports `TitleScreen` (PopCap logo, logo drop, grass bar with rolling sod cap, "LOADING..."/"CLICK TO START!" link with hover color, sprouts and zombie head popping out of the bar). Still missing: sounds, and what happens after the click (the game selector).
 
 Planned direction:
 - Game simulation as plain Rust structs on a fixed timestep, following the original's structure and names as documented by the reference (`Board`, `DataArray<T>` as a generational slot map with ID handles, type enums with `match` rather than trait objects), so code can be compared against it.

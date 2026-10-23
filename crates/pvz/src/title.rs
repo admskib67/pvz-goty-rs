@@ -1,17 +1,18 @@
 //! The title screen: PopCap logo, then the loading bar while resources load.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Widget/TitleScreen.cpp` and
-//! `HyperlinkWidget::Draw`. Not yet ported: the sprouts popping out of the
-//! bar (needs reanimation) and sounds.
+//! `HyperlinkWidget::Draw`. Not yet ported: sounds.
 
 use std::f32::consts::PI;
 
 use bevy::prelude::*;
+use sexy::reanim::LoopType;
 use sexy::tod::{TodCurve, animate_curve, animate_curve_float_time};
 
 use crate::graphics::{Graphics, SexyColor, scale_rotate_transform};
 use crate::input::GameCursor;
 use crate::pak_source::GamePak;
+use crate::reanim::{EffectSystem, ReanimationType, draw_reanimation};
 use crate::resources::{GameResources, INIT_GROUP, LOADER_BAR_GROUP, LoadingThread};
 use crate::{AppState, GAME_HEIGHT, GAME_WIDTH};
 
@@ -104,6 +105,7 @@ fn start_title(
         Ok(resources) => {
             commands.insert_resource(resources);
             commands.insert_resource(TitleScreen::default());
+            commands.insert_resource(EffectSystem::default());
         }
         Err(e) => {
             // TODO: show this on screen like the original's resource error dialog.
@@ -117,7 +119,9 @@ fn start_title(
 fn update_title(
     mut commands: Commands,
     mut title: ResMut<TitleScreen>,
-    resources: Res<GameResources>,
+    mut resources: ResMut<GameResources>,
+    mut images: ResMut<Assets<Image>>,
+    mut effects: ResMut<EffectSystem>,
     thread: Option<Res<LoadingThread>>,
 ) {
     let t = &mut *title;
@@ -179,6 +183,9 @@ fn update_title(
         return;
     }
 
+    effects.update();
+
+    let prev_width = t.cur_bar_width;
     t.cur_bar_width += t.bar_vel;
     if !t.loading_thread_complete {
         t.cur_bar_width = t.cur_bar_width.min(t.total_bar_width * 0.99);
@@ -211,6 +218,35 @@ fn update_title(
             error!("loading thread failed: {e}");
         }
     }
+
+    // Sprouts (and finally a zombie head) pop out as the bar passes these points.
+    let trigger_points = [0.11, 0.32, 0.54, 0.72, 0.91].map(|f| t.total_bar_width * f);
+    for (i, trigger) in trigger_points.into_iter().enumerate() {
+        if !(prev_width < trigger && t.cur_bar_width >= trigger) {
+            continue;
+        }
+        let ty = if i == 4 { ReanimationType::LoadbarZombieHead } else { ReanimationType::LoadbarSprout };
+        let (x, y) = (trigger + 225.0, 511.0);
+        let sprout = match effects.add_reanimation(x, y, ty, &mut resources, &mut images) {
+            Ok(sprout) => sprout,
+            Err(e) => {
+                error!("{e}");
+                continue;
+            }
+        };
+        sprout.anim_rate = 18.0;
+        sprout.loop_type = LoopType::PlayOnceAndHold;
+        match i {
+            1 | 3 => sprout.override_scale(-1.0, 1.0),
+            2 => {
+                sprout.set_position(x, y - 5.0);
+                sprout.override_scale(1.1, 1.3);
+            }
+            4 => sprout.set_position(x - 20.0, y),
+            _ => {}
+        }
+        // TODO: SOUND_LOADINGBAR_FLOWER (and SOUND_LOADINGBAR_ZOMBIE for the head).
+    }
 }
 
 /// `TitleScreen::MouseDown`/`KeyDown`: any click or key once loading is done.
@@ -230,10 +266,15 @@ fn title_input(
 fn draw_title(
     mut title: ResMut<TitleScreen>,
     resources: Res<GameResources>,
+    effects: Res<EffectSystem>,
     cursor: Res<GameCursor>,
     mut g: ResMut<Graphics>,
 ) {
-    draw_screen(&mut title, &resources, &mut g);
+    if draw_screen(&mut title, &resources, &mut g) {
+        for reanim in effects.reanimations() {
+            draw_reanimation(&mut g, reanim, &resources);
+        }
+    }
     draw_start_button(&title, &resources, &cursor, &mut g);
 }
 
@@ -250,15 +291,16 @@ fn draw_start_button(t: &TitleScreen, resources: &GameResources, cursor: &GameCu
     g.draw_string(font, b.x as i32 + font_x, b.y as i32 + font_y, &label);
 }
 
-/// `TitleScreen::Draw`.
-fn draw_screen(t: &mut TitleScreen, resources: &GameResources, g: &mut Graphics) {
+/// `TitleScreen::Draw` up to its effects. Returns false where the original
+/// returns early (before effects are drawn).
+fn draw_screen(t: &mut TitleScreen, resources: &GameResources, g: &mut Graphics) -> bool {
     let (w, h) = (GAME_WIDTH, GAME_HEIGHT);
 
     if t.state == TitleState::WaitingForFirstDraw {
         g.set_color(SexyColor::BLACK);
         g.fill_rect(0.0, 0.0, w, h);
         t.drawn_yet = true;
-        return;
+        return false;
     }
 
     if t.state == TitleState::PopcapLogo {
@@ -278,7 +320,7 @@ fn draw_screen(t: &mut TitleScreen, resources: &GameResources, g: &mut Graphics)
             g.draw_image(logo, x as f32, y as f32);
             g.set_colorize_images(false);
         }
-        return;
+        return false;
     }
 
     let images = ["IMAGE_TITLESCREEN", "IMAGE_PVZ_LOGO", "IMAGE_LOADBAR_DIRT", "IMAGE_LOADBAR_GRASS"]
@@ -286,12 +328,12 @@ fn draw_screen(t: &mut TitleScreen, resources: &GameResources, g: &mut Graphics)
     let [Some(screen), Some(logo), Some(dirt), Some(grass)] = images else {
         g.set_color(SexyColor::BLACK);
         g.fill_rect(0.0, 0.0, w, h);
-        return;
+        return false;
     };
 
     g.draw_image(screen, 0.0, 0.0);
     if t.need_to_init {
-        return;
+        return false;
     }
 
     let logo_y = if t.state_counter > 60 {
@@ -328,4 +370,5 @@ fn draw_screen(t: &mut TitleScreen, resources: &GameResources, g: &mut Graphics)
             g.draw_image_matrix(cap, transform);
         }
     }
+    true
 }

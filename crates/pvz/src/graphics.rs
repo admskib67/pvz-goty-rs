@@ -2,13 +2,22 @@
 //!
 //! The original draws everything with calls like `g->DrawImage(img, x, y)`
 //! in 800×600 top-left, y-down coordinates. Screens push the same calls into
-//! [`Graphics`] each frame, and `sync_sprites` turns them into a pool of
-//! Bevy sprites in call order, so ported `Draw()` code stays close to the
-//! reference.
+//! [`Graphics`] each frame, and `sync_draw_calls` turns them into reused
+//! Bevy entities, layered by call order, so ported `Draw()` code stays close
+//! to the reference. Axis-aligned images and rectangles become sprites;
+//! transformed images (which can skew, e.g. reanimation parts) become
+//! textured quad meshes with per-vertex color.
 
+use std::collections::HashMap;
+
+use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
 use bevy::math::Affine2;
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use bevy::render::render_resource::AsBindGroup;
+use bevy::shader::ShaderRef;
 use bevy::sprite::Anchor;
+use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dPlugin};
 use bevy::transform::TransformSystems;
 
 use crate::resources::{FontRes, ImageRes};
@@ -18,10 +27,12 @@ pub struct GraphicsPlugin;
 
 impl Plugin for GraphicsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Graphics>()
-            .init_resource::<SpritePool>()
+        embedded_asset!(app, "quad_material.wesl");
+        app.add_plugins(Material2dPlugin::<QuadMaterial>::default())
+            .init_resource::<Graphics>()
+            .init_resource::<DrawPools>()
             .add_systems(First, clear_graphics)
-            .add_systems(PostUpdate, sync_sprites.before(TransformSystems::Propagate));
+            .add_systems(PostUpdate, sync_draw_calls.before(TransformSystems::Propagate));
     }
 }
 
@@ -49,6 +60,12 @@ impl SexyColor {
 
     fn to_bevy(self) -> Color {
         Color::srgba_u8(self.r, self.g, self.b, self.a)
+    }
+
+    /// `ColorsMultiply`.
+    pub fn multiply(self, o: Self) -> Self {
+        let m = |a: u8, b: u8| (a as u32 * b as u32 / 255) as u8;
+        Self::rgba(m(self.r, o.r), m(self.g, o.g), m(self.b, o.b), m(self.a, o.a))
     }
 }
 
@@ -95,8 +112,9 @@ impl Default for GraphicsState {
 enum DrawCmd {
     Rect { rect: SexyRect, color: SexyColor },
     Image { image: Handle<Image>, dest: SexyRect, src: SexyRect, color: SexyColor },
-    /// Image centered on the origin of `transform` (y-down screen space).
-    Matrix { image: Handle<Image>, transform: Affine2, src: SexyRect, color: SexyColor },
+    /// The `src` part of an image, centered on the origin of `transform`
+    /// (y-down screen space).
+    Matrix { image: Handle<Image>, image_size: Vec2, transform: Affine2, src: SexyRect, color: SexyColor },
 }
 
 /// This frame's draw calls. Cleared at the start of every frame.
@@ -177,8 +195,22 @@ impl Graphics {
     /// Clipping isn't applied to transformed images.
     pub fn draw_image_matrix(&mut self, image: &ImageRes, transform: Affine2) {
         let src = SexyRect::new(0.0, 0.0, image.width as f32, image.height as f32);
+        self.draw_image_matrix_src(image, transform, src);
+    }
+
+    /// [`Self::draw_image_matrix`] for part of an image (e.g. one cel).
+    pub fn draw_image_matrix_src(&mut self, image: &ImageRes, transform: Affine2, src: SexyRect) {
+        let image_size = Vec2::new(image.width as f32, image.height as f32);
         let color = self.image_color();
-        self.cmds.push(DrawCmd::Matrix { image: image.handle.clone(), transform, src, color });
+        self.cmds.push(DrawCmd::Matrix { image: image.handle.clone(), image_size, transform, src, color });
+    }
+
+    pub fn color(&self) -> SexyColor {
+        self.state.color
+    }
+
+    pub fn colorize_images(&self) -> bool {
+        self.state.colorize_images
     }
 
     fn image_color(&self) -> SexyColor {
@@ -199,9 +231,39 @@ fn clear_graphics(mut g: ResMut<Graphics>) {
     g.state = GraphicsState::default();
 }
 
-/// Sprite entities reused across frames, one per draw call.
+/// Texture × vertex color, for transformed images. Our own material rather
+/// than `ColorMaterial` so draw modes (e.g. additive) can be added later.
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct QuadMaterial {
+    #[texture(0)]
+    #[sampler(1)]
+    texture: Handle<Image>,
+}
+
+impl Material2d for QuadMaterial {
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::Path(AssetPath::from_path_buf(embedded_path!("quad_material.wesl")).with_source("embedded"))
+    }
+
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
+    }
+}
+
+/// Entities reused across frames: sprites for axis-aligned draws, and quad
+/// meshes for transformed ones, pooled per texture so an entity's material
+/// never changes.
 #[derive(Resource, Default)]
-struct SpritePool(Vec<Entity>);
+struct DrawPools {
+    sprites: Vec<Entity>,
+    quads: HashMap<AssetId<Image>, QuadPool>,
+}
+
+struct QuadPool {
+    material: Handle<QuadMaterial>,
+    entities: Vec<(Entity, Handle<Mesh>)>,
+    used: usize,
+}
 
 /// Screen (top-left, y-down) to world (centered, y-up) coordinates.
 fn to_world(x: f32, y: f32) -> Vec2 {
@@ -211,19 +273,92 @@ fn to_world(x: f32, y: f32) -> Vec2 {
 /// Depth step between draw calls, so later calls draw on top.
 const Z_STEP: f32 = 0.001;
 
-fn sync_sprites(
+/// A quad showing `src` of an image, centered on `transform`'s origin.
+fn quad_mesh(image_size: Vec2, transform: Affine2, src: SexyRect, color: SexyColor) -> Mesh {
+    let (hw, hh) = (src.w / 2.0, src.h / 2.0);
+    let corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)];
+    let positions: Vec<[f32; 3]> = corners
+        .iter()
+        .map(|&(x, y)| {
+            let p = transform.transform_point2(Vec2::new(x, y));
+            to_world(p.x, p.y).extend(0.0).to_array()
+        })
+        .collect();
+    let (u0, v0) = (src.x / image_size.x, src.y / image_size.y);
+    let (u1, v1) = ((src.x + src.w) / image_size.x, (src.y + src.h) / image_size.y);
+    let uvs = vec![[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+    let color = color.to_bevy().to_linear().to_f32_array();
+
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![color; 4])
+        .with_inserted_indices(Indices::U16(vec![0, 1, 2, 0, 2, 3]))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_draw_calls(
     g: Res<Graphics>,
-    mut pool: ResMut<SpritePool>,
+    mut pools: ResMut<DrawPools>,
     mut commands: Commands,
-    mut sprites: Query<(&mut Sprite, &mut Transform, &mut Anchor, &mut Visibility)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<QuadMaterial>>,
+    mut sprites: Query<(&mut Sprite, &mut Transform, &mut Anchor, &mut Visibility), Without<Mesh2d>>,
+    mut quads: Query<(&mut Transform, &mut Visibility), With<Mesh2d>>,
 ) {
+    let pools = &mut *pools;
+    let mut sprite_count = 0;
+    for pool in pools.quads.values_mut() {
+        pool.used = 0;
+    }
+
     for (i, cmd) in g.cmds.iter().enumerate() {
         let z = i as f32 * Z_STEP;
-        let (sprite, transform, anchor) = match cmd {
+
+        if let DrawCmd::Matrix { image, image_size, transform, src, color } = cmd {
+            let pool = pools.quads.entry(image.id()).or_insert_with(|| QuadPool {
+                material: materials.add(QuadMaterial { texture: image.clone() }),
+                entities: Vec::new(),
+                used: 0,
+            });
+            let mesh = quad_mesh(*image_size, *transform, *src, *color);
+            let transform = Transform::from_xyz(0.0, 0.0, z);
+
+            match pool.entities.get(pool.used) {
+                Some((entity, handle)) => {
+                    let _ = meshes.insert(handle, mesh);
+                    match quads.get_mut(*entity) {
+                        Ok((mut t, mut v)) => {
+                            *t = transform;
+                            *v = Visibility::Visible;
+                        }
+                        // Spawned last frame; its components land when commands apply.
+                        Err(_) => {
+                            commands.entity(*entity).insert((transform, Visibility::Visible));
+                        }
+                    }
+                }
+                None => {
+                    let handle = meshes.add(mesh);
+                    let entity = commands
+                        .spawn((
+                            Mesh2d(handle.clone()),
+                            MeshMaterial2d(pool.material.clone()),
+                            transform,
+                            Visibility::Visible,
+                        ))
+                        .id();
+                    pool.entities.push((entity, handle));
+                }
+            }
+            pool.used += 1;
+            continue;
+        }
+
+        let (sprite, transform) = match cmd {
             DrawCmd::Rect { rect, color } => (
                 Sprite { color: color.to_bevy(), custom_size: Some(Vec2::new(rect.w, rect.h)), ..default() },
                 Transform::from_translation(to_world(rect.x, rect.y).extend(z)),
-                Anchor::TOP_LEFT,
             ),
             DrawCmd::Image { image, dest, src, color } => (
                 Sprite {
@@ -234,46 +369,37 @@ fn sync_sprites(
                     ..default()
                 },
                 Transform::from_translation(to_world(dest.x, dest.y).extend(z)),
-                Anchor::TOP_LEFT,
             ),
-            DrawCmd::Matrix { image, transform, src, color } => {
-                // Flipping y turns a y-down rotation by `a` into a y-up rotation by -a.
-                let (scale, angle, origin) = transform.to_scale_angle_translation();
-                (
-                    Sprite {
-                        image: image.clone(),
-                        color: color.to_bevy(),
-                        rect: Some(Rect::new(src.x, src.y, src.x + src.w, src.y + src.h)),
-                        ..default()
-                    },
-                    Transform {
-                        translation: to_world(origin.x, origin.y).extend(z),
-                        rotation: Quat::from_rotation_z(-angle),
-                        scale: scale.extend(1.0),
-                    },
-                    Anchor::CENTER,
-                )
-            }
+            DrawCmd::Matrix { .. } => unreachable!(),
         };
-
-        match pool.0.get(i).and_then(|&e| sprites.get_mut(e).ok()) {
-            Some((mut s, mut t, mut a, mut v)) => {
+        match pools.sprites.get(sprite_count).map(|&e| (e, sprites.get_mut(e))) {
+            Some((_, Ok((mut s, mut t, mut a, mut v)))) => {
                 *s = sprite;
                 *t = transform;
-                *a = anchor;
+                *a = Anchor::TOP_LEFT;
                 *v = Visibility::Visible;
             }
-            None if i < pool.0.len() => {
-                // Spawned last frame; its components land when commands apply.
-                commands.entity(pool.0[i]).insert((sprite, transform, anchor, Visibility::Visible));
+            Some((entity, Err(_))) => {
+                commands.entity(entity).insert((sprite, transform, Anchor::TOP_LEFT, Visibility::Visible));
             }
-            None => pool.0.push(commands.spawn((sprite, transform, anchor, Visibility::Visible)).id()),
+            None => {
+                let entity = commands.spawn((sprite, transform, Anchor::TOP_LEFT, Visibility::Visible)).id();
+                pools.sprites.push(entity);
+            }
         }
+        sprite_count += 1;
     }
 
-    for &entity in pool.0.iter().skip(g.cmds.len()) {
+    for &entity in pools.sprites.iter().skip(sprite_count) {
         if let Ok((_, _, _, mut v)) = sprites.get_mut(entity) {
             *v = Visibility::Hidden;
+        }
+    }
+    for pool in pools.quads.values() {
+        for (entity, _) in pool.entities.iter().skip(pool.used) {
+            if let Ok((_, mut v)) = quads.get_mut(*entity) {
+                *v = Visibility::Hidden;
+            }
         }
     }
 }
