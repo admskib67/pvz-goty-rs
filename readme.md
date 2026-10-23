@@ -3,7 +3,8 @@
 Vibe coded reconstruction of Plants vs Zombies Game of the year edition
 
 - Written in rust and bevy
-- A valid copy of the game is needed for this to work 
+- A valid copy of the game is needed for this to work
+- At this point in time, development can continue on an unified branch 
 
 ## How to run
 
