@@ -226,9 +226,10 @@ fn load_group(files: &GameFiles, manifest: &Manifest, group: &str, tick: &dyn Fn
                 fonts.push((res.id.clone(), load_font(files, &res.path).map_err(|e| format!("{}: {e}", res.id))?));
             }
             // TODO: decode once audio exists. For now just check the file is
-            // present so missing data fails early.
+            // present so missing data fails early. Extensions in the order
+            // DSoundManager::LoadSound tries them; the Windows pak has `.au` sounds.
             ResourceKind::Sound => {
-                if !["ogg", "wav", "mp3"].iter().any(|e| files.read(&format!("{}.{e}", res.path)).is_some()) {
+                if !["wav", "mp3", "ogg", "au"].iter().any(|e| files.read(&format!("{}.{e}", res.path)).is_some()) {
                     return Err(format!("{}: sound {:?} not found", res.id, res.path));
                 }
             }
