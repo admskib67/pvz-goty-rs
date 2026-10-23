@@ -2,9 +2,10 @@
 //! the level intro (`CutScene`), the seed bank, the advice banner and the
 //! lawn mowers.
 //!
-//! So far a level plays its intro, then sun falls and can be collected, and
-//! plants can be planted (level 1's tutorial included); there are no
-//! zombies yet, so plants just stand there.
+//! So far a level plays its intro, then sun falls and can be collected,
+//! plants can be planted (level 1's tutorial included), and the plain
+//! zombies come in waves and are shot by peashooters. There are no mowers
+//! yet and nothing happens when a level is won or lost.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Board.cpp`: the constructor,
 //! `InitLevel`, `PickBackground`, `LoadBackgroundImages`, `InitLawnMowers`,
@@ -19,15 +20,18 @@ mod cutscene;
 mod lawn_mower;
 mod message;
 mod plant;
+mod projectile;
 mod seed_bank;
 mod tutorial;
+mod waves;
+mod zombie;
 
 use std::collections::HashSet;
 
 use bevy::prelude::*;
 use sexy::data_array::DataArray;
 
-use crate::audio::{Music, MusicTune, Sounds};
+use crate::audio::{FoleyType, Music, MusicTune, Sounds};
 use crate::dialog::{ButtonMode, DialogId, Dialogs};
 use crate::graphics::{Graphics, Justify, SexyColor, SexyRect};
 use crate::input::GameCursor;
@@ -44,9 +48,12 @@ use cursor::{CursorObject, CursorPreview};
 use cutscene::CutScene;
 use lawn_mower::LawnMower;
 use message::{MessageStyle, MessageWidget};
-use plant::Plant;
+use plant::{Plant, PlantAction};
+use projectile::{Projectile, ProjectileType};
 use seed_bank::SeedBank;
 use tutorial::{AdviceType, TutorialState};
+use waves::WaveState;
+use zombie::{Fx, Zombie};
 
 pub struct BoardPlugin;
 
@@ -97,6 +104,41 @@ pub enum BackgroundType {
     Fog,
     Roof,
     Boss,
+}
+
+impl BackgroundType {
+    pub fn is_night(self) -> bool {
+        matches!(self, Self::Night | Self::Fog | Self::Boss)
+    }
+
+    pub fn has_pool(self) -> bool {
+        matches!(self, Self::Pool | Self::Fog)
+    }
+
+    pub fn has_roof(self) -> bool {
+        matches!(self, Self::Roof | Self::Boss)
+    }
+}
+
+/// `GridToPixelY` for the grid's left column.
+pub fn grid_to_pixel_y(background: BackgroundType, grid_x: i32, grid_y: i32) -> i32 {
+    if background.has_roof() {
+        let slope = if grid_x < 5 { (5 - grid_x) * 20 } else { 0 };
+        grid_y * 85 + slope + LAWN_YMIN - 10
+    } else if background.has_pool() {
+        grid_y * 85 + LAWN_YMIN
+    } else {
+        grid_y * 100 + LAWN_YMIN
+    }
+}
+
+/// `GetPosYBasedOnRow`.
+pub fn pos_y_based_on_row(background: BackgroundType, x: f32, row: i32) -> f32 {
+    if background.has_roof() {
+        let slope = if x < 440.0 { (440.0 - x) * 0.25 } else { 0.0 };
+        return grid_to_pixel_y(background, 8, row) as f32 + slope;
+    }
+    grid_to_pixel_y(background, 0, row) as f32
 }
 
 /// `PlantRowType`.
@@ -192,6 +234,11 @@ pub struct Board {
     help_displayed: HashSet<AdviceType>,
     lawn_mowers: Vec<LawnMower>,
     plants: DataArray<Plant>,
+    zombies: DataArray<Zombie>,
+    projectiles: DataArray<Projectile>,
+    waves: WaveState,
+    /// A zombie has reached the house. TODO: the losing cutscene (`ZombiesWon`).
+    pub zombies_won: bool,
     coins: DataArray<Coin>,
     cursor: CursorObject,
     cursor_preview: CursorPreview,
@@ -257,6 +304,10 @@ impl Board {
             help_displayed: HashSet::new(),
             lawn_mowers: Vec::new(),
             plants: DataArray::default(),
+            zombies: DataArray::default(),
+            projectiles: DataArray::default(),
+            waves: WaveState::default(),
+            zombies_won: false,
             coins: DataArray::default(),
             cursor: CursorObject::default(),
             cursor_preview: CursorPreview::default(),
@@ -291,6 +342,7 @@ impl Board {
             let seed = SeedType::from_index(i as i32);
             board.seed_bank.packets[i].set_packet_type(seed);
         }
+        board.init_zombie_waves(rng);
         board
     }
 
@@ -359,15 +411,15 @@ impl Board {
     }
 
     pub fn stage_is_night(&self) -> bool {
-        matches!(self.background, BackgroundType::Night | BackgroundType::Fog | BackgroundType::Boss)
+        self.background.is_night()
     }
 
     pub fn stage_has_pool(&self) -> bool {
-        matches!(self.background, BackgroundType::Pool | BackgroundType::Fog)
+        self.background.has_pool()
     }
 
     pub fn stage_has_roof(&self) -> bool {
-        matches!(self.background, BackgroundType::Roof | BackgroundType::Boss)
+        self.background.has_roof()
     }
 
     pub fn stage_has_fog(&self) -> bool {
@@ -389,23 +441,12 @@ impl Board {
 
     /// `GridToPixelY` for the grid's left column.
     pub fn grid_to_pixel_y(&self, grid_x: i32, grid_y: i32) -> i32 {
-        if self.stage_has_roof() {
-            let slope = if grid_x < 5 { (5 - grid_x) * 20 } else { 0 };
-            grid_y * 85 + slope + LAWN_YMIN - 10
-        } else if self.stage_has_pool() {
-            grid_y * 85 + LAWN_YMIN
-        } else {
-            grid_y * 100 + LAWN_YMIN
-        }
+        grid_to_pixel_y(self.background, grid_x, grid_y)
     }
 
     /// `GetPosYBasedOnRow`.
     pub fn pos_y_based_on_row(&self, x: f32, row: i32) -> f32 {
-        if self.stage_has_roof() {
-            let slope = if x < 440.0 { (440.0 - x) * 0.25 } else { 0.0 };
-            return self.grid_to_pixel_y(8, row) as f32 + slope;
-        }
-        self.grid_to_pixel_y(0, row) as f32
+        pos_y_based_on_row(self.background, x, row)
     }
 
     /// `Board::InitLawnMowers`: one per row that zombies can walk down.
@@ -493,7 +534,7 @@ fn new_game(
     effects.clear();
     music.stop_all_music();
     // CutScene::PreloadResources, for what this stage draws.
-    for ty in [ReanimationType::SodRoll, ReanimationType::LawnMower] {
+    for ty in [ReanimationType::SodRoll, ReanimationType::LawnMower, ReanimationType::Zombie, ReanimationType::Flag] {
         if let Err(e) = resources.reanim_definition(ty.file(), &mut images) {
             error!("{e}");
         }
@@ -551,10 +592,11 @@ fn update_board(
     if board.scene == GameScene::Playing {
         board.main_counter += 1;
         board.update_sun_spawning(&mut effects, &mut resources, &mut images, &mut sounds);
+        board.update_zombie_spawning(&mut effects, &mut resources, &mut images, &mut sounds);
         if board.main_counter == 1 && board.first_time_adventure && board.level == 1 {
             board.set_tutorial_state(&resources, TutorialState::Level1PickUpPeashooter);
         }
-        // TODO: zombie waves and the progress meter.
+        // TODO: the progress meter and the end of the level.
     }
     board.process_delete_queue();
     board.flush_particle_requests(&mut effects, &mut resources, &mut images, sounds.rng());
@@ -603,8 +645,23 @@ impl Board {
     ) {
         let playing = self.scene == GameScene::Playing;
         if playing {
+            let mut actions = Vec::new();
             for (_, plant) in self.plants.iter_mut() {
-                plant.update(effects, res, images, sounds.rng());
+                plant.update(&self.zombies, &mut actions, effects, res, images, sounds.rng());
+            }
+            let env = self.zombie_env();
+            {
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                for (_, zombie) in self.zombies.iter_mut() {
+                    zombie.update(&mut self.plants, &env, &mut fx);
+                    self.zombies_won |= zombie.reached_house();
+                }
+                for (_, projectile) in self.projectiles.iter_mut() {
+                    projectile.update(&mut self.zombies, &env, &mut fx);
+                }
+            }
+            for action in actions {
+                self.do_plant_action(action, effects, res, images, sounds);
             }
             let mut scored = 0;
             for (_, coin) in self.coins.iter_mut() {
@@ -625,9 +682,35 @@ impl Board {
         }
     }
 
-    /// `Board::ProcessDeleteQueue`: frees dead plants and coins.
+    /// Carries out what a plant did this tick.
+    fn do_plant_action(
+        &mut self,
+        action: PlantAction,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        sounds: &mut Sounds,
+    ) {
+        match action {
+            PlantAction::Shoot { x, y, row, render_order } => {
+                sounds.play_foley(FoleyType::Throw);
+                let grid_x = self.pixel_to_grid_x(x).max(0);
+                let shadow_y = self.grid_to_pixel_y(grid_x, row) as f32 + 67.0;
+                // TODO: shadows sit 12 pixels higher on the roof's left side.
+                self.projectiles.alloc(Projectile::new(x, y, render_order, row, shadow_y, ProjectileType::Pea));
+            }
+            PlantAction::MakeSun { x, y } => {
+                sounds.play_foley(FoleyType::SpawnSun);
+                self.add_coin(x as f32, y as f32, CoinType::Sun, CoinMotion::FromPlant, effects, res, images, sounds);
+            }
+        }
+    }
+
+    /// `Board::ProcessDeleteQueue`: frees dead plants, zombies, projectiles and coins.
     fn process_delete_queue(&mut self) {
         self.plants.retain(|p| !p.dead);
+        self.zombies.retain(|z| !z.dead);
+        self.projectiles.retain(|p| !p.dead);
         self.coins.retain(|c| !c.dead);
     }
 
@@ -762,6 +845,10 @@ enum RenderItem {
     LawnMower(usize),
     Reanimation(crate::reanim::ReanimationId),
     Plant(sexy::data_array::Id<Plant>),
+    Zombie(sexy::data_array::Id<Zombie>),
+    ZombieShadow(sexy::data_array::Id<Zombie>),
+    Projectile(sexy::data_array::Id<Projectile>),
+    ProjectileShadow(sexy::data_array::Id<Projectile>),
     Particle(ParticleSystemId),
     Coin(sexy::data_array::Id<Coin>),
     CursorPreview,
@@ -783,6 +870,14 @@ fn draw_board(
     }
     for (id, coin) in board.coins.iter() {
         items.push((coin.render_order, RenderItem::Coin(id)));
+    }
+    for (id, zombie) in board.zombies.iter() {
+        items.push((zombie.render_order, RenderItem::Zombie(id)));
+        items.push((make_render_order(render_layer::GROUND, zombie.row, 3), RenderItem::ZombieShadow(id)));
+    }
+    for (id, projectile) in board.projectiles.iter() {
+        items.push((projectile.render_order, RenderItem::Projectile(id)));
+        items.push((make_render_order(render_layer::GROUND, projectile.row, 3), RenderItem::ProjectileShadow(id)));
     }
     for (i, mower) in board.lawn_mowers.iter().enumerate() {
         items.push((mower.render_order, RenderItem::LawnMower(i)));
@@ -821,6 +916,26 @@ fn draw_board(
             RenderItem::Plant(id) => {
                 if let Some(plant) = board.plants.get(id) {
                     plant.draw(&mut g, board.stage_is_night(), &effects, &resources);
+                }
+            }
+            RenderItem::Zombie(id) => {
+                if let Some(zombie) = board.zombies.get(id) {
+                    zombie.draw(&mut g, &effects, &resources);
+                }
+            }
+            RenderItem::ZombieShadow(id) => {
+                if let Some(zombie) = board.zombies.get(id) {
+                    zombie.draw_shadow(&mut g, board.stage_is_night(), &resources);
+                }
+            }
+            RenderItem::Projectile(id) => {
+                if let Some(projectile) = board.projectiles.get(id) {
+                    projectile.draw(&mut g, &resources);
+                }
+            }
+            RenderItem::ProjectileShadow(id) => {
+                if let Some(projectile) = board.projectiles.get(id) {
+                    projectile.draw_shadow(&mut g, board.stage_is_night(), &resources);
                 }
             }
             RenderItem::Coin(id) => {

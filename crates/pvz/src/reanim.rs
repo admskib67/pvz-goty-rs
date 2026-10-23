@@ -416,6 +416,10 @@ impl EffectSystem {
         self.particles.get(id)
     }
 
+    pub fn particle_mut(&mut self, id: ParticleSystemId) -> Option<&mut ParticleSystem> {
+        self.particles.get_mut(id)
+    }
+
     /// `LawnApp::RemoveParticle`.
     pub fn remove_particle(&mut self, id: ParticleSystemId) {
         self.particles.free(id);

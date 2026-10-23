@@ -365,6 +365,15 @@ pub enum FoleyType {
     Plant,
     /// Putting a carried plant back.
     Drop,
+    Splat,
+    Throw,
+    Chomp,
+    ChompSoft,
+    Groan,
+    ZombieFalling,
+    ShieldHit,
+    PlasticHit,
+    SpawnSun,
 }
 
 struct FoleyParams {
@@ -384,6 +393,39 @@ impl FoleyType {
             Self::Sun => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_POINTS"], flags: 0 },
             Self::Plant => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_PLANT", "SOUND_PLANT2"], flags: 0 },
             Self::Drop => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_TAP2"], flags: 0 },
+            Self::Splat => FoleyParams {
+                pitch_range: 10.0,
+                sounds: &["SOUND_SPLAT", "SOUND_SPLAT2", "SOUND_SPLAT3"],
+                flags: 0,
+            },
+            Self::Throw => FoleyParams {
+                pitch_range: 10.0,
+                sounds: &["SOUND_THROW", "SOUND_THROW", "SOUND_THROW", "SOUND_THROW2"],
+                flags: 0,
+            },
+            Self::Chomp => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_CHOMP", "SOUND_CHOMP2"], flags: 0 },
+            Self::ChompSoft => FoleyParams { pitch_range: 4.0, sounds: &["SOUND_CHOMPSOFT"], flags: 0 },
+            Self::Groan => FoleyParams {
+                pitch_range: 0.0,
+                sounds: &["SOUND_GROAN", "SOUND_GROAN2", "SOUND_GROAN3", "SOUND_GROAN4", "SOUND_GROAN5", "SOUND_GROAN6"],
+                flags: 0,
+            },
+            Self::ZombieFalling => FoleyParams {
+                pitch_range: 10.0,
+                sounds: &["SOUND_ZOMBIE_FALLING_1", "SOUND_ZOMBIE_FALLING_2"],
+                flags: 0,
+            },
+            Self::ShieldHit => FoleyParams {
+                pitch_range: 10.0,
+                sounds: &["SOUND_SHIELDHIT", "SOUND_SHIELDHIT2"],
+                flags: 0,
+            },
+            Self::SpawnSun => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_THROW"], flags: 0 },
+            Self::PlasticHit => FoleyParams {
+                pitch_range: 5.0,
+                sounds: &["SOUND_PLASTICHIT", "SOUND_PLASTICHIT2"],
+                flags: 0,
+            },
             Self::Digger => FoleyParams {
                 pitch_range: 0.0,
                 sounds: &["SOUND_DIGGER_ZOMBIE"],

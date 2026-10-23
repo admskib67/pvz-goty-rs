@@ -1,21 +1,39 @@
-//! Plants on the lawn (`Plant`). So far a plant is planted, idles and blinks;
-//! what it does (shooting, making sun, ...) comes with the zombies.
+//! Plants on the lawn (`Plant`). So far a plant is planted, idles and
+//! blinks, peashooters shoot at zombies in their row and sunflowers make
+//! sun; the other plants' abilities come as they're needed.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Plant.cpp`: `PlantInitialize`,
 //! `CalcRenderOrder`, `Update`, `Animate`, `UpdateReanim`, `UpdateBlink`,
-//! `DoBlink`, `AttachBlinkAnim`, `EndBlink`, `Draw`, `DrawShadow`, `Die`
-//! and `PlantDrawHeightOffset`.
+//! `DoBlink`, `AttachBlinkAnim`, `EndBlink`, `Draw`, `DrawShadow`, `Die`,
+//! `PlantDrawHeightOffset`, `UpdateAbilities`, `UpdateShooter`,
+//! `UpdateShooting`, `FindTargetAndFire`, `FindTargetZombie`, `Fire`,
+//! `UpdateProductionPlant`, `GetPlantRect` and `GetPlantAttackRect`.
 
 use bevy::prelude::*;
+use sexy::data_array::DataArray;
 use sexy::rand::MtRand;
 use sexy::reanim::{LoopType, RENDER_GROUP_HIDDEN, RENDER_GROUP_NORMAL};
 
 use crate::graphics::Graphics;
-use crate::plant::SeedType;
+use crate::plant::{PlantSubClass, SeedType};
 use crate::reanim::{EffectSystem, ReanimationId};
 use crate::resources::GameResources;
 
+use super::zombie::{IRect, Zombie, damage_range, rect_overlap};
 use super::{make_render_order, render_layer};
+
+/// Something a plant does that the board carries out (it owns the
+/// projectiles and coins).
+#[derive(Debug, Clone, Copy)]
+pub enum PlantAction {
+    /// `Plant::Fire`: a pea leaves the plant at this spot.
+    Shoot { x: i32, y: i32, row: i32, render_order: i32 },
+    /// A sunflower makes sun at its square.
+    MakeSun { x: i32, y: i32 },
+}
+
+/// `Plant::mWidth` and `mHeight`.
+const PLANT_SIZE: i32 = 80;
 
 /// `PLANT_ORDER`: how plants in the same square stack.
 #[allow(dead_code, reason = "the full set; plants use more of it as they're ported")]
@@ -45,6 +63,8 @@ pub struct Plant {
     pub launch_rate: i32,
     pub launch_counter: i32,
     pub shooting_counter: i32,
+    /// Counts down after a zombie bites it (`mRecentlyEatenCountdown`).
+    pub recently_eaten_countdown: i32,
     body: Option<ReanimationId>,
     head: Option<ReanimationId>,
     blink: Option<ReanimationId>,
@@ -101,6 +121,7 @@ impl Plant {
             launch_rate: def.launch_rate,
             launch_counter: 0,
             shooting_counter: 0,
+            recently_eaten_countdown: 0,
             body: None,
             head: None,
             blink: None,
@@ -125,8 +146,11 @@ impl Plant {
         // TODO: mushrooms asleep in the day (SetSleeping).
 
         if plant.launch_rate > 0 {
-            // TODO: sun makers start between 300 and half their rate.
-            plant.launch_counter = rng.range_int(0, plant.launch_rate);
+            plant.launch_counter = if seed.makes_sun() {
+                rng.range_int(300, plant.launch_rate / 2)
+            } else {
+                rng.range_int(0, plant.launch_rate)
+            };
         }
 
         use SeedType::*;
@@ -179,13 +203,175 @@ impl Plant {
     }
 
     /// `Plant::Update`, while playing.
-    pub fn update(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, rng: &mut MtRand) {
-        // TODO: UpdateAbilities (shooting and the rest) once zombies exist.
+    pub fn update(
+        &mut self,
+        zombies: &DataArray<Zombie>,
+        actions: &mut Vec<PlantAction>,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut MtRand,
+    ) {
+        self.update_abilities(zombies, actions, effects, rng);
+        if self.recently_eaten_countdown > 0 {
+            self.recently_eaten_countdown -= 1;
+        }
         self.update_blink(effects, res, images, rng);
         if self.health < 0 {
             self.die(effects);
         }
         self.update_reanim(effects);
+    }
+
+    /// `Plant::GetPlantRect`.
+    pub fn rect(&self) -> IRect {
+        match self.seed {
+            SeedType::Tallnut => IRect::new(self.x + 10, self.y, PLANT_SIZE, PLANT_SIZE),
+            SeedType::Pumpkinshell => IRect::new(self.x, self.y, PLANT_SIZE - 20, PLANT_SIZE),
+            _ => IRect::new(self.x + 10, self.y, PLANT_SIZE - 20, PLANT_SIZE),
+        }
+    }
+
+    /// `Plant::GetPlantAttackRect`, for the plants ported so far.
+    fn attack_rect(&self) -> IRect {
+        match self.seed {
+            SeedType::Leftpeater => IRect::new(0, self.y, self.x, PLANT_SIZE),
+            _ => IRect::new(self.x + 60, self.y, super::BOARD_WIDTH, PLANT_SIZE),
+        }
+    }
+
+    /// `Plant::UpdateAbilities`.
+    fn update_abilities(
+        &mut self,
+        zombies: &DataArray<Zombie>,
+        actions: &mut Vec<PlantAction>,
+        effects: &mut EffectSystem,
+        rng: &mut MtRand,
+    ) {
+        if self.dead {
+            return;
+        }
+        self.update_shooting(actions, effects);
+        if self.seed.makes_sun() {
+            self.update_production_plant(actions, rng);
+        }
+        if self.seed.definition().sub_class == PlantSubClass::Shooter {
+            self.update_shooter(zombies, actions, effects, rng);
+        }
+        // TODO: the other plants' abilities (cherry bomb, wall-nut's
+        // cracking, potato mine, ...).
+    }
+
+    /// `Plant::UpdateProductionPlant`, for sunflowers.
+    fn update_production_plant(&mut self, actions: &mut Vec<PlantAction>, rng: &mut MtRand) {
+        self.launch_counter -= 1;
+        if self.launch_counter <= 0 {
+            self.launch_counter = rng.range_int(self.launch_rate - 150, self.launch_rate);
+            actions.push(PlantAction::MakeSun { x: self.x, y: self.y });
+            // TODO: the sunflower flashes before it makes sun (mEatenFlashCountdown).
+        }
+    }
+
+    /// `Plant::UpdateShooter`.
+    fn update_shooter(
+        &mut self,
+        zombies: &DataArray<Zombie>,
+        actions: &mut Vec<PlantAction>,
+        effects: &mut EffectSystem,
+        rng: &mut MtRand,
+    ) {
+        self.launch_counter -= 1;
+        if self.launch_counter <= 0 {
+            self.launch_counter = self.launch_rate - rng.next_range(15) as i32;
+            // TODO: the other shooters (threepeater, cactus, split pea, ...).
+            if self.seed == SeedType::Peashooter {
+                self.find_target_and_fire(zombies, actions, effects);
+            }
+        }
+    }
+
+    /// `Plant::FindTargetZombie`, for peashooters: the leftmost zombie in
+    /// the row that's in range.
+    fn find_target_zombie(&self, zombies: &DataArray<Zombie>) -> Option<sexy::data_array::Id<Zombie>> {
+        let attack = self.attack_rect();
+        let mut best: Option<(i32, sexy::data_array::Id<Zombie>)> = None;
+        for (id, zombie) in zombies.iter() {
+            if zombie.row != self.row || !zombie.effected_by_damage(damage_range::GROUND) {
+                continue;
+            }
+            let rect = zombie.zombie_rect();
+            if rect_overlap(attack, rect) < 0 {
+                continue;
+            }
+            let weight = -rect.x;
+            if best.is_none_or(|(w, _)| weight > w) {
+                best = Some((weight, id));
+            }
+        }
+        best.map(|(_, id)| id)
+    }
+
+    /// `Plant::FindTargetAndFire`: starts the shooting animation if there's
+    /// something to shoot at.
+    fn find_target_and_fire(&mut self, zombies: &DataArray<Zombie>, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem) {
+        if self.find_target_zombie(zombies).is_none() {
+            return;
+        }
+        self.end_blink(effects);
+        let head = self.head.and_then(|h| effects.get_mut(h)).filter(|h| h.definition.find_track("anim_shooting").is_some());
+        if let Some(head) = head {
+            head.start_blend(20);
+            head.loop_type = LoopType::PlayOnceAndHold;
+            head.anim_rate = 35.0;
+            head.set_frames_for_layer("anim_shooting");
+            self.shooting_counter = 35;
+        } else {
+            self.fire(actions, effects);
+        }
+    }
+
+    /// `Plant::UpdateShooting`: fires when the animation reaches the shot,
+    /// then goes back to idle once it's done.
+    fn update_shooting(&mut self, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem) {
+        if self.shooting_counter == 0 {
+            return;
+        }
+        self.shooting_counter -= 1;
+        if self.shooting_counter == 1 {
+            self.fire(actions, effects);
+            return;
+        }
+        if self.shooting_counter != 0 {
+            return;
+        }
+        let (rate, time) = self.body.and_then(|b| effects.get(b)).map_or((0.0, 0.0), |b| (b.anim_rate, b.anim_time));
+        if let Some(head) = self.head.and_then(|h| effects.get_mut(h))
+            && head.loop_count > 0
+        {
+            head.start_blend(20);
+            head.loop_type = LoopType::Loop;
+            head.set_frames_for_layer("anim_head_idle");
+            head.anim_rate = rate;
+            head.anim_time = time;
+            return;
+        }
+        self.shooting_counter = 1;
+    }
+
+    /// `Plant::GetPeaHeadOffset`: where the stem is right now.
+    fn pea_head_offset(&self, effects: &EffectSystem) -> (i32, i32) {
+        let Some(body) = self.body.and_then(|b| effects.get(b)) else { return (0, 0) };
+        let track = body.definition.find_track("anim_stem").or_else(|| body.definition.find_track("anim_idle")).unwrap_or(0);
+        let t = body.current_transform(track);
+        (t.x as i32, t.y as i32)
+    }
+
+    /// `Plant::Fire`, for peashooters.
+    fn fire(&mut self, actions: &mut Vec<PlantAction>, effects: &EffectSystem) {
+        let (offset_x, offset_y) = self.pea_head_offset(effects);
+        let (x, y) = (self.x + offset_x + 24, self.y + offset_y - 33);
+        // TODO: shots leave 5 pixels higher from a flower pot.
+        actions.push(PlantAction::Shoot { x, y, row: self.row, render_order: self.render_order - 1 });
     }
 
     /// `Plant::UpdateReanim`.

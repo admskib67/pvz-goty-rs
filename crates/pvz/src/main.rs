@@ -16,6 +16,7 @@ mod resources;
 mod setup;
 mod title;
 mod widgets;
+mod zombie;
 
 use std::path::PathBuf;
 

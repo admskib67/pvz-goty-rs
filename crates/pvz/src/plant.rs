@@ -154,6 +154,11 @@ const PLANT_DEFS: [PlantDefinition; 53] = [
 const NUM_AWARDABLE_SEEDS: i32 = 49;
 
 impl SeedType {
+    /// `Plant::MakesSun`.
+    pub fn makes_sun(self) -> bool {
+        matches!(self, Self::Sunflower | Self::Twinsunflower | Self::Sunshroom)
+    }
+
     /// All seed types, in order.
     pub fn from_index(i: i32) -> Option<Self> {
         ALL.get(usize::try_from(i).ok()?).copied()

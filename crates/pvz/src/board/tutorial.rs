@@ -106,7 +106,8 @@ impl Board {
             }
             TutorialState::Level1Completed => {
                 self.display_advice(res, "[ADVICE_ZOMBIE_ONSLAUGHT]", MessageStyle::TutorialLevel1, None);
-                // TODO: the first zombie comes right away (mZombieCountDown = 99).
+                self.waves.zombie_count_down = 99;
+                self.waves.zombie_count_down_start = 99;
             }
             TutorialState::Off => {}
         }

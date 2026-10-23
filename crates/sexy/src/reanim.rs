@@ -608,6 +608,27 @@ impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
         self.definition.frames_for_layer(track) == (self.frame_start, self.frame_count)
     }
 
+    /// `GetTrackVelocity`: how far `track` moves along x per tick right now
+    /// (zombies' `_ground` track drives how fast they walk).
+    pub fn track_velocity(&self, track: &str) -> f32 {
+        let i = self.find_track(track);
+        let time = self.frame_time();
+        let frames = &self.definition.tracks[i].transforms;
+        (frames[time.after].x - frames[time.before].x) * SECONDS_PER_UPDATE * self.anim_rate
+    }
+
+    /// `IsTrackShowing`: whether the track's next keyframe draws an image.
+    pub fn is_track_showing(&self, track: &str) -> bool {
+        let i = self.find_track(track);
+        let time = self.frame_time();
+        self.definition.tracks[i].transforms[time.after].f >= 0.0
+    }
+
+    /// `GetTrackMatrix`: where `track` is right now, with the overlay applied.
+    pub fn track_matrix(&self, track: usize) -> Matrix3 {
+        self.overlay * self.current_transform(track).matrix()
+    }
+
     /// `ShouldTriggerTimedEvent`: true on the tick that crosses `event_time` (0..=1).
     pub fn should_trigger_timed_event(&self, event_time: f32) -> bool {
         if self.frame_count == 0 || self.last_frame_time <= 0.0 || self.anim_rate <= 0.0 {
