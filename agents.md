@@ -6,7 +6,7 @@ Guidelines for LLMs and coding agents working on this project.
 
 A Rust reconstruction of Plants vs. Zombies: Game of the Year Edition, built on Bevy. It ships no game data: players supply their own legally owned copy, and the app reads its `main.pak` at runtime (see `readme.md`).
 
-- Targets: Windows, Linux (Wayland), macOS arm64. Development and testing currently happen on macOS only.
+- Targets: Windows and macOS arm64 for now. Linux (Wayland) is deferred: its libopenmpt libraries exist (built under WSL) but nothing is tested there. Development happens on macOS; the user also builds and runs on Windows 11.
 - Current phase: engine and architecture foundations. Gameplay comes later.
 
 ## Files agents must not edit
@@ -17,6 +17,8 @@ A Rust reconstruction of Plants vs. Zombies: Game of the Year Edition, built on 
 
 This repository will be used as reference for an existing decompilation:
 - https://github.com/ruslan831/PlantsVsZombies-decompilation
+
+To read it, shallow-clone it into a scratch or temp folder outside this repo (`git clone --depth 1 https://github.com/ruslan831/PlantsVsZombies-decompilation`); never add it to the repo. Many of its source files are Latin-1/GBK with Chinese comments, so plain `grep` may skip them as binary: use `grep -a` (or ripgrep's `-a`).
 
 It is other people's work, made with a lot of effort. Use it respectfully:
 - **Reimplement, don't transcribe.** Read it to understand behaviour (formulas, timings, state machines, edge cases), then write idiomatic Rust. Don't paste or mechanically translate large blocks of its code.
@@ -29,9 +31,12 @@ It is other people's work, made with a lot of effort. Use it respectfully:
 Game assets never go in the repo (`.gitignore` excludes `*.pak` and `/extracted`).
 
 - `main.pak` is a PopCap pak. The whole file is XOR'd with `0xF7`; then come magic `0xBAC04AC0`, version 0, a directory of `(flags, name, u32 size, u64 filetime)` records ending at flag `0x80`, and the concatenated file data.
-- The developer's copy is the Steam **Mac** build v1.0.41 (32-bit, can't run on modern macOS): `~/Library/Application Support/Steam/steamapps/common/Plants Vs Zombies/Plants vs. Zombies.app/Contents/Resources/main.pak`. Its reanims (`.reanim`) and particles are plain XML. The Windows GOTY pak stores them as `.compiled` binaries, so Windows installs will need a separate parser.
+- The user has two copies, and the two paks differ:
+  - **Mac** (Steam, v1.0.41, 32-bit, can't run on modern macOS): `~/Library/Application Support/Steam/steamapps/common/Plants Vs Zombies/Plants vs. Zombies.app/Contents/Resources/main.pak`. 2,898 files. Reanims (`reanim/*.reanim`) and particles (`particles/*.xml`) are plain XML; every sound is `.ogg`. Everything ported so far is tested against this pak.
+  - **Windows** (Steam GOTY): `C:\Program Files (x86)\Steam\steamapps\common\Plants Vs Zombies\main.pak`, an install folder rather than a `.app`. 3,198 files. Some sounds aren't `.ogg` (`SOUND_DIAMOND` wasn't found until `.au` was added to the extensions tried). Reanims and particles are expected to be compiled binaries only, at `compiled/<xml path>.compiled` (e.g. `compiled/reanim/LoadBar_sprout.reanim.compiled`) — verify with `extract` before relying on exact names.
+- Compiled definitions, per ruslan831 decomp `Sexy.TodLib/Definition.cpp` (`DefinitionReadCompiledFile`, `DefinitionUncompressCompiledBuffer`, `DefinitionGetCompiledFilePathFromXMLFilePath`): a header with cookie `0xDEADFED4` and the uncompressed size, then zlib data. Uncompressed, it's a schema hash followed by the definition's structs as laid out in memory by the 32-bit game (pointers are 4 bytes and get replaced on load, strings and arrays follow inline), described by the `DefMap`/`DefField` tables in `Definition.cpp`. The original prefers the compiled file when it's in the pak, otherwise it parses the XML.
 - `properties/resources.xml` names files without extensions; resolve them with `Pak::find_with_extensions`.
-- Sound effects are `.ogg`. Music is `.mo3`, a tracker module that only libopenmpt (or the original's BASS) can play; it must be played live with order jumps and per-channel volumes, so it can't be pre-rendered. Plan: libopenmpt behind a custom `bevy_audio` source.
+- Sound effects are `.ogg` on Mac; Windows also has others. The original's `DSoundManager::LoadSound` tries `.wav`, `.mp3`, `.ogg`, `.au` in that order, and `pvz::resources` matches it. Music is `.mo3`, a tracker module that only libopenmpt (or the original's BASS) can play; it must be played live with order jumps and per-channel volumes, so it can't be pre-rendered. Plan: libopenmpt behind a custom `bevy_audio` source.
 
 ## Commands
 
@@ -53,9 +58,24 @@ App environment variables:
 - `PVZ_AUTO_START=1` continues past the title screen as soon as loading finishes.
 - `PVZ_SCREENSHOT=<file.png>` saves a screenshot after ~120 frames, then exits; `PVZ_SCREENSHOT_FRAME=<n>` picks another frame. Use it to check screens visually; computer-use tools can't drive the bare `target/debug/pvz` binary.
 
+On Windows use PowerShell: set environment variables with `$env:PVZ_GAME_PATH = "..."` before `cargo run -p pvz`.
+
 The chosen install is saved in `config.toml` in the platform config dir (`~/Library/Application Support/pvz-goty-rs/` on macOS). `--clean` deletes the whole app data folder (config, plus future saves and caches) before starting.
 
 The dev profile builds our crates at `opt-level = 1` and dependencies at `3`, because Bevy is unusably slow unoptimised.
+
+## Platform status
+
+- **macOS arm64:** everything runs: setup screen, title screen with sprouts, main menu.
+- **Windows 11 (x86_64, MSVC from Visual Studio 2026, AMD GPU on Vulkan):** builds and links, including libopenmpt (`dev/libopenmpt-win/x86_64-pc-windows-msvc/`, plus `rpcrt4` for `UuidCreate`). The setup screen works and resource loading completes after the `.au` fix. **Blocker:** reanimations (loading-bar sprouts, main menu) need the compiled-definition parser above; nothing tested past the loading bar yet. Next Windows work: add compiled `.reanim` support in `sexy::reanim` (keeping the XML path for Mac), make the loaders prefer `compiled/…` when present like the original, then run `check_resources` against the Windows pak and extend it to cover compiled files.
+- **Linux:** deferred. `dev/libopenmpt-linux/x86_64-unknown-linux-gnu/` was built under WSL (real Linux libraries) but nothing has been run on Linux.
+
+Windows gotchas already hit:
+- `Path::canonicalize()` returns verbatim `\\?\C:\...` paths that `cl.exe` (and some other tools) can't open; build paths from `CARGO_MANIFEST_DIR` instead.
+- Paths inside the pak use `\`; `pak` normalises them, but anything building file paths by hand should use `/` and let `pak`/`GameFiles` handle it.
+
+Testing notes:
+- On macOS, `PVZ_SCREENSHOT` captures sometimes come out fully black after the app has run for a few seconds (it happened even with all new drawing disabled, so it's the capture, not the game). Don't spend time debugging it; ask the user to check screens by eye instead.
 
 ## Architecture
 
@@ -89,7 +109,7 @@ A Cargo workspace (`crates/*`) on Bevy 0.20. Bevy's API changes between releases
   - `player`: `PlayerInfo` (stub profile: always a new player named "Player" until profiles and the create-user dialog exist) and `GameRng`.
   - `game_selector` ports `GameSelector` (main menu): `SelectorScreen.reanim` with clouds, leaves, clickable flowers, buttons that track reanim tracks, locked modes greyed out, the name sign, level numbers, and the zombie hand on Adventure. Buttons lead nowhere yet except Quit (exits without the confirm dialog).
   - `input` keeps `GameCursor`, the mouse in 800×600 game coordinates.
-  - `title` ports `TitleScreen` (PopCap logo, logo drop, grass bar with rolling sod cap, "LOADING..."/"CLICK TO START!" link with hover color, sprouts and zombie head popping out of the bar). Still missing: sounds, and the "Click to Start" sound.
+  - `title` ports `TitleScreen` (PopCap logo, logo drop, grass bar with rolling sod cap, "LOADING..."/"CLICK TO START!" link with hover color, sprouts and zombie head popping out of the bar). Still missing: sounds.
 
 Planned direction:
 - Game simulation as plain Rust structs on a fixed timestep, following the original's structure and names as documented by the reference (`Board`, `DataArray<T>` as a generational slot map with ID handles, type enums with `match` rather than trait objects), so code can be compared against it.
