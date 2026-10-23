@@ -12,6 +12,8 @@ pub const ENV_GAME_PATH: &str = "PVZ_GAME_PATH";
 pub struct Config {
     /// What the player picked: the install folder, the `.app`, or `main.pak` itself.
     pub game_path: Option<PathBuf>,
+    /// The last player (the original's `CurUser` registry value).
+    pub cur_user: Option<String>,
 }
 
 fn project_dirs() -> Option<directories::ProjectDirs> {
@@ -20,6 +22,11 @@ fn project_dirs() -> Option<directories::ProjectDirs> {
 
 fn config_file() -> Option<PathBuf> {
     project_dirs().map(|d| d.config_dir().join("config.toml"))
+}
+
+/// Where player profiles are saved (the original's `userdata` folder).
+pub fn userdata_dir() -> Option<PathBuf> {
+    project_dirs().map(|d| d.data_dir().join("userdata"))
 }
 
 /// Deletes everything this app stores on disk (config, and later saves and

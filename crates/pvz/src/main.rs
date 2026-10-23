@@ -1,9 +1,11 @@
 mod audio;
 mod devshot;
+mod dialog;
 mod game_selector;
 mod graphics;
 mod input;
 mod install;
+mod lawn_app;
 mod pak_source;
 mod player;
 mod reanim;
@@ -39,6 +41,18 @@ pub enum AppState {
     GameSelector,
 }
 
+/// Frame-by-frame order of input handling and drawing: dialogs get the
+/// input first (they block the screen behind) and are drawn last (on top).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum UiSet {
+    DialogInput,
+    /// Acting on dialog buttons (`lawn_app`).
+    DialogActions,
+    ScreenInput,
+    ScreenDraw,
+    DialogDraw,
+}
+
 /// Command-line flag that wipes all saved app data before starting.
 const CLEAN_FLAG: &str = "--clean";
 
@@ -68,10 +82,13 @@ fn main() {
         }))
         .init_state::<AppState>()
         .init_resource::<SetupStatus>()
-        .init_resource::<player::PlayerInfo>()
         .init_resource::<player::GameRng>()
         .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND))
         .insert_resource(ClearColor(Color::BLACK))
+        .configure_sets(
+            Update,
+            (UiSet::DialogInput, UiSet::DialogActions, UiSet::ScreenInput, UiSet::ScreenDraw, UiSet::DialogDraw).chain(),
+        )
         .add_plugins((
             setup::SetupPlugin,
             graphics::GraphicsPlugin,
@@ -80,6 +97,8 @@ fn main() {
             resources::ResourcesPlugin,
             title::TitlePlugin,
             game_selector::GameSelectorPlugin,
+            dialog::DialogPlugin,
+            lawn_app::LawnAppPlugin,
             devshot::DevShotPlugin,
         ))
         .add_systems(Startup, spawn_camera)

@@ -167,7 +167,7 @@ fn poll_pick(
             Some(Err(e)) => status.message = e,
             Some(Ok((chosen, pak_path, pak))) => {
                 info!("using {} ({} files)", pak_path.display(), pak.entries().len());
-                if let Err(e) = (Config { game_path: Some(chosen) }).save() {
+                if let Err(e) = (Config { game_path: Some(chosen), ..Config::load() }).save() {
                     warn!("couldn't save config: {e}");
                 }
                 game_pak.set(&pak_path, pak);

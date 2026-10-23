@@ -403,6 +403,84 @@ impl Font {
             .sum()
     }
 
+    /// `Font::GetDescent`.
+    pub fn descent(&self) -> i32 {
+        self.height - self.ascent
+    }
+
+    /// `Font::GetLineSpacing`: the distance between baselines.
+    pub fn line_spacing(&self) -> i32 {
+        self.height + self.line_spacing_offset
+    }
+
+    /// Breaks `text` into lines no wider than `width`, like
+    /// `Graphics::WriteWordWrapped`: at the last space before the line gets
+    /// too wide (or mid-word if there's none), and at every `\n`. Returns
+    /// each line with its baseline relative to the top of the text, and the
+    /// text's total height. Colour codes (`^RRGGBB^`) aren't supported.
+    ///
+    /// Behaviour per ruslan831 decomp, `Graphics::WriteWordWrapped`.
+    pub fn word_wrap(&self, text: &str, width: i32, line_spacing: i32) -> (Vec<(String, i32)>, i32) {
+        let chars: Vec<char> = text.chars().collect();
+        let mut lines = Vec::new();
+        let mut y = self.ascent - self.ascent_padding;
+        let (mut pos, mut line_start, mut cur_width) = (0, 0, 0);
+        let mut space_pos: Option<usize> = None;
+        let mut prev = None;
+        let mut cur = None;
+
+        while pos < chars.len() {
+            let c = chars[pos];
+            cur = Some(c);
+            if c == ' ' {
+                space_pos = Some(pos);
+            } else if c == '\n' {
+                // Forces a wrap; the newline itself is skipped next time round.
+                cur_width = width + 1;
+                space_pos = Some(pos);
+                pos += 1;
+            }
+            cur_width += self.char_width_kern(c, prev);
+            prev = Some(c);
+
+            if cur_width > width {
+                match space_pos {
+                    Some(space) => {
+                        lines.push((chars[line_start..space].iter().collect(), y));
+                        pos = space + 1;
+                        if c != '\n' {
+                            while pos < chars.len() && chars[pos] == ' ' {
+                                pos += 1;
+                            }
+                        }
+                    }
+                    None => {
+                        // At least one character per line.
+                        if pos < line_start + 1 {
+                            pos += 1;
+                        }
+                        lines.push((chars[line_start..pos].iter().collect(), y));
+                    }
+                }
+                line_start = pos;
+                space_pos = None;
+                cur_width = 0;
+                prev = None;
+                y += line_spacing;
+            } else {
+                pos += 1;
+            }
+        }
+
+        if line_start < chars.len() {
+            lines.push((chars[line_start..].iter().collect(), y));
+            y += line_spacing;
+        } else if cur == Some('\n') {
+            y += line_spacing;
+        }
+        (lines, y + self.descent() - line_spacing)
+    }
+
     /// Lays out `text` with its baseline at `y`, returning glyphs in draw
     /// order and the total advance.
     pub fn layout(&self, x: i32, y: i32, text: &str, color: Rgba) -> (Vec<Glyph>, i32) {
@@ -598,6 +676,23 @@ SetDefaultPointSize 16;
         assert_eq!(summary, [(0, (100, 35)), (1, (100, 34)), (0, (110, 35)), (1, (111, 32))]);
         assert_eq!(glyphs[0].color, [0, 0, 0, 128]);
         assert_eq!(glyphs[1].color, [255, 255, 255, 128]);
+    }
+
+    #[test]
+    fn word_wrap_breaks_at_spaces_and_newlines() {
+        let f = parse();
+        let spacing = f.line_spacing();
+        assert_eq!(spacing, 22);
+        let (lines, height) = f.word_wrap("AB AB  AB", 30, spacing);
+        // It breaks at the last space, so a double space keeps one at the end.
+        assert_eq!(lines, [("AB".to_owned(), 16), ("AB ".to_owned(), 38), ("AB".to_owned(), 60)]);
+        assert_eq!(height, 16 + 3 * 22 + f.descent() - 22);
+
+        let (lines, _) = f.word_wrap("A\nB", 30, spacing);
+        assert_eq!(lines, [("A".to_owned(), 16), ("B".to_owned(), 38)]);
+        // No space to break at: break mid-word.
+        let (lines, _) = f.word_wrap("ABAB", 30, spacing);
+        assert_eq!(lines, [("AB".to_owned(), 16), ("AB".to_owned(), 38)]);
     }
 
     #[test]

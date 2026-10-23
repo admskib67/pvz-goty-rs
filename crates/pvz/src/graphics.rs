@@ -100,12 +100,16 @@ const SCREEN: SexyRect = SexyRect::new(0.0, 0.0, GAME_WIDTH, GAME_HEIGHT);
 struct GraphicsState {
     color: SexyColor,
     colorize_images: bool,
+    /// In screen coordinates.
     clip: SexyRect,
+    /// Offset added to every draw (`mTransX`/`mTransY`), so widgets can draw
+    /// in their own coordinates.
+    trans: Vec2,
 }
 
 impl Default for GraphicsState {
     fn default() -> Self {
-        Self { color: SexyColor::WHITE, colorize_images: false, clip: SCREEN }
+        Self { color: SexyColor::WHITE, colorize_images: false, clip: SCREEN, trans: Vec2::ZERO }
     }
 }
 
@@ -137,7 +141,13 @@ impl Graphics {
 
     /// Narrows the clip rectangle (intersects with the current one).
     pub fn clip_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
-        self.state.clip = self.state.clip.intersect(SexyRect::new(x, y, w, h));
+        let t = self.state.trans;
+        self.state.clip = self.state.clip.intersect(SexyRect::new(x + t.x, y + t.y, w, h));
+    }
+
+    /// Moves the origin of later draws by (dx, dy), like `Graphics::Translate`.
+    pub fn translate(&mut self, dx: f32, dy: f32) {
+        self.state.trans += Vec2::new(dx, dy);
     }
 
     /// Saves color/clip state; the original does this by copying `Graphics`.
@@ -150,10 +160,19 @@ impl Graphics {
     }
 
     pub fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
-        let rect = SexyRect::new(x, y, w, h).intersect(self.state.clip);
-        if !rect.is_empty() {
+        let t = self.state.trans;
+        let rect = SexyRect::new(x + t.x, y + t.y, w, h).intersect(self.state.clip);
+        if !rect.is_empty() && self.state.color.a > 0 {
             self.cmds.push(DrawCmd::Rect { rect, color: self.state.color });
         }
+    }
+
+    /// `DrawRect`: a one-pixel outline covering `w + 1` by `h + 1` pixels.
+    pub fn draw_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        self.fill_rect(x, y, w + 1.0, 1.0);
+        self.fill_rect(x, y + h, w + 1.0, 1.0);
+        self.fill_rect(x, y + 1.0, 1.0, h - 1.0);
+        self.fill_rect(x + w, y + 1.0, 1.0, h - 1.0);
     }
 
     pub fn draw_image(&mut self, image: &ImageRes, x: f32, y: f32) {
@@ -163,6 +182,7 @@ impl Graphics {
 
     /// Draws the `src` part of `image` with its top-left at (x, y).
     pub fn draw_image_src(&mut self, image: &ImageRes, x: f32, y: f32, src: SexyRect) {
+        let (x, y) = (x + self.state.trans.x, y + self.state.trans.y);
         let dest = SexyRect::new(x, y, src.w, src.h);
         let clipped = dest.intersect(self.state.clip);
         if clipped.is_empty() {
@@ -189,6 +209,84 @@ impl Graphics {
         }
         self.pop_state();
         width
+    }
+
+    /// `Graphics::DrawImageBox`: stretches a 3×3-sliced image over `dest` by
+    /// tiling its edges and middle.
+    pub fn draw_image_box(&mut self, image: &ImageRes, dest: SexyRect) {
+        let (w, h) = (image.width as f32, image.height as f32);
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let (cw, ch) = ((image.width / 3) as f32, (image.height / 3) as f32);
+        let (cmw, cmh) = (w - cw * 2.0, h - ch * 2.0);
+        let src = |x: f32, y: f32, w: f32, h: f32| SexyRect::new(x, y, w, h);
+        let (dx, dy, dw, dh) = (dest.x, dest.y, dest.w, dest.h);
+
+        self.draw_image_src(image, dx, dy, src(0.0, 0.0, cw, ch));
+        self.draw_image_src(image, dx + dw - cw, dy, src(cw + cmw, 0.0, cw, ch));
+        self.draw_image_src(image, dx, dy + dh - ch, src(0.0, ch + cmh, cw, ch));
+        self.draw_image_src(image, dx + dw - cw, dy + dh - ch, src(cw + cmw, ch + cmh, cw, ch));
+
+        let cols = ((dw - cw * 2.0 + cmw - 1.0) / cmw).floor().max(0.0) as i32;
+        let rows = ((dh - ch * 2.0 + cmh - 1.0) / cmh).floor().max(0.0) as i32;
+        self.push_state();
+        self.clip_rect(dx + cw, dy, dw - cw * 2.0, dh);
+        for col in 0..cols {
+            let x = dx + cw + col as f32 * cmw;
+            self.draw_image_src(image, x, dy, src(cw, 0.0, cmw, ch));
+            self.draw_image_src(image, x, dy + dh - ch, src(cw, ch + cmh, cmw, ch));
+        }
+        self.pop_state();
+        self.push_state();
+        self.clip_rect(dx, dy + ch, dw, dh - ch * 2.0);
+        for row in 0..rows {
+            let y = dy + ch + row as f32 * cmh;
+            self.draw_image_src(image, dx, y, src(0.0, ch, cw, cmh));
+            self.draw_image_src(image, dx + dw - cw, y, src(cw + cmw, ch, cw, cmh));
+        }
+        self.pop_state();
+        self.push_state();
+        self.clip_rect(dx + cw, dy + ch, dw - cw * 2.0, dh - ch * 2.0);
+        for col in 0..cols {
+            for row in 0..rows {
+                let (x, y) = (dx + cw + col as f32 * cmw, dy + ch + row as f32 * cmh);
+                self.draw_image_src(image, x, y, src(cw, ch, cmw, cmh));
+            }
+        }
+        self.pop_state();
+    }
+
+    /// `Graphics::WriteWordWrapped`: `text` wrapped to `width`, starting with
+    /// the top of its first line at `y`. `justify` is -1 for left, 0 for
+    /// centered, 1 for right. Returns the text's height.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_word_wrapped(
+        &mut self,
+        font: &FontRes,
+        x: i32,
+        y: i32,
+        width: i32,
+        text: &str,
+        line_spacing: i32,
+        justify: i32,
+    ) -> i32 {
+        let (lines, height) = font.font.word_wrap(text, width, line_spacing);
+        for (line, baseline) in lines {
+            let line_x = match justify {
+                0 => x + (width - font.font.string_width(&line)) / 2,
+                1 => x + width - font.font.string_width(&line),
+                _ => x,
+            };
+            self.draw_string(font, line_x, y + baseline, &line);
+        }
+        height
+    }
+
+    /// `Widget::WriteCenteredLine`: `text` centered across `width`, baseline at `y`.
+    pub fn write_centered_line(&mut self, font: &FontRes, width: i32, y: i32, text: &str) {
+        let x = (width - font.font.string_width(text)) / 2;
+        self.draw_string(font, x, y, text);
     }
 
     /// `TodDrawImageCelF`: one cel of an image strip, top-left at (x, y).
@@ -224,6 +322,7 @@ impl Graphics {
 
     /// [`Self::draw_image_matrix`] for part of an image (e.g. one cel).
     pub fn draw_image_matrix_src(&mut self, image: &ImageRes, transform: Affine2, src: SexyRect) {
+        let transform = Affine2::from_translation(self.state.trans) * transform;
         let image_size = Vec2::new(image.width as f32, image.height as f32);
         let color = self.image_color();
         self.cmds.push(DrawCmd::Matrix { image: image.handle.clone(), image_size, transform, src, color });

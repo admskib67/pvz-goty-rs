@@ -2,8 +2,8 @@
 //! and the wooden name sign.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Widget/GameSelector.cpp`. Not yet
-//! ported: the create-user and other dialogs, tooltips, the trophy, zen
-//! garden needs, and the screens the buttons lead to.
+//! ported: the options and help screens, tooltips, the trophy, zen garden
+//! needs, and the screens the other buttons lead to.
 
 use bevy::math::Affine2;
 use bevy::prelude::*;
@@ -11,21 +11,25 @@ use sexy::matrix::Matrix3;
 use sexy::reanim::{LoopType, RENDER_GROUP_HIDDEN, RENDER_GROUP_NORMAL};
 
 use crate::audio::{FoleyType, Music, MusicTune, Sounds};
+use crate::dialog::{ButtonMode, DialogId, Dialogs};
 use crate::graphics::{Graphics, SexyColor};
 use crate::input::GameCursor;
-use crate::player::PlayerInfo;
+use crate::lawn_app::{PlayerChanged, confirm_quit, do_create_user_dialog, do_user_dialog, lawn_message_box};
+use crate::player::{PlayerInfo, ProfileMgr};
 use crate::reanim::{EffectSystem, ReanimationId, ReanimationType, draw_reanimation, draw_render_group};
 use crate::resources::GameResources;
 use crate::widgets::{ButtonEvent, GameButton, update_buttons};
-use crate::AppState;
+use crate::{AppState, UiSet};
 
 pub struct GameSelectorPlugin;
 
 impl Plugin for GameSelectorPlugin {
     fn build(&self, app: &mut App) {
+        let open = resource_exists::<GameSelector>;
         app.add_systems(OnEnter(AppState::GameSelector), start_selector)
-            .add_systems(FixedUpdate, update_selector.run_if(resource_exists::<GameSelector>))
-            .add_systems(Update, (selector_input, draw_selector).chain().run_if(resource_exists::<GameSelector>));
+            .add_systems(FixedUpdate, update_selector.run_if(open))
+            .add_systems(Update, (selector_input, player_changed).chain().in_set(UiSet::ScreenInput).run_if(open))
+            .add_systems(Update, draw_selector.in_set(UiSet::ScreenDraw).run_if(open));
     }
 }
 
@@ -47,11 +51,15 @@ enum ButtonId {
     Almanac,
 }
 
-/// `SelectorAnimState`. The original also has `NewUser`/`ShowSign` for the
-/// create-user dialog, which isn't ported yet.
+/// `SelectorAnimState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SelectorState {
+    /// The tombstone rising.
     Open,
+    /// Waiting for the first player to enter a name.
+    NewUser,
+    /// The name sign dropping in.
+    ShowSign,
     Idle,
 }
 
@@ -155,7 +163,7 @@ fn start_selector(
     mut effects: ResMut<EffectSystem>,
     mut music: ResMut<Music>,
     mut sounds: Sounds,
-    player: Res<PlayerInfo>,
+    profiles: Res<ProfileMgr>,
 ) {
     for id in SELECTOR_IMAGES {
         if let Err(e) = resources.load_image(id, &mut images) {
@@ -163,7 +171,7 @@ fn start_selector(
         }
     }
     music.make_sure_music_is_playing(MusicTune::TitleCrazyDaveMainTheme);
-    match build_selector(&mut resources, &mut images, &mut effects, sounds.rng(), &player) {
+    match build_selector(&mut resources, &mut images, &mut effects, sounds.rng(), profiles.player()) {
         Ok(selector) => {
             commands.insert_resource(selector);
             sounds.play_sample("SOUND_ROLL_IN");
@@ -177,7 +185,7 @@ fn build_selector(
     images: &mut Assets<Image>,
     effects: &mut EffectSystem,
     rng: &mut sexy::rand::MtRand,
-    player: &PlayerInfo,
+    player: Option<&PlayerInfo>,
 ) -> Result<GameSelector, String> {
     let res = &*resources;
     let height_of = |id: &str| res.image(id).map_or(0, |i| i.height as i32);
@@ -334,31 +342,36 @@ fn build_selector(
 }
 
 impl GameSelector {
-    /// `GameSelector::SyncProfile`.
-    fn sync_profile(&mut self, player: &PlayerInfo, effects: &mut EffectSystem) {
-        self.level = player.level;
-        self.show_start_button = self.level < 2;
+    /// `GameSelector::SyncProfile`. With no player, everything is locked.
+    fn sync_profile(&mut self, player: Option<&PlayerInfo>, effects: &mut EffectSystem) {
+        self.level = player.map_or(1, |p| p.level);
+        self.show_start_button = true;
         self.minigames_locked = true;
         self.puzzle_locked = true;
         self.survival_locked = true;
-        if player.has_finished_adventure() {
-            self.minigames_locked = false;
-            self.survival_locked = false;
-            self.puzzle_locked = false;
-            self.show_start_button = false;
+        if let Some(player) = player {
+            if self.level >= 2 {
+                self.show_start_button = false;
+            }
+            if player.has_finished_adventure() {
+                self.minigames_locked = false;
+                self.survival_locked = false;
+                self.puzzle_locked = false;
+                self.show_start_button = false;
+            }
+            self.minigames_locked &= !player.has_unlocked_minigames;
+            self.puzzle_locked &= !player.has_unlocked_puzzle_mode;
+            self.survival_locked &= !player.has_unlocked_survival_mode;
         }
-        self.minigames_locked &= !player.has_unlocked_minigames;
-        self.puzzle_locked &= !player.has_unlocked_puzzle_mode;
-        self.survival_locked &= !player.has_unlocked_survival_mode;
         // TODO: trophy and its sparkle once particles exist.
         self.sync_buttons(player, effects);
     }
 
     /// `GameSelector::SyncButtons`.
-    fn sync_buttons(&mut self, player: &PlayerInfo, effects: &mut EffectSystem) {
-        let almanac_open = player.can_show_almanac();
-        let store_open = player.can_show_store();
-        let zen_open = player.can_show_zen_garden();
+    fn sync_buttons(&mut self, player: Option<&PlayerInfo>, effects: &mut EffectSystem) {
+        let almanac_open = player.is_some_and(PlayerInfo::can_show_almanac);
+        let store_open = player.is_some_and(PlayerInfo::can_show_store);
+        let zen_open = player.is_some_and(PlayerInfo::can_show_zen_garden);
         let b = &mut self.buttons;
         (b.almanac.disabled, b.almanac.visible) = (!almanac_open, almanac_open);
         (b.store.disabled, b.store.visible) = (!store_open, store_open);
@@ -409,6 +422,16 @@ impl GameSelector {
         let i = selector.find_track("SelectorScreen_ZenGarden_button");
         selector.tracks[i].track_color = tint(b.survival.color);
 
+        // The original only ever hides here, so switching between a new and
+        // a returning player left both buttons' shadows hidden. Un-hide first.
+        for prefix in ["SelectorScreen_Adventure_", "SelectorScreen_StartAdventure_"] {
+            selector.assign_render_group_to_prefix(prefix, RENDER_GROUP_NORMAL);
+        }
+        if self.state != SelectorState::Open {
+            for track in ["SelectorScreen_Adventure_button", "SelectorScreen_StartAdventure_button"] {
+                selector.assign_render_group_to_track(track, RENDER_GROUP_HIDDEN);
+            }
+        }
         let (hidden, prefix) = if self.show_start_button {
             ("SelectorScreen_Adventure_", "STARTADVENTURE")
         } else {
@@ -485,7 +508,8 @@ impl GameSelector {
         effects: &mut EffectSystem,
         resources: &mut GameResources,
         images: &mut Assets<Image>,
-        exit: &mut MessageWriter<AppExit>,
+        dialogs: &mut Dialogs,
+        profiles: &ProfileMgr,
         music: &mut Music,
         sounds: &mut Sounds,
     ) {
@@ -496,23 +520,28 @@ impl GameSelector {
             _ => None,
         };
         if let Some(message) = locked {
-            // TODO: LawnMessageBox once dialogs exist.
-            info!("{}: {}", resources.translate("[MODE_LOCKED]"), resources.translate(message));
+            let (header, ok) = ("[MODE_LOCKED]", "[DIALOG_BUTTON_OK]");
+            lawn_message_box(dialogs, resources, DialogId::Message, header, message, ok, "", ButtonMode::Footer);
             return;
         }
         match id {
             ButtonId::Adventure => self.clicked_adventure(effects, resources, images, music, sounds),
-            // TODO: ConfirmQuit's "are you sure" dialog.
-            ButtonId::Quit => {
-                exit.write(AppExit::Success);
-            }
+            ButtonId::Quit => confirm_quit(dialogs, resources),
+            ButtonId::ChangeUser => do_user_dialog(dialogs, resources, profiles),
             other => info!("{other:?} isn't ported yet"),
         }
     }
 }
 
 /// `GameSelector::Update`, at 100 ticks per second.
-fn update_selector(mut selector: ResMut<GameSelector>, mut effects: ResMut<EffectSystem>, mut sounds: Sounds) {
+fn update_selector(
+    mut selector: ResMut<GameSelector>,
+    mut effects: ResMut<EffectSystem>,
+    mut dialogs: ResMut<Dialogs>,
+    resources: Res<GameResources>,
+    profiles: Res<ProfileMgr>,
+    mut sounds: Sounds,
+) {
     let gs = &mut *selector;
 
     if gs.starting_game {
@@ -546,11 +575,20 @@ fn update_selector(mut selector: ResMut<GameSelector>, mut effects: ResMut<Effec
                     b.btn_no_draw = false;
                 }
             }
-            // TODO: with no profile the original shows the create-user dialog
-            // here (SELECTOR_NEW_USER), then plays anim_sign once it closes.
-            selector.play("anim_sign", LoopType::PlayOnceAndHold, 0, 30.0);
-            gs.state = SelectorState::Idle;
+            if profiles.player().is_none() {
+                do_create_user_dialog(&mut dialogs, &resources);
+                gs.state = SelectorState::NewUser;
+            } else {
+                selector.play("anim_sign", LoopType::PlayOnceAndHold, 0, 30.0);
+                gs.state = SelectorState::Idle;
+            }
+            // TODO: the adventure-complete message (mNeedsMessageOnGameSelector).
         }
+        SelectorState::NewUser if dialogs.get(DialogId::CreateUser).is_none() => {
+            selector.play("anim_sign", LoopType::PlayOnceAndHold, 0, 30.0);
+            gs.state = SelectorState::ShowSign;
+        }
+        SelectorState::ShowSign if selector.loop_count > 0 => gs.state = SelectorState::Idle,
         _ => {}
     }
 
@@ -613,11 +651,14 @@ fn selector_input(
     mut images: ResMut<Assets<Image>>,
     cursor: Res<GameCursor>,
     mouse: Res<ButtonInput<MouseButton>>,
-    mut exit: MessageWriter<AppExit>,
+    mut dialogs: ResMut<Dialogs>,
+    profiles: Res<ProfileMgr>,
     mut music: ResMut<Music>,
     mut sounds: Sounds,
 ) {
     let gs = &mut *selector;
+    // A dialog takes the mouse: to the screen it's as if it left the window.
+    let cursor = if dialogs.is_modal() { GameCursor(None) } else { *cursor };
     let result = update_buttons(&mut gs.buttons.front_to_back(), &cursor, &mouse);
     for event in result.events {
         match event {
@@ -637,9 +678,16 @@ fn selector_input(
                 }
                 _ => sounds.play_sample("SOUND_TAP"),
             },
-            ButtonEvent::Depress(id) => {
-                gs.button_depress(id, &mut effects, &mut resources, &mut images, &mut exit, &mut music, &mut sounds)
-            }
+            ButtonEvent::Depress(id) => gs.button_depress(
+                id,
+                &mut effects,
+                &mut resources,
+                &mut images,
+                &mut dialogs,
+                &profiles,
+                &mut music,
+                &mut sounds,
+            ),
         }
     }
     if let Some(p) = result.background_press {
@@ -655,6 +703,18 @@ fn selector_input(
     }
 }
 
+/// `LawnApp` calls `SyncProfile` whenever the player changes.
+fn player_changed(
+    mut changed: MessageReader<PlayerChanged>,
+    mut selector: ResMut<GameSelector>,
+    mut effects: ResMut<EffectSystem>,
+    profiles: Res<ProfileMgr>,
+) {
+    if changed.read().count() > 0 {
+        selector.sync_profile(profiles.player(), &mut effects);
+    }
+}
+
 fn to_affine(m: Matrix3) -> Affine2 {
     Affine2::from_cols_array(&[m.m00, m.m10, m.m01, m.m11, m.m02, m.m12])
 }
@@ -664,7 +724,7 @@ fn draw_selector(
     selector: Res<GameSelector>,
     effects: Res<EffectSystem>,
     resources: Res<GameResources>,
-    player: Res<PlayerInfo>,
+    profiles: Res<ProfileMgr>,
     mut g: ResMut<Graphics>,
 ) {
     let gs = &*selector;
@@ -690,7 +750,9 @@ fn draw_selector(
         }
     }
 
-    if !player.name.is_empty() && gs.state != SelectorState::Open
+    if let Some(player) = profiles.player()
+        && !player.name.is_empty()
+        && !matches!(gs.state, SelectorState::Open | SelectorState::NewUser)
         && let Some(font) = resources.font("FONT_BRIANNETOD16")
     {
         let welcome = format!("{}!", player.name);
