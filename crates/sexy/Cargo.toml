@@ -9,4 +9,5 @@ license.workspace = true
 pak.workspace = true
 thiserror.workspace = true
 roxmltree.workspace = true
+miniz_oxide.workspace = true
 image.workspace = true

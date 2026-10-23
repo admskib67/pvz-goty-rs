@@ -120,9 +120,7 @@ impl GameResources {
         if let Some(def) = self.reanim_definitions.get(path) {
             return Ok(def.clone());
         }
-        let bytes = self.files.read(path).ok_or_else(|| format!("{path} is missing"))?;
-        let text = std::str::from_utf8(&bytes).map_err(|e| format!("{path}: {e}"))?;
-        let def = Arc::new(ReanimDefinition::parse(text).map_err(|e| format!("{path}: {e}"))?);
+        let def = Arc::new(ReanimDefinition::load(&self.files, path).map_err(|e| format!("{path}: {e}"))?);
 
         for id in def.image_ids() {
             self.load_image(id, assets).map_err(|e| format!("{path}: {e}"))?;

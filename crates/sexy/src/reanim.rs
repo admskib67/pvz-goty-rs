@@ -10,6 +10,7 @@
 //! `GetTransformAtTime`, `GetCurrentTransform`, `MatrixFromTransform`,
 //! `GetFramesForLayer`, `PlayReanim`, `StartBlend`).
 
+use crate::files::Files;
 use crate::matrix::Matrix3;
 use crate::tod::float_round_to_int;
 
@@ -20,6 +21,8 @@ const SECONDS_PER_UPDATE: f32 = 0.01;
 pub enum ReanimError {
     #[error("invalid XML: {0}")]
     Xml(#[from] roxmltree::Error),
+    #[error("compiled definition: {0}")]
+    Compiled(&'static str),
     #[error("track {track:?}: bad <{field}> value {value:?}")]
     BadValue { track: String, field: String, value: String },
     #[error("track {track:?} has {got} frames but the first track has {expected}")]
@@ -105,6 +108,98 @@ impl ReanimDefinition {
         Ok(Self { fps, tracks })
     }
 
+    /// Loads `path` (e.g. `reanim/Foo.reanim`), preferring the compiled
+    /// `compiled/<path>.compiled` when present, like the original.
+    pub fn load(files: &impl Files, path: &str) -> Result<Self, String> {
+        if let Some(bytes) = files.read(&format!("compiled/{path}.compiled")) {
+            return Self::parse_compiled(&bytes).map_err(|e| e.to_string());
+        }
+        let bytes = files.read(path).ok_or_else(|| "missing".to_owned())?;
+        let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
+        Self::parse(text).map_err(|e| e.to_string())
+    }
+
+    /// Parses a `compiled/*.reanim.compiled` file.
+    ///
+    /// Behaviour per ruslan831 decomp, `Definition.cpp`
+    /// (`DefinitionUncompressCompiledBuffer`, `DefinitionReadCompiledFile`,
+    /// `DefMapReadFromCache`, `DefReadFromCacheArray`/`String`/`Image`).
+    /// The schema hash is skipped rather than checked.
+    pub fn parse_compiled(bytes: &[u8]) -> Result<Self, ReanimError> {
+        const COOKIE: u32 = 0xDEAD_FED4;
+        let err = ReanimError::Compiled;
+        if bytes.len() < 8 || u32::from_le_bytes(bytes[0..4].try_into().unwrap()) != COOKIE {
+            return Err(err("bad header"));
+        }
+        let size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let data = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&bytes[8..], size.max(1))
+            .map_err(|_| err("zlib error"))?;
+        if data.len() != size {
+            return Err(err("wrong uncompressed size"));
+        }
+
+        let mut r = CompiledReader { data: &data, pos: 0 };
+        r.u32()?; // schema hash
+        // ReanimatorDefinition: tracks ptr, track count, fps, atlas ptr.
+        r.u32()?;
+        let track_count = r.u32()? as usize;
+        let fps = f32::from_bits(r.u32()?);
+        r.u32()?;
+
+        if r.u32()? != 12 {
+            return Err(err("track size mismatch"));
+        }
+        // The raw track structs (name ptr, transform ptr, transform count)
+        // come first, then each track's strings and transforms in order.
+        let raw_tracks = r.pos;
+        r.skip(12 * track_count)?;
+
+        let mut tracks = Vec::with_capacity(track_count);
+        for i in 0..track_count {
+            let o = raw_tracks + 12 * i + 8;
+            let count = u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as usize;
+            let name = r.string()?;
+            if r.u32()? != 44 {
+                return Err(err("transform size mismatch"));
+            }
+            let raw_t = r.pos;
+            r.skip(44 * count)?;
+
+            let mut transforms = Vec::with_capacity(count);
+            let mut prev = default_transform();
+            for j in 0..count {
+                let o = raw_t + 44 * j;
+                let float = |k: usize, prev: f32| {
+                    let v = f32::from_le_bytes(data[o + 4 * k..o + 4 * k + 4].try_into().unwrap());
+                    if v == DEFAULT_FIELD_PLACEHOLDER { prev } else { v }
+                };
+                let image = r.string()?;
+                let font = r.string()?;
+                let text = r.string()?;
+                let cur = ReanimTransform {
+                    x: float(0, prev.x),
+                    y: float(1, prev.y),
+                    kx: float(2, prev.kx),
+                    ky: float(3, prev.ky),
+                    sx: float(4, prev.sx),
+                    sy: float(5, prev.sy),
+                    f: float(6, prev.f),
+                    a: float(7, prev.a),
+                    image: if image.is_empty() { prev.image.clone() } else { Some(image) },
+                    font: if font.is_empty() { prev.font.clone() } else { Some(font) },
+                    text: if text.is_empty() { prev.text.clone() } else { text },
+                };
+                prev = cur.clone();
+                transforms.push(cur);
+            }
+            tracks.push(ReanimTrack { name, transforms });
+        }
+        if r.pos != data.len() {
+            return Err(err("trailing data"));
+        }
+        Ok(Self { fps, tracks })
+    }
+
     pub fn frame_count(&self) -> usize {
         self.tracks.first().map_or(0, |t| t.transforms.len())
     }
@@ -135,6 +230,37 @@ impl ReanimDefinition {
         ids.sort_unstable();
         ids.dedup();
         ids.into_iter()
+    }
+}
+
+/// Unset keyframe values in compiled files (`DEFAULT_FIELD_PLACEHOLDER`).
+const DEFAULT_FIELD_PLACEHOLDER: f32 = -10000.0;
+
+fn default_transform() -> ReanimTransform {
+    ReanimTransform { x: 0.0, y: 0.0, kx: 0.0, ky: 0.0, sx: 1.0, sy: 1.0, f: 0.0, a: 1.0, image: None, font: None, text: String::new() }
+}
+
+struct CompiledReader<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl CompiledReader<'_> {
+    fn skip(&mut self, n: usize) -> Result<&[u8], ReanimError> {
+        let end = self.pos.checked_add(n).filter(|&e| e <= self.data.len()).ok_or(ReanimError::Compiled("truncated"))?;
+        let s = &self.data[self.pos..end];
+        self.pos = end;
+        Ok(s)
+    }
+
+    fn u32(&mut self) -> Result<u32, ReanimError> {
+        Ok(u32::from_le_bytes(self.skip(4)?.try_into().unwrap()))
+    }
+
+    /// Length-prefixed string (Latin-1).
+    fn string(&mut self) -> Result<String, ReanimError> {
+        let len = self.u32()? as usize;
+        Ok(self.skip(len)?.iter().map(|&b| b as char).collect())
     }
 }
 

@@ -9,6 +9,10 @@ A Rust reconstruction of Plants vs. Zombies: Game of the Year Edition, built on 
 - Targets: Windows and macOS arm64 for now. Linux (Wayland) is deferred: its libopenmpt libraries exist (built under WSL) but nothing is tested there. Development happens on macOS; the user also builds and runs on Windows 11.
 - Current phase: engine and architecture foundations. Gameplay comes later.
 
+## Git
+
+- **Never commit or push.** The user does all commits, pushes and branch publishing themselves. Leave changes in the working tree and say what changed; creating or switching local branches is fine only when asked.
+
 ## Files agents must not edit
 
 - **`readme.md` is maintained by the user only.** Don't edit, rewrite, rename or delete it, even for small fixes or to add credits. If something in it looks wrong or out of date, tell the user instead.
@@ -67,7 +71,7 @@ The dev profile builds our crates at `opt-level = 1` and dependencies at `3`, be
 ## Platform status
 
 - **macOS arm64:** everything runs: setup screen, title screen with sprouts, main menu.
-- **Windows 11 (x86_64, MSVC from Visual Studio 2026, AMD GPU on Vulkan):** builds and links, including libopenmpt (`dev/libopenmpt-win/x86_64-pc-windows-msvc/`, plus `rpcrt4` for `UuidCreate`). The setup screen works and resource loading completes after the `.au` fix. **Blocker:** reanimations (loading-bar sprouts, main menu) need the compiled-definition parser above; nothing tested past the loading bar yet. Next Windows work: add compiled `.reanim` support in `sexy::reanim` (keeping the XML path for Mac), make the loaders prefer `compiled/…` when present like the original, then run `check_resources` against the Windows pak and extend it to cover compiled files.
+- **Windows 11 (x86_64, MSVC from Visual Studio 2026, AMD GPU on Vulkan):** builds and links, including libopenmpt (`dev/libopenmpt-win/x86_64-pc-windows-msvc/`, plus `rpcrt4` for `UuidCreate`). The setup screen works and resource loading completes after the `.au` fix. Compiled `.reanim` files load (`ReanimDefinition::load` prefers `compiled/…`, falls back to XML); `check_resources` loads every resource and reanim from the Windows pak with 0 failures. Not yet run visually on Windows: the title screen and main menu. Compiled particles (`compiled/particles/*.xml.compiled`) are not parsed yet.
 - **Linux:** deferred. `dev/libopenmpt-linux/x86_64-unknown-linux-gnu/` was built under WSL (real Linux libraries) but nothing has been run on Linux.
 
 Windows gotchas already hit:

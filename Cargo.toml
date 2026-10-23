@@ -17,6 +17,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "1"
 thiserror = "2"
 roxmltree = "0.21"
+miniz_oxide = "0.8"
 # Same version Bevy uses; only the decoders PvZ assets need.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "tga"] }
 
