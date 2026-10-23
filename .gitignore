@@ -2,3 +2,5 @@
 # Never commit game data extracted from main.pak.
 /extracted
 *.pak
+# macOS Finder metadata.
+.DS_Store
