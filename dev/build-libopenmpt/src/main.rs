@@ -76,7 +76,8 @@ fn configure(build: &mut cc::Build, root: &Path, out: &Path) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
+    // Not `canonicalize()`: on Windows it yields `\\?\C:\...` paths, which cl.exe can't open.
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).expect("repo root").to_path_buf();
     let out = repo.join("dev").join(os_dir()).join(TARGET);
     let work = repo.join("target").join("build-libopenmpt");
 
