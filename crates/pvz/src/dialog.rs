@@ -44,6 +44,7 @@ pub enum DialogId {
     RenameUserError,
     Message,
     ConfirmBackToMain,
+    GameOver,
 }
 
 /// `Dialog::BUTTONS_*`.

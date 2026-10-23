@@ -218,7 +218,7 @@ impl Board {
     }
 
     /// `Board::RefreshSeedPacketFromCursor`: puts a carried plant back.
-    fn refresh_seed_packet_from_cursor(&mut self, res: &GameResources) {
+    pub(super) fn refresh_seed_packet_from_cursor(&mut self, res: &GameResources) {
         if let Some(i) = self.cursor.seed_bank_index {
             self.seed_bank.packets[i].active = true;
         }
@@ -260,6 +260,16 @@ impl Board {
         }
         let Some(coin) = self.coins.get_mut(id) else { return };
         if coin.dead || coin.is_being_collected {
+            return;
+        }
+        if coin.is_level_award() {
+            // The level's award: it flies to the middle of the screen and the
+            // level fades out (the board does that on its next tick).
+            sounds.play_sample("SOUND_SEEDLIFT");
+            sounds.play_sample("SOUND_TAP2");
+            coin.collect();
+            self.pending_fade_out = true;
+            // TODO: the starburst and pickup particles around the packet.
             return;
         }
         // PlayCollectSound.

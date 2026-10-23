@@ -150,6 +150,11 @@ impl Graphics {
         self.state.trans += Vec2::new(dx, dy);
     }
 
+    /// The current translation (`mTransX`, `mTransY`).
+    pub fn translation(&self) -> Vec2 {
+        self.state.trans
+    }
+
     /// Saves color/clip state; the original does this by copying `Graphics`.
     pub fn push_state(&mut self) {
         self.saved.push(self.state.clone());

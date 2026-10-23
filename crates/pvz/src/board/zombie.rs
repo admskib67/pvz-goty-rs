@@ -39,6 +39,8 @@ const DAMAGE_PER_EAT: i32 = 4;
 /// `BOARD_EDGE`: zombies whose x gets this far left have reached the house.
 const BOARD_EDGE: i32 = -100;
 const WIDE_BOARD_WIDTH: f32 = 800.0;
+/// `Zombie::ZOMBIE_WAVE_WINNER`: the zombie that walks into the house.
+pub const ZOMBIE_WAVE_WINNER: i32 = -4;
 
 /// `DamageFlags`, as bit masks.
 #[allow(dead_code, reason = "the full set; zombies use more of it as they're ported")]
@@ -109,6 +111,8 @@ pub enum HelmType {
 pub enum ZombiePhase {
     Normal,
     Dying,
+    /// Run over by a lawn mower.
+    Mowered,
 }
 
 /// What the board tells its zombies each tick.
@@ -180,6 +184,12 @@ pub struct Zombie {
     /// Counts down to 0 as a dead zombie fades out, or -1.
     zombie_fade: i32,
     original_anim_rate: f32,
+    /// The mower's chopping animation a mowed-down zombie follows.
+    mowered_reanim: Option<ReanimationId>,
+    dropped_loot: bool,
+    /// The zombie died and the board should see whether this was the one
+    /// that ends the level (`DropLoot` → `TrySpawnLevelAward`).
+    pub loot_pending: bool,
     pub dead: bool,
     pub render_order: i32,
     /// Particles that ride along with the zombie, and where (`mAttachmentID`).
@@ -238,6 +248,9 @@ impl Zombie {
             special_head: None,
             zombie_fade: -1,
             original_anim_rate: 0.0,
+            mowered_reanim: None,
+            dropped_loot: false,
+            loot_pending: false,
             dead: false,
             render_order: 0,
             attached: Vec::new(),
@@ -460,7 +473,19 @@ impl Zombie {
     }
 
     pub fn is_dead_or_dying(&self) -> bool {
-        self.dead || self.phase == ZombiePhase::Dying
+        self.dead || self.phase != ZombiePhase::Normal
+    }
+
+    pub fn is_winner(&self) -> bool {
+        self.from_wave == ZOMBIE_WAVE_WINNER
+    }
+
+    pub fn dropped_loot(&self) -> bool {
+        self.dropped_loot
+    }
+
+    pub fn set_dropped_loot(&mut self) {
+        self.dropped_loot = true;
     }
 
     /// `Zombie::IsWalkingBackwards`: not for the types so far.
@@ -553,6 +578,7 @@ impl Zombie {
                 self.update_death(fx);
                 self.update_zombie_walking(fx.effects);
             }
+            ZombiePhase::Mowered => self.update_mowered(fx),
             ZombiePhase::Normal => {
                 self.update_playing(plants, env, fx);
                 self.animate(plants, fx);
@@ -574,6 +600,86 @@ impl Zombie {
             }
         }
         self.update_reanim(fx.effects);
+    }
+
+    /// `Zombie::Update` for the zombie that's walking into the house after
+    /// the level was lost: the others stand still.
+    pub fn update_winner(&mut self, show_walking: bool, plants: &DataArray<Plant>, fx: &mut Fx) {
+        self.age += 1;
+        if show_walking {
+            self.update_zombie_walking(fx.effects);
+        }
+        self.animate(plants, fx);
+        self.just_got_shot_counter -= 1;
+        self.x = self.pos_x as i32;
+        self.y = self.pos_y as i32;
+        self.update_reanim(fx.effects);
+    }
+
+    /// `Zombie::WalkIntoHouse`, for the day and night lawns.
+    pub fn walk_into_house(&mut self) {
+        self.from_wave = ZOMBIE_WAVE_WINNER;
+        // TODO: the pool, roof and boss lawns end differently.
+        self.pos_y = 290.0;
+        self.render_order = make_render_order(render_layer::ZOMBIE, 2, 0);
+    }
+
+    /// `Zombie::UpdateMowered`: once the mower's done, it's over.
+    fn update_mowered(&mut self, fx: &mut Fx) {
+        let done = self.mowered_reanim.and_then(|m| fx.effects.get(m)).is_none_or(|m| m.loop_count > 0);
+        if done {
+            self.drop_head(0, fx);
+            self.drop_arm(0, fx);
+            self.die_with_loot(fx);
+        }
+    }
+
+    /// `Zombie::MowDown`.
+    pub fn mow_down(&mut self, fx: &mut Fx) {
+        if self.dead || self.phase == ZombiePhase::Mowered {
+            return;
+        }
+        if self.phase == ZombiePhase::Dying {
+            // Already falling over: just a puff of smoke.
+            if let Ok((_, puff)) = fx.effects.add_reanimation(self.pos_x - 73.0, self.pos_y - 56.0, ReanimationType::Puff, fx.res, fx.images) {
+                puff.render_order = self.render_order + 2;
+                puff.set_frames_for_layer("anim_puff");
+            }
+            let rng = fx.sounds.rng();
+            fx.effects.add_particle(self.pos_x + 110.0, self.pos_y, self.render_order + 1, ParticleEffect::MowerCloud, fx.res, fx.images, rng);
+            self.drop_head(0, fx);
+            self.drop_arm(0, fx);
+            self.drop_helm(0, fx);
+            self.die_with_loot(fx);
+            return;
+        }
+        self.drop_helm(0, fx);
+        if self.zombie_type == ZombieType::Flag {
+            self.drop_flag(fx);
+        }
+        if let Ok((id, reanim)) =
+            fx.effects.add_reanimation(0.0, 0.0, ReanimationType::LawnMoweredZombie, fx.res, fx.images)
+        {
+            reanim.anim_rate = 8.0;
+            reanim.is_attachment = false;
+            reanim.loop_type = LoopType::PlayOnceAndHold;
+            reanim.render_order = self.render_order;
+            self.mowered_reanim = Some(id);
+        }
+        self.phase = ZombiePhase::Mowered;
+        self.drop_loot();
+    }
+
+    /// `Zombie::DropLoot`: asks the board whether this zombie ends the level.
+    fn drop_loot(&mut self) {
+        // TODO: coins for the zombie's value (DropLootPiece), from level 1-11 on.
+        self.loot_pending = true;
+    }
+
+    /// `Zombie::DieWithLoot`.
+    fn die_with_loot(&mut self, fx: &mut Fx) {
+        self.die_no_loot(fx.effects);
+        self.drop_loot();
     }
 
     /// `Zombie::UpdatePlaying`.
@@ -708,6 +814,16 @@ impl Zombie {
             body.set_position(offset_x, offset_y);
             body.color_override = [255, 255, 255, fade];
         }
+        // The mower's animation carries the zombie along.
+        if let Some(mowered) = self.mowered_reanim {
+            effects.update_reanimation(mowered);
+            let matrix = effects.get(mowered).map(|m| m.attachment_overlay_matrix(0));
+            if let (Some(mut m), Some(body)) = (matrix, effects.get_mut(body_id)) {
+                m.m02 += body.overlay.m02;
+                m.m12 += body.overlay.m12;
+                body.overlay = m;
+            }
+        }
         effects.update_reanimation(body_id);
     }
 
@@ -806,7 +922,7 @@ impl Zombie {
         if self.body_health <= 0 {
             self.body_health = 0;
             self.play_death_anim(flags, env, fx);
-            // TODO: DropLoot (coins).
+            self.drop_loot();
         }
     }
 
@@ -817,7 +933,8 @@ impl Zombie {
         }
         if self.has_head && self.body_health < self.body_max_health / 3 {
             self.drop_head(flags, fx);
-            // TODO: DropLoot, and dying right away once the level's award has dropped.
+            self.drop_loot();
+            // TODO: dying right away once the level's award has dropped.
         }
     }
 
@@ -955,7 +1072,7 @@ impl Zombie {
 
     /// `Zombie::DieNoLoot`.
     pub fn die_no_loot(&mut self, effects: &mut EffectSystem) {
-        for id in [self.body.take(), self.special_head.take()].into_iter().flatten() {
+        for id in [self.body.take(), self.special_head.take(), self.mowered_reanim.take()].into_iter().flatten() {
             effects.kill(id);
         }
         for &(id, _, _) in &self.attached {
@@ -963,7 +1080,6 @@ impl Zombie {
         }
         self.attached.clear();
         self.dead = true;
-        // TODO: TrySpawnLevelAward.
     }
 
     /// `Zombie::AddAttachedParticle`: the effect moves along with the zombie.
@@ -987,6 +1103,10 @@ impl Zombie {
     pub fn draw(&self, g: &mut Graphics, effects: &EffectSystem, res: &GameResources) {
         g.push_state();
         g.translate(self.x as f32, self.y as f32);
+        if self.is_winner() {
+            // Winners vanish into the house (SetupDrawZombieWon).
+            g.clip_rect(-123.0 - self.x as f32, -self.y as f32, 800.0, 600.0);
+        }
         if let Some(body) = self.body {
             effects.draw(g, body, res);
         }

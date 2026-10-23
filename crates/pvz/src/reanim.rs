@@ -580,8 +580,18 @@ fn draw_track(g: &mut Graphics, reanim: &Reanimation, track: usize, resources: &
     }
     color.a = alpha as u8;
 
-    // TODO: text tracks (`font`/`text`) and the "fullscreen" fill track.
-    let Some(image) = transform.image.as_deref().and_then(|id| resources.image(id)) else { return };
+    // TODO: text tracks (`font`/`text`).
+    let Some(image) = transform.image.as_deref().and_then(|id| resources.image(id)) else {
+        // The "fullscreen" track fills the whole screen with its color.
+        if transform.font.is_none() && reanim.definition.tracks[track].name.eq_ignore_ascii_case("fullscreen") {
+            let t = g.translation();
+            g.push_state();
+            g.set_color(color);
+            g.fill_rect(-t.x, -t.y, 800.0, 600.0);
+            g.pop_state();
+        }
+        return;
+    };
 
     // The keyframe's image positions the track; an override only changes what's drawn.
     let (cel_w, cel_h) = (image.cel_width() as f32, image.cel_height() as f32);

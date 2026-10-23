@@ -346,7 +346,6 @@ mod foley_flags {
     pub const LOOP: u32 = 1 << 0;
     pub const ONE_AT_A_TIME: u32 = 1 << 1;
     pub const MUTE_ON_PAUSE: u32 = 1 << 2;
-    #[allow(dead_code)]
     pub const USES_MUSIC_VOLUME: u32 = 1 << 3;
     pub const DONT_REPEAT: u32 = 1 << 4;
 }
@@ -374,6 +373,9 @@ pub enum FoleyType {
     ShieldHit,
     PlasticHit,
     SpawnSun,
+    Lawnmower,
+    Scream,
+    WinMusic,
 }
 
 struct FoleyParams {
@@ -420,6 +422,13 @@ impl FoleyType {
                 sounds: &["SOUND_SHIELDHIT", "SOUND_SHIELDHIT2"],
                 flags: 0,
             },
+            Self::Lawnmower => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_LAWNMOWER"], flags: 0 },
+            Self::WinMusic => FoleyParams {
+                pitch_range: 0.0,
+                sounds: &["SOUND_WINMUSIC"],
+                flags: foley_flags::USES_MUSIC_VOLUME,
+            },
+            Self::Scream => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_SCREAM"], flags: 0 },
             Self::SpawnSun => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_THROW"], flags: 0 },
             Self::PlasticHit => FoleyParams {
                 pitch_range: 5.0,

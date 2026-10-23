@@ -4,8 +4,9 @@
 //!
 //! So far a level plays its intro, then sun falls and can be collected,
 //! plants can be planted (level 1's tutorial included), and the plain
-//! zombies come in waves and are shot by peashooters. There are no mowers
-//! yet and nothing happens when a level is won or lost.
+//! zombies come in waves and are shot by peashooters. Lawn mowers run over
+//! zombies that get to them, a zombie in the house loses the level, and the
+//! last zombie's seed packet wins it.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Board.cpp`: the constructor,
 //! `InitLevel`, `PickBackground`, `LoadBackgroundImages`, `InitLawnMowers`,
@@ -18,6 +19,7 @@ mod coin;
 mod cursor;
 mod cutscene;
 mod lawn_mower;
+mod level_end;
 mod message;
 mod plant;
 mod projectile;
@@ -93,6 +95,8 @@ pub enum GameMode {
 pub enum GameScene {
     LevelIntro,
     Playing,
+    /// A zombie got into the house.
+    ZombiesWon,
 }
 
 /// `BackgroundType`.
@@ -237,8 +241,19 @@ pub struct Board {
     zombies: DataArray<Zombie>,
     projectiles: DataArray<Projectile>,
     waves: WaveState,
-    /// A zombie has reached the house. TODO: the losing cutscene (`ZombiesWon`).
-    pub zombies_won: bool,
+    plant_actions: Vec<PlantAction>,
+    /// A zombie reached the house this tick (`Board::ZombiesWon`).
+    zombies_won_trigger: Option<sexy::data_array::Id<Zombie>>,
+    /// The last zombie's award has dropped (`mLevelAwardSpawned`).
+    level_award_spawned: bool,
+    /// Counts down from the award being picked up to the level ending (-1 when not).
+    board_fade_out_counter: i32,
+    /// The award was picked up; the board will fade out the level next tick.
+    pending_fade_out: bool,
+    /// The level is over and the app should move on (`mLevelComplete`).
+    level_complete: bool,
+    /// The lost-level cutscene is over: show the game over dialog.
+    pending_game_over: bool,
     coins: DataArray<Coin>,
     cursor: CursorObject,
     cursor_preview: CursorPreview,
@@ -307,7 +322,13 @@ impl Board {
             zombies: DataArray::default(),
             projectiles: DataArray::default(),
             waves: WaveState::default(),
-            zombies_won: false,
+            plant_actions: Vec::new(),
+            zombies_won_trigger: None,
+            level_award_spawned: false,
+            board_fade_out_counter: -1,
+            pending_fade_out: false,
+            level_complete: false,
+            pending_game_over: false,
             coins: DataArray::default(),
             cursor: CursorObject::default(),
             cursor_preview: CursorPreview::default(),
@@ -569,7 +590,9 @@ fn update_board(
     mut images: ResMut<Assets<Image>>,
     mut music: ResMut<Music>,
     mut sounds: Sounds,
-    dialogs: Res<Dialogs>,
+    mut dialogs: ResMut<Dialogs>,
+    mut profiles: ResMut<ProfileMgr>,
+    mut next_state: ResMut<NextState<AppState>>,
 ) {
     let board = &mut *board;
     // LawnApp::NeedPauseGame: an open dialog pauses the game.
@@ -589,6 +612,14 @@ fn update_board(
 
     // UpdateGame.
     board.update_game_objects(&mut effects, &mut resources, &mut images, &mut sounds);
+    if let Some(zombie) = board.zombies_won_trigger.take() {
+        board.zombies_won(zombie, &mut music, &mut sounds, &resources);
+    }
+    if board.scene == GameScene::ZombiesWon
+        && cutscene::update_zombies_won(board, &mut effects, &mut resources, &mut images, &mut sounds)
+    {
+        board.pending_game_over = true;
+    }
     if board.scene == GameScene::Playing {
         board.main_counter += 1;
         board.update_sun_spawning(&mut effects, &mut resources, &mut images, &mut sounds);
@@ -596,9 +627,22 @@ fn update_board(
         if board.main_counter == 1 && board.first_time_adventure && board.level == 1 {
             board.set_tutorial_state(&resources, TutorialState::Level1PickUpPeashooter);
         }
-        // TODO: the progress meter and the end of the level.
+        // TODO: the progress meter.
     }
+    if board.pending_fade_out {
+        board.fade_out_level(&mut music, &mut sounds, &resources);
+    }
+    board.update_level_end_sequence(&mut sounds);
     board.process_delete_queue();
+    if board.pending_game_over {
+        board.pending_game_over = false;
+        do_game_over_dialog(&mut dialogs, &resources);
+    }
+    if board.level_complete {
+        // LawnApp::CheckForGameEnd. TODO: the award screen shows the new plant first.
+        board.finish_level(&mut profiles);
+        next_state.set(AppState::Board);
+    }
     board.flush_particle_requests(&mut effects, &mut resources, &mut images, sounds.rng());
 }
 
@@ -644,35 +688,55 @@ impl Board {
         sounds: &mut Sounds,
     ) {
         let playing = self.scene == GameScene::Playing;
+        let zombies_won = self.scene == GameScene::ZombiesWon;
         if playing {
-            let mut actions = Vec::new();
             for (_, plant) in self.plants.iter_mut() {
-                plant.update(&self.zombies, &mut actions, effects, res, images, sounds.rng());
+                plant.update(&self.zombies, &mut self.plant_actions, effects, res, images, sounds.rng());
             }
-            let env = self.zombie_env();
-            {
-                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
-                for (_, zombie) in self.zombies.iter_mut() {
+        }
+        let env = self.zombie_env();
+        let show_walking = self.cut_scene.show_zombie_walking();
+        {
+            let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+            for (id, zombie) in self.zombies.iter_mut() {
+                if playing {
                     zombie.update(&mut self.plants, &env, &mut fx);
-                    self.zombies_won |= zombie.reached_house();
+                    if zombie.reached_house() {
+                        self.zombies_won_trigger.get_or_insert(id);
+                    }
+                } else if zombies_won && zombie.is_winner() {
+                    zombie.update_winner(show_walking, &self.plants, &mut fx);
                 }
+            }
+            if playing {
                 for (_, projectile) in self.projectiles.iter_mut() {
                     projectile.update(&mut self.zombies, &env, &mut fx);
                 }
             }
-            for action in actions {
+            for mower in &mut self.lawn_mowers {
+                let background = self.background;
+                mower.update(
+                    playing,
+                    |x, row| pos_y_based_on_row(background, x, row),
+                    &mut self.zombies,
+                    self.waves.current_wave,
+                    &mut self.waves.wave_row_got_lawn_mowered,
+                    &mut fx,
+                );
+            }
+        }
+        if playing {
+            for action in std::mem::take(&mut self.plant_actions) {
                 self.do_plant_action(action, effects, res, images, sounds);
             }
+            self.collect_zombie_loot(effects, res, images, sounds);
             let mut scored = 0;
             for (_, coin) in self.coins.iter_mut() {
-                if let Some(CoinEvent::Scored(sun)) = coin.update(effects, sounds.rng()) {
+                if let Some(CoinEvent::Scored(sun)) = coin.update(effects, res, images, sounds.rng()) {
                     scored += sun;
                 }
             }
             self.add_sun_money(scored);
-        }
-        for mower in &mut self.lawn_mowers {
-            mower.update();
         }
         self.update_cursor_preview();
         for i in 0..self.seed_bank.num_packets {
@@ -710,6 +774,7 @@ impl Board {
     fn process_delete_queue(&mut self) {
         self.plants.retain(|p| !p.dead);
         self.zombies.retain(|z| !z.dead);
+        self.lawn_mowers.retain(|m| !m.dead);
         self.projectiles.retain(|p| !p.dead);
         self.coins.retain(|c| !c.dead);
     }
@@ -723,7 +788,7 @@ impl Board {
         images: &mut Assets<Image>,
         sounds: &mut Sounds,
     ) {
-        if self.stage_is_night() {
+        if self.stage_is_night() || self.has_level_award_dropped() {
             return;
         }
         let waiting = matches!(self.tutorial_state, TutorialState::Level1PickUpPeashooter | TutorialState::Level1PlantPeashooter);
@@ -825,6 +890,18 @@ fn board_input(
     board.flush_particle_requests(&mut effects, &mut resources, &mut images, sounds.rng());
 }
 
+/// `GameOverDialog`: try again or go back to the main menu. TODO: the
+/// original puts the Main Menu button at the top right instead.
+fn do_game_over_dialog(dialogs: &mut Dialogs, res: &GameResources) {
+    let dialog = dialogs.do_dialog(res, DialogId::GameOver, &res.translate("[GAME_OVER]"), "", "", ButtonMode::YesNo);
+    if let Some(yes) = &mut dialog.yes_button {
+        yes.label = res.translate("[TRY_AGAIN]");
+    }
+    if let Some(no) = &mut dialog.no_button {
+        no.label = res.translate("[MAIN_MENU_BUTTON]");
+    }
+}
+
 /// `LawnApp::DoConfirmBackToMain`.
 fn do_confirm_back_to_main(dialogs: &mut Dialogs, res: &GameResources) {
     let lines = "Do you want to return\nto the main menu?\n\nYour game will be saved.";
@@ -850,6 +927,7 @@ enum RenderItem {
     Projectile(sexy::data_array::Id<Projectile>),
     ProjectileShadow(sexy::data_array::Id<Projectile>),
     Particle(ParticleSystemId),
+    FadeOut,
     Coin(sexy::data_array::Id<Coin>),
     CursorPreview,
 }
@@ -893,6 +971,7 @@ fn draw_board(
         }
     }
     items.push((CursorPreview::RENDER_ORDER, RenderItem::CursorPreview));
+    items.push((make_render_order(render_layer::SCREEN_FADE, 0, 0), RenderItem::FadeOut));
     let bottom_ui = if board.scene == GameScene::Playing || board.cut_scene.is_after_seed_chooser() {
         make_render_order(render_layer::UI_BOTTOM, 0, 1)
     } else {
@@ -911,20 +990,21 @@ fn draw_board(
             RenderItem::Backdrop => draw_backdrop(board, &resources, &mut g),
             RenderItem::BottomUi => draw_ui_bottom(board, &resources, &mut g),
             RenderItem::TopUi => draw_ui_top(board, &resources, &mut g),
-            RenderItem::LawnMower(i) => board.lawn_mowers[i].draw(board, &resources, &mut g),
+            RenderItem::LawnMower(i) => board.lawn_mowers[i].draw(board, &effects, &resources, &mut g),
             RenderItem::Reanimation(id) => effects.draw(&mut g, id, &resources),
             RenderItem::Plant(id) => {
                 if let Some(plant) = board.plants.get(id) {
                     plant.draw(&mut g, board.stage_is_night(), &effects, &resources);
                 }
             }
+            RenderItem::FadeOut => board.draw_fade_out(&mut g),
             RenderItem::Zombie(id) => {
-                if let Some(zombie) = board.zombies.get(id) {
+                if let Some(zombie) = board.zombies.get(id).filter(|z| !z.is_winner() || board.cut_scene.show_zombie_walking()) {
                     zombie.draw(&mut g, &effects, &resources);
                 }
             }
             RenderItem::ZombieShadow(id) => {
-                if let Some(zombie) = board.zombies.get(id) {
+                if let Some(zombie) = board.zombies.get(id).filter(|z| !z.is_winner() || board.cut_scene.show_zombie_walking()) {
                     zombie.draw_shadow(&mut g, board.stage_is_night(), &resources);
                 }
             }

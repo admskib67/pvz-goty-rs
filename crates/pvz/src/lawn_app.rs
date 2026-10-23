@@ -237,6 +237,15 @@ impl DialogActions<'_, '_, '_> {
                 self.dialogs.kill_dialog(DialogId::ConfirmBackToMain);
                 self.do_back_to_main();
             }
+            DialogId::GameOver => {
+                self.dialogs.kill_dialog(DialogId::GameOver);
+                if yes {
+                    // LawnApp::EndLevel: the same level again.
+                    self.next_state.set(AppState::Board);
+                } else {
+                    self.do_back_to_main();
+                }
+            }
             DialogId::UserDialog => self.finish_user_dialog(yes),
             DialogId::CreateUser => self.finish_create_user_dialog(yes),
             DialogId::ConfirmDeleteUser => self.finish_confirm_delete_user_dialog(yes),

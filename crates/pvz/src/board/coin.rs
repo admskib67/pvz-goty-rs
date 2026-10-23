@@ -1,18 +1,22 @@
-//! Things to click on the lawn (`Coin`). So far only sun: it falls from the
+//! Things to click on the lawn (`Coin`). So far sun: it falls from the
 //! sky (or pops out of a plant), waits on the ground, fades away if
-//! ignored, and flies to the sun counter when clicked.
+//! ignored, and flies to the sun counter when clicked; and the seed packet
+//! the last zombie of a level drops, which ends the level.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Coin.cpp`: `CoinInitialize`,
 //! `Update`, `UpdateFall`, `UpdateCollected`, `UpdateFade`, `GetColor`,
-//! `Collect`, `ScoreCoin`, `MouseHitTest` and `GetDisappearTime`. Not yet
-//! ported: money, prizes and level awards.
+//! `Collect`, `ScoreCoin`, `MouseHitTest`, `GetDisappearTime`,
+//! `IsLevelAward`, `GetFinalSeedPacketType` and `Draw`. Not yet ported:
+//! money and the other level awards.
 
 use bevy::prelude::*;
 use sexy::rand::MtRand;
 use sexy::tod::{TodCurve, animate_curve, float_round_to_int};
 
 use crate::graphics::SexyColor;
-use crate::reanim::{EffectSystem, ReanimationId, ReanimationType};
+use crate::particle::ParticleEffect;
+use crate::plant::SeedType;
+use crate::reanim::{EffectSystem, ParticleSystemId, ReanimationId, ReanimationType};
 use crate::resources::GameResources;
 
 use super::{BOARD_WIDTH, make_render_order, render_layer};
@@ -24,6 +28,8 @@ pub enum CoinType {
     Sun,
     SmallSun,
     LargeSun,
+    /// The new plant a level ends with (`COIN_FINAL_SEED_PACKET`).
+    FinalSeedPacket,
 }
 
 /// `CoinMotion`: where the coin comes from.
@@ -34,6 +40,8 @@ pub enum CoinMotion {
     FromSky,
     FromSkySlow,
     FromPlant,
+    /// Money and awards that pop out of a dead zombie (`COIN_MOTION_COIN`).
+    Coin,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +65,12 @@ pub struct Coin {
     pub render_order: i32,
     /// The sun's animation (attached to the coin).
     reanim: Option<ReanimationId>,
+    /// The plant a `FinalSeedPacket` shows.
+    pub award_seed: Option<SeedType>,
+    collect_x: f32,
+    collect_y: f32,
+    /// The bouncing arrow over an award that's landed.
+    arrow: Option<ParticleSystemId>,
 }
 
 /// What a coin did this tick that the board needs to act on.
@@ -97,18 +111,30 @@ impl Coin {
             scale: 1.0,
             render_order: make_render_order(render_layer::COIN_BANK, 0, 1),
             reanim: None,
+            award_seed: None,
+            collect_x: 0.0,
+            collect_y: 0.0,
+            arrow: None,
         };
-        // AttachReanim at the coin's center.
-        let (cx, cy) = (coin.width * 0.5, coin.height * 0.5);
-        match effects.add_reanimation(0.0, 0.0, ReanimationType::Sun, res, images) {
-            Ok((id, sun)) => {
-                sun.set_position(x + cx, y + cy);
-                sun.loop_type = sexy::reanim::LoopType::Loop;
-                sun.anim_rate = 6.0;
-                sun.is_attachment = true;
-                coin.reanim = Some(id);
+        if ty == CoinType::FinalSeedPacket {
+            if let Some(seeds) = res.image("IMAGE_SEEDS") {
+                coin.width = seeds.cel_width() as f32;
+                coin.height = seeds.cel_height() as f32;
             }
-            Err(e) => error!("{e}"),
+            coin.render_order = make_render_order(render_layer::ABOVE_UI, 0, 0);
+        } else {
+            // AttachReanim at the coin's center.
+            let (cx, cy) = (coin.width * 0.5, coin.height * 0.5);
+            match effects.add_reanimation(0.0, 0.0, ReanimationType::Sun, res, images) {
+                Ok((id, sun)) => {
+                    sun.set_position(x + cx, y + cy);
+                    sun.loop_type = sexy::reanim::LoopType::Loop;
+                    sun.anim_rate = 6.0;
+                    sun.is_attachment = true;
+                    coin.reanim = Some(id);
+                }
+                Err(e) => error!("{e}"),
+            }
         }
 
         match motion {
@@ -126,6 +152,14 @@ impl Coin {
                 coin.ground_y = y + 15.0 + rng.next_range(20) as f32;
                 coin.scale = 0.4;
             }
+            CoinMotion::Coin => {
+                coin.vel_y = -3.0 - rng.range_f32(0.0, 2.0);
+                coin.vel_x = -0.5 + rng.range_f32(0.0, 1.0);
+                coin.ground_y = (y + 45.0 + rng.next_range(20) as f32).clamp(80.0, 521.0);
+                if coin.is_level_award() {
+                    coin.ground_y -= 30.0;
+                }
+            }
         }
         coin.scale *= coin.sun_scale();
         coin
@@ -136,8 +170,13 @@ impl Coin {
         match self.ty {
             CoinType::SmallSun => 0.5,
             CoinType::LargeSun => 2.0,
-            CoinType::Sun => 1.0,
+            CoinType::Sun | CoinType::FinalSeedPacket => 1.0,
         }
+    }
+
+    /// `IsLevelAward`.
+    pub fn is_level_award(&self) -> bool {
+        self.ty == CoinType::FinalSeedPacket
     }
 
     /// `GetSunValue`.
@@ -146,6 +185,7 @@ impl Coin {
             CoinType::Sun => 25,
             CoinType::SmallSun => 15,
             CoinType::LargeSun => 50,
+            CoinType::FinalSeedPacket => 0,
         }
     }
 
@@ -167,13 +207,19 @@ impl Coin {
         if let Some(id) = self.reanim.take() {
             effects.kill(id);
         }
+        if let Some(id) = self.arrow.take() {
+            effects.remove_particle(id);
+        }
     }
 
-    /// `Coin::Collect`: starts flying to the sun counter.
+    /// `Coin::Collect`: starts flying to the sun counter (or, for an award,
+    /// to the middle of the screen).
     pub fn collect(&mut self) {
         if self.dead {
             return;
         }
+        self.collect_x = self.pos_x;
+        self.collect_y = self.pos_y;
         self.is_being_collected = true;
         self.fade_count = 0;
     }
@@ -190,19 +236,30 @@ impl Coin {
     }
 
     /// `Coin::Update`, while playing.
-    pub fn update(&mut self, effects: &mut EffectSystem, rng: &mut MtRand) -> Option<CoinEvent> {
+    pub fn update(
+        &mut self,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut MtRand,
+    ) -> Option<CoinEvent> {
         self.coin_age += 1;
         let mut event = None;
         if self.fade_count != 0 {
-            // UpdateFade.
-            self.fade_count -= 1;
-            if self.fade_count == 0 {
-                self.die(effects);
+            // UpdateFade: awards never fade.
+            if !self.is_level_award() {
+                self.fade_count -= 1;
+                if self.fade_count == 0 {
+                    self.die(effects);
+                }
             }
         } else if !self.is_being_collected {
-            self.update_fall(rng);
+            self.update_fall(effects, res, images, rng);
         } else {
             event = self.update_collected(effects);
+        }
+        if let Some(system) = self.arrow.and_then(|a| effects.particle_mut(a)) {
+            system.system_move(self.pos_x + self.width / 2.0, self.pos_y + self.height / 2.0 - 60.0);
         }
 
         // AttachmentUpdateAndMove / OverrideColor / OverrideScale.
@@ -219,11 +276,19 @@ impl Coin {
     }
 
     /// `Coin::UpdateFall`.
-    fn update_fall(&mut self, rng: &mut MtRand) {
+    fn update_fall(
+        &mut self,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut MtRand,
+    ) {
         if self.pos_y + self.vel_y < self.ground_y {
             self.pos_y += self.vel_y;
             if self.motion == CoinMotion::FromPlant {
                 self.vel_y += 0.09;
+            } else if self.motion == CoinMotion::Coin {
+                self.vel_y += 0.15;
             }
             self.pos_x += self.vel_x;
             if self.pos_x > BOARD_WIDTH as f32 - self.width {
@@ -234,12 +299,19 @@ impl Coin {
                 self.vel_x = 0.4 + rng.range_f32(0.0, 0.4);
             }
         } else {
+            if self.is_level_award() && self.arrow.is_none() {
+                // The bouncing arrow (CoinGetsBouncyArrow) shows it's the one to click.
+                let (x, y) = (self.pos_x + self.width / 2.0, self.pos_y + self.height / 2.0 - 60.0);
+                self.arrow = effects.add_particle(x, y, self.render_order + 1, ParticleEffect::SeedPacket, res, images, rng);
+            }
             self.pos_y = self.ground_y;
             self.pos_x = float_round_to_int(self.pos_x) as f32;
-            self.disappear_counter += 1;
-            // GetDisappearTime, then StartFade.
-            if self.disappear_counter >= 750 {
-                self.fade_count = 15;
+            if !self.is_level_award() {
+                self.disappear_counter += 1;
+                // GetDisappearTime, then StartFade.
+                if self.disappear_counter >= 750 {
+                    self.fade_count = 15;
+                }
             }
         }
         if self.motion == CoinMotion::FromPlant {
@@ -250,6 +322,16 @@ impl Coin {
 
     /// `Coin::UpdateCollected` for sun: glides to the sun counter.
     fn update_collected(&mut self, effects: &mut EffectSystem) -> Option<CoinEvent> {
+        if self.is_level_award() {
+            // The award glides to the middle of the screen. TODO: it also
+            // grows to twice its size on the way.
+            self.disappear_counter += 1;
+            let (dest_x, dest_y) = (400.0 - self.width / 2.0, 200.0 - self.height / 2.0);
+            let t = self.disappear_counter;
+            self.pos_x = sexy::tod::animate_curve_float(0, 350, t, self.collect_x, dest_x, TodCurve::EaseOut);
+            self.pos_y = sexy::tod::animate_curve_float(0, 350, t, self.collect_y, dest_y, TodCurve::EaseOut);
+            return None;
+        }
         let (dest_x, dest_y) = (15.0, 0.0);
         let dx = (self.pos_x - dest_x).abs();
         let dy = (self.pos_y - dest_y).abs();
@@ -277,6 +359,13 @@ impl Coin {
     pub fn draw(&self, g: &mut crate::graphics::Graphics, effects: &EffectSystem, res: &GameResources) {
         if let Some(id) = self.reanim {
             effects.draw(g, id, res);
+        }
+        if self.ty == CoinType::FinalSeedPacket
+            && let Some(seed) = self.award_seed
+        {
+            // Flashes until it's picked up.
+            let gray = if self.is_being_collected { 255 } else { super::seed_bank::flashing_gray(self.coin_age, 75) };
+            super::seed_bank::draw_seed_packet(g, res, self.pos_x, self.pos_y, seed, 0.0, gray, true);
         }
     }
 }

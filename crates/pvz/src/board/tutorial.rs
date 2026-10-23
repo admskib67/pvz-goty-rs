@@ -74,7 +74,7 @@ impl Board {
     }
 
     /// `Board::TutorialArrowRemove`.
-    fn tutorial_arrow_remove(&mut self) {
+    pub(super) fn tutorial_arrow_remove(&mut self) {
         self.particle_requests.push(ParticleRequest::RemoveTutorialArrow);
     }
 

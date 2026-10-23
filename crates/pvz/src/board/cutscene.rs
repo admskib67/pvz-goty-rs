@@ -40,6 +40,9 @@ const TIME_READY_SET_PLANT_START: i32 = 6000;
 const TIME_READY_SET_PLANT_END: i32 = 7830;
 const TIME_INTRO_END: i32 = 6000;
 const TIME_LAWN_MOWER_DURATION: i32 = 250;
+const LOST_TIME_BRAIN_GRAPHIC_START: i32 = 6000;
+const LOST_TIME_BRAIN_GRAPHIC_END: i32 = 11000;
+const LOST_TIME_END: i32 = 11000;
 const TIME_LAWN_MOWER_START: [i32; 6] = [6300, 6250, 6200, 6150, 6100, 6050];
 
 #[derive(Debug, Clone, Default)]
@@ -53,12 +56,25 @@ pub struct CutScene {
     crazy_dave_time: i32,
     lawn_mower_time: i32,
     placed_lawn_items: bool,
+    /// The brains graphic of the lost-level cutscene.
+    zombies_won_reanim: Option<crate::reanim::ReanimationId>,
 }
 
 impl CutScene {
     /// `CalcPosition`.
     fn calc_position(&self, start: i32, end: i32, from: i32, to: i32) -> i32 {
         animate_curve(start, end, self.cutscene_time, from, to, TodCurve::EaseInOut)
+    }
+
+    /// `ShowZombieWalking`: the zombie that won walks in once the view has
+    /// panned to the house.
+    pub fn show_zombie_walking(&self) -> bool {
+        self.cutscene_time > TIME_PAN_RIGHT_START
+    }
+
+    /// `CutScene::StartZombiesWon`.
+    pub fn start_zombies_won(&mut self) {
+        self.cutscene_time = 0;
     }
 
     /// `IsAfterSeedChooser`.
@@ -151,6 +167,50 @@ pub fn update(
         return;
     }
     animate_board(board, effects, res, images, music, sounds);
+}
+
+/// `CutScene::UpdateZombiesWon`, every tick after a zombie got into the
+/// house. Returns true once it's over and the game over dialog should show.
+pub fn update_zombies_won(
+    board: &mut Board,
+    effects: &mut EffectSystem,
+    res: &mut GameResources,
+    images: &mut Assets<Image>,
+    sounds: &mut Sounds,
+) -> bool {
+    let cs = &mut board.cut_scene;
+    cs.cutscene_time += 10;
+    let time = cs.cutscene_time;
+    if time > TIME_PAN_RIGHT_START && time <= TIME_PAN_RIGHT_END {
+        board.x = cs.calc_position(TIME_PAN_RIGHT_START, TIME_PAN_RIGHT_END, 0, BOARD_OFFSET);
+    }
+    // The zombies chew, then scream, as the screen fills.
+    if time == LOST_TIME_BRAIN_GRAPHIC_START - 400 || time == LOST_TIME_BRAIN_GRAPHIC_START - 900 {
+        sounds.play_foley(FoleyType::Chomp);
+    }
+    if time == LOST_TIME_BRAIN_GRAPHIC_START {
+        let order = make_render_order(render_layer::SCREEN_FADE, 0, 0);
+        match effects.add_reanimation(-(BOARD_OFFSET as f32), 0.0, ReanimationType::ZombiesWon, res, images) {
+            Ok((id, reanim)) => {
+                reanim.anim_rate = 12.0;
+                reanim.loop_type = sexy::reanim::LoopType::PlayOnceAndHold;
+                reanim.render_order = order;
+                let fullscreen = reanim.find_track("fullscreen");
+                reanim.tracks[fullscreen].track_color = [0, 0, 0, 255];
+                reanim.set_frames_for_layer("ZombiesWon");
+                cs.zombies_won_reanim = Some(id);
+            }
+            Err(e) => error!("{e}"),
+        }
+        sounds.play_foley(FoleyType::Scream);
+    }
+    // TODO: the brains graphic shakes between 7000 and 8000 (SetShakeOverride).
+    if time == LOST_TIME_BRAIN_GRAPHIC_END
+        && let Some(reanim) = cs.zombies_won_reanim.and_then(|id| effects.get_mut(id))
+    {
+        reanim.set_frames_for_layer("anim_screen");
+    }
+    time == LOST_TIME_END
 }
 
 /// `CutScene::ShowShovel`: not until the shovel is introduced in 1-5.

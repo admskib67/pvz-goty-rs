@@ -383,6 +383,12 @@ impl ProfileMgr {
         self.profiles.values().find(|p| p.id == id)
     }
 
+    /// The current player, to change their progress.
+    pub fn player_mut(&mut self) -> Option<&mut PlayerInfo> {
+        let id = self.current?;
+        self.profiles.values_mut().find(|p| p.id == id)
+    }
+
     /// Switches the current player (`mPlayerInfo = ...`), or clears it.
     pub fn set_current(&mut self, name: Option<&str>) {
         self.current = name.and_then(|n| self.profiles.get(&key(n))).map(|p| p.id);
