@@ -5,6 +5,8 @@ Vibe coded reconstruction of Plants vs Zombies Game of the year edition
 - Written in rust and bevy
 - A valid copy of the game is needed for this to work 
 
+![main menu image](./github//main%20menu.png)
+
 ## How to run
 
 Currently he game can be started with:

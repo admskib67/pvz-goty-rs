@@ -11,13 +11,14 @@ A Rust reconstruction of Plants vs. Zombies: Game of the Year Edition, built on 
 
 ## Branches
 
-- `main` is the shared, stable line.
-- `core` is where the macOS-side agent moves the engine and game forward (new systems and screens).
-- Windows-specific fixes are done by a separate agent on Windows. Keep platform fixes and core features in separate commits so the branches merge cleanly, and keep this file current on whichever branch you work on.
+- `main` is the shared, stable line; the user merges the other branches into it.
+- `mac` is where the macOS-side agent moves the engine and game forward (new systems and screens).
+- `windows` is where a separate agent on Windows makes Windows-specific fixes. Keep platform fixes and core features in separate commits so the branches merge cleanly, and keep this file current on whichever branch you work on.
 
 ## Git
 
-- **Never commit or push.** The user writes every commit and does all pushes themselves. Leave changes uncommitted in the working tree, and don't amend, reset, stash, rebase or otherwise rewrite their history either. Only switch or create branches when the user asks.
+- **Never commit or push.** The user writes every commit and does all pushes and branch publishing themselves. Leave changes uncommitted in the working tree and say what changed. Don't amend, reset, stash, rebase or otherwise rewrite their history. Only create, switch or merge branches when the user asks, and leave merges uncommitted for them to commit.
+- **Line endings are LF everywhere.** `.gitattributes` (`* text=auto eol=lf`) stores and checks out every text file with Unix line endings, Windows included. Write LF; never convert files to CRLF.
 
 ## Files agents must not edit
 
@@ -77,7 +78,7 @@ The dev profile builds our crates at `opt-level = 1` and dependencies at `3`, be
 ## Platform status
 
 - **macOS arm64:** everything runs: setup screen, title screen with sprouts, main menu.
-- **Windows 11 (x86_64, MSVC from Visual Studio 2026, AMD GPU on Vulkan):** builds and links (the `core` branch's audio is untested there; `.au` sounds stay silent until a decoder is added), including libopenmpt (`dev/libopenmpt-win/x86_64-pc-windows-msvc/`, plus `rpcrt4` for `UuidCreate`). The setup screen works and resource loading completes after the `.au` fix. **Blocker:** reanimations (loading-bar sprouts, main menu) need the compiled-definition parser above; nothing tested past the loading bar yet. Next Windows work: add compiled `.reanim` support in `sexy::reanim` (keeping the XML path for Mac), make the loaders prefer `compiled/…` when present like the original, then run `check_resources` against the Windows pak and extend it to cover compiled files.
+- **Windows 11 (x86_64, MSVC from Visual Studio 2026, AMD GPU on Vulkan):** builds and links, including libopenmpt (`dev/libopenmpt-win/x86_64-pc-windows-msvc/`, plus `rpcrt4` for `UuidCreate`). The setup screen works and resource loading completes after the `.au` fix. Compiled `.reanim` files load (`ReanimDefinition::load` prefers `compiled/…`, falls back to XML); `check_resources` loads every resource and reanim from the Windows pak with 0 failures. Not yet run visually on Windows: the title screen and main menu. Compiled particles (`compiled/particles/*.xml.compiled`) are not parsed yet. Audio (from the `mac` branch) is untested there, and `.au` sounds stay silent until a decoder is added.
 - **Linux:** deferred. `dev/libopenmpt-linux/x86_64-unknown-linux-gnu/` was built under WSL (real Linux libraries) but nothing has been run on Linux.
 
 Windows gotchas already hit:
