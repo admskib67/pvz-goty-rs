@@ -1,20 +1,25 @@
 //! Plants on the lawn (`Plant`). So far a plant is planted, idles and
-//! blinks, peashooters shoot at zombies in their row and sunflowers make
-//! sun; the other plants' abilities come as they're needed.
+//! blinks; peashooters, snow peas and repeaters shoot at zombies in their
+//! row, sunflowers make sun, wall-nuts crack as they're eaten, cherry
+//! bombs explode and potato mines arm and blow up. The other plants'
+//! abilities come as they're needed.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Plant.cpp`: `PlantInitialize`,
 //! `CalcRenderOrder`, `Update`, `Animate`, `UpdateReanim`, `UpdateBlink`,
 //! `DoBlink`, `AttachBlinkAnim`, `EndBlink`, `Draw`, `DrawShadow`, `Die`,
 //! `PlantDrawHeightOffset`, `UpdateAbilities`, `UpdateShooter`,
 //! `UpdateShooting`, `FindTargetAndFire`, `FindTargetZombie`, `Fire`,
-//! `UpdateProductionPlant`, `GetPlantRect` and `GetPlantAttackRect`.
+//! `UpdateProductionPlant`, `GetPlantRect`, `GetPlantAttackRect`,
+//! `AnimateNuts`, `UpdatePotato`, `DoSpecial` and `PlayBodyReanim`.
 
 use bevy::prelude::*;
 use sexy::data_array::DataArray;
 use sexy::rand::MtRand;
 use sexy::reanim::{LoopType, RENDER_GROUP_HIDDEN, RENDER_GROUP_NORMAL};
 
+use crate::audio::FoleyType;
 use crate::graphics::Graphics;
+use crate::particle::ParticleEffect;
 use crate::plant::{PlantSubClass, SeedType};
 use crate::reanim::{EffectSystem, ReanimationId};
 use crate::resources::GameResources;
@@ -27,9 +32,30 @@ use super::{make_render_order, render_layer};
 #[derive(Debug, Clone, Copy)]
 pub enum PlantAction {
     /// `Plant::Fire`: a pea leaves the plant at this spot.
-    Shoot { x: i32, y: i32, row: i32, render_order: i32 },
+    Shoot { x: i32, y: i32, row: i32, render_order: i32, snow: bool },
     /// A sunflower makes sun at its square.
     MakeSun { x: i32, y: i32 },
+    /// `Plant::DoSpecial` for the cherry bomb: burns zombies near it.
+    CherryBomb { x: i32, y: i32, row: i32 },
+    /// `Plant::DoSpecial` for the potato mine: kills zombies on top of it.
+    PotatoMine { x: i32, y: i32, row: i32 },
+    /// A particle effect at a spot on the board.
+    Particle { x: i32, y: i32, render_order: i32, effect: ParticleEffect },
+    /// A sound.
+    Foley(FoleyType),
+}
+
+/// `PlantState`, for the plants ported so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlantState {
+    NotReady,
+    PotatoRising,
+    PotatoArmed,
+}
+
+/// Plants that shoot straight peas.
+fn is_pea_shooter(seed: SeedType) -> bool {
+    matches!(seed, SeedType::Peashooter | SeedType::Snowpea | SeedType::Repeater)
 }
 
 /// `Plant::mWidth` and `mHeight`.
@@ -57,8 +83,13 @@ pub struct Plant {
     pub y: i32,
     pub render_order: i32,
     pub health: i32,
+    max_health: i32,
     pub dead: bool,
     shake_offset_x: f32,
+    state: PlantState,
+    state_countdown: i32,
+    /// Counts down to the plant's special move (`mDoSpecialCountdown`).
+    do_special_countdown: i32,
     blink_countdown: i32,
     pub launch_rate: i32,
     pub launch_counter: i32,
@@ -115,8 +146,12 @@ impl Plant {
             y,
             render_order: 0,
             health: 300,
+            max_health: 300,
             dead: false,
             shake_offset_x: 0.0,
+            state: PlantState::NotReady,
+            state_countdown: 0,
+            do_special_countdown: 0,
             blink_countdown: 0,
             launch_rate: def.launch_rate,
             launch_counter: 0,
@@ -175,6 +210,20 @@ impl Plant {
                     }
                 }
             }
+            Cherrybomb => {
+                plant.do_special_countdown = 100;
+                if let Some(body) = plant.body.and_then(|b| effects.get_mut(b)) {
+                    body.set_frames_for_layer("anim_explode");
+                    body.loop_type = LoopType::PlayOnceAndHold;
+                }
+            }
+            Potatomine => {
+                plant.state_countdown = 1500;
+                if let Some(body) = plant.body.and_then(|b| effects.get_mut(b)) {
+                    body.anim_rate = 12.0;
+                    body.assign_render_group_to_track("anim_glow", RENDER_GROUP_HIDDEN);
+                }
+            }
             Wallnut | ExplodeONut | GiantWallnut => {
                 plant.health = 4000;
                 plant.blink_countdown = 1000 + rng.next_range(1000) as i32;
@@ -186,6 +235,7 @@ impl Plant {
             // TODO: the rest of PlantInitialize's per-plant setup as plants are ported.
             _ => {}
         }
+        plant.max_health = plant.health;
         plant
     }
 
@@ -213,14 +263,132 @@ impl Plant {
         rng: &mut MtRand,
     ) {
         self.update_abilities(zombies, actions, effects, rng);
-        if self.recently_eaten_countdown > 0 {
-            self.recently_eaten_countdown -= 1;
-        }
-        self.update_blink(effects, res, images, rng);
+        self.animate(actions, effects, res, images, rng);
         if self.health < 0 {
             self.die(effects);
         }
         self.update_reanim(effects);
+    }
+
+    /// `Plant::Animate`.
+    fn animate(
+        &mut self,
+        actions: &mut Vec<PlantAction>,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut MtRand,
+    ) {
+        if self.recently_eaten_countdown > 0 {
+            self.recently_eaten_countdown -= 1;
+        }
+        if matches!(self.seed, SeedType::Wallnut | SeedType::Tallnut) {
+            self.animate_nuts(actions, effects, rng);
+        }
+        self.update_blink(effects, res, images, rng);
+    }
+
+    /// `Plant::AnimateNuts`: nuts crack as they're eaten, and stop moving
+    /// while a zombie chews on them.
+    fn animate_nuts(&mut self, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem, rng: &mut MtRand) {
+        let Some(body_id) = self.body else { return };
+        let (cracked1, cracked2, track) = if self.seed == SeedType::Wallnut {
+            ("IMAGE_REANIM_WALLNUT_CRACKED1", "IMAGE_REANIM_WALLNUT_CRACKED2", "anim_face")
+        } else {
+            ("IMAGE_REANIM_TALLNUT_CRACKED1", "IMAGE_REANIM_TALLNUT_CRACKED2", "anim_idle")
+        };
+        let (x, mut y) = (self.x + 40, self.y + 10);
+        if self.seed == SeedType::Tallnut {
+            y -= 32;
+        }
+        let order = self.render_order + 4;
+        let Some(body) = effects.get_mut(body_id) else { return };
+        let current = body.tracks[body.find_track(track)].image_override.clone();
+        let crack = |body: &mut crate::reanim::Reanimation, image: &str, actions: &mut Vec<PlantAction>| {
+            if current.as_deref() != Some(image) {
+                body.set_image_override(track, Some(image));
+                actions.push(PlantAction::Particle { x, y, render_order: order, effect: ParticleEffect::WallnutEatLarge });
+            }
+        };
+        if self.health < self.max_health / 3 {
+            crack(body, cracked2, actions);
+        } else if self.health < self.max_health * 2 / 3 {
+            crack(body, cracked1, actions);
+        } else {
+            body.set_image_override(track, None);
+        }
+        if self.recently_eaten_countdown > 0 {
+            body.anim_rate = 0.1;
+        } else if body.anim_rate < 1.0 {
+            body.anim_rate = rng.range_f32(10.0, 15.0);
+        }
+    }
+
+    /// `Plant::PlayBodyReanim`.
+    fn play_body_reanim(&self, effects: &mut EffectSystem, track: &str, loop_type: LoopType, blend: i32, rate: f32) {
+        if let Some(body) = self.body.and_then(|b| effects.get_mut(b)) {
+            body.play(track, loop_type, blend, rate);
+        }
+    }
+
+    /// `Plant::UpdatePotato`.
+    fn update_potato(&mut self, zombies: &DataArray<Zombie>, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem, rng: &mut MtRand) {
+        match self.state {
+            PlantState::NotReady => {
+                if self.state_countdown == 0 {
+                    let (x, y) = (self.x + PLANT_SIZE / 2, self.y + PLANT_SIZE / 2);
+                    actions.push(PlantAction::Particle { x, y, render_order: self.render_order, effect: ParticleEffect::PotatoMineRise });
+                    self.play_body_reanim(effects, "anim_rise", LoopType::PlayOnceAndHold, 20, 18.0);
+                    self.state = PlantState::PotatoRising;
+                    actions.push(PlantAction::Foley(FoleyType::DirtRise));
+                }
+            }
+            PlantState::PotatoRising => {
+                if self.body.and_then(|b| effects.get(b)).is_some_and(|b| b.loop_count > 0) {
+                    let rate = rng.range_f32(12.0, 15.0);
+                    self.play_body_reanim(effects, "anim_armed", LoopType::Loop, 0, rate);
+                    // TODO: the glow that grows as a zombie nears (anim_glow).
+                    self.state = PlantState::PotatoArmed;
+                    self.blink_countdown = 400 + rng.next_range(4000) as i32;
+                }
+            }
+            PlantState::PotatoArmed => {
+                if self.find_potato_target(zombies) {
+                    self.do_special(actions, effects);
+                }
+            }
+        }
+    }
+
+    /// `Plant::FindTargetZombie` for the potato mine: a zombie on its square
+    /// (or biting something next to it).
+    fn find_potato_target(&self, zombies: &DataArray<Zombie>) -> bool {
+        let attack = IRect::new(self.x, self.y, PLANT_SIZE - 25, PLANT_SIZE);
+        zombies.iter().any(|(_, z)| {
+            if z.row != self.row || !z.effected_by_damage(77) || !z.has_head {
+                return false;
+            }
+            let extra = if z.is_eating { 30 } else { 0 };
+            rect_overlap(attack, z.zombie_rect()) >= -extra
+        })
+    }
+
+    /// `Plant::DoSpecial`, for the instant and mine plants.
+    fn do_special(&mut self, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem) {
+        let (x, y) = (self.x + PLANT_SIZE / 2, self.y + PLANT_SIZE / 2);
+        match self.seed {
+            SeedType::Cherrybomb => {
+                actions.push(PlantAction::Foley(FoleyType::Cherrybomb));
+                actions.push(PlantAction::Foley(FoleyType::Juicy));
+                actions.push(PlantAction::CherryBomb { x, y, row: self.row });
+                self.die(effects);
+            }
+            SeedType::Potatomine => {
+                actions.push(PlantAction::PotatoMine { x: x - 20, y, row: self.row });
+                self.die(effects);
+            }
+            _ => {}
+        }
     }
 
     /// `Plant::GetPlantRect`.
@@ -252,14 +420,25 @@ impl Plant {
             return;
         }
         self.update_shooting(actions, effects);
+        if self.state_countdown > 0 {
+            self.state_countdown -= 1;
+        }
+        if self.seed == SeedType::Potatomine {
+            self.update_potato(zombies, actions, effects, rng);
+        }
         if self.seed.makes_sun() {
             self.update_production_plant(actions, rng);
         }
         if self.seed.definition().sub_class == PlantSubClass::Shooter {
             self.update_shooter(zombies, actions, effects, rng);
         }
-        // TODO: the other plants' abilities (cherry bomb, wall-nut's
-        // cracking, potato mine, ...).
+        if self.do_special_countdown > 0 {
+            self.do_special_countdown -= 1;
+            if self.do_special_countdown == 0 {
+                self.do_special(actions, effects);
+            }
+        }
+        // TODO: the other plants' abilities.
     }
 
     /// `Plant::UpdateProductionPlant`, for sunflowers.
@@ -284,9 +463,12 @@ impl Plant {
         if self.launch_counter <= 0 {
             self.launch_counter = self.launch_rate - rng.next_range(15) as i32;
             // TODO: the other shooters (threepeater, cactus, split pea, ...).
-            if self.seed == SeedType::Peashooter {
+            if is_pea_shooter(self.seed) {
                 self.find_target_and_fire(zombies, actions, effects);
             }
+        }
+        if self.launch_counter == 25 && self.seed == SeedType::Repeater {
+            self.find_target_and_fire(zombies, actions, effects);
         }
     }
 
@@ -325,6 +507,10 @@ impl Plant {
             head.anim_rate = 35.0;
             head.set_frames_for_layer("anim_shooting");
             self.shooting_counter = 35;
+            if self.seed == SeedType::Repeater {
+                head.anim_rate = 45.0;
+                self.shooting_counter = 26;
+            }
         } else {
             self.fire(actions, effects);
         }
@@ -371,7 +557,14 @@ impl Plant {
         let (offset_x, offset_y) = self.pea_head_offset(effects);
         let (x, y) = (self.x + offset_x + 24, self.y + offset_y - 33);
         // TODO: shots leave 5 pixels higher from a flower pot.
-        actions.push(PlantAction::Shoot { x, y, row: self.row, render_order: self.render_order - 1 });
+        let snow = self.seed == SeedType::Snowpea;
+        if snow {
+            // The frosty puff at the plant's mouth.
+            let order = make_render_order(render_layer::LAWN_MOWER, self.row, 1);
+            actions.push(PlantAction::Particle { x: x + 8, y: y + 13, render_order: order, effect: ParticleEffect::SnowpeaPuff });
+            actions.push(PlantAction::Foley(FoleyType::SnowPeaSparkles));
+        }
+        actions.push(PlantAction::Shoot { x, y, row: self.row, render_order: self.render_order - 1, snow });
     }
 
     /// `Plant::UpdateReanim`.

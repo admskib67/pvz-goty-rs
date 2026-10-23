@@ -376,6 +376,11 @@ pub enum FoleyType {
     Lawnmower,
     Scream,
     WinMusic,
+    Cherrybomb,
+    Juicy,
+    ReverseExplosion,
+    Frozen,
+    SnowPeaSparkles,
 }
 
 struct FoleyParams {
@@ -428,6 +433,11 @@ impl FoleyType {
                 sounds: &["SOUND_WINMUSIC"],
                 flags: foley_flags::USES_MUSIC_VOLUME,
             },
+            Self::Cherrybomb => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_CHERRYBOMB"], flags: 0 },
+            Self::Juicy => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_JUICY"], flags: 0 },
+            Self::ReverseExplosion => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_REVERSE_EXPLOSION"], flags: 0 },
+            Self::Frozen => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_FROZEN"], flags: 0 },
+            Self::SnowPeaSparkles => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_SNOW_PEA_SPARKLES"], flags: 0 },
             Self::Scream => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_SCREAM"], flags: 0 },
             Self::SpawnSun => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_THROW"], flags: 0 },
             Self::PlasticHit => FoleyParams {

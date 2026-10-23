@@ -124,6 +124,25 @@ impl BackgroundType {
     }
 }
 
+/// `GetCircleRectOverlap`.
+fn circle_rect_overlap(cx: i32, cy: i32, radius: i32, rect: zombie::IRect) -> bool {
+    let dx = if cx < rect.x {
+        rect.x - cx
+    } else if cx > rect.x + rect.w {
+        cx - rect.x - rect.w
+    } else {
+        0
+    };
+    let dy = if cy < rect.y {
+        rect.y - cy
+    } else if cy > rect.y + rect.h {
+        cy - rect.y - rect.h
+    } else {
+        0
+    };
+    dx * dx + dy * dy <= radius * radius
+}
+
 /// `GridToPixelY` for the grid's left column.
 pub fn grid_to_pixel_y(background: BackgroundType, grid_x: i32, grid_y: i32) -> i32 {
     if background.has_roof() {
@@ -242,6 +261,8 @@ pub struct Board {
     projectiles: DataArray<Projectile>,
     waves: WaveState,
     plant_actions: Vec<PlantAction>,
+    shake_counter: i32,
+    shake_amount: (i32, i32),
     /// A zombie reached the house this tick (`Board::ZombiesWon`).
     zombies_won_trigger: Option<sexy::data_array::Id<Zombie>>,
     /// The last zombie's award has dropped (`mLevelAwardSpawned`).
@@ -323,6 +344,8 @@ impl Board {
             projectiles: DataArray::default(),
             waves: WaveState::default(),
             plant_actions: Vec::new(),
+            shake_counter: 0,
+            shake_amount: (0, 0),
             zombies_won_trigger: None,
             level_award_spawned: false,
             board_fade_out_counter: -1,
@@ -611,6 +634,7 @@ fn update_board(
     }
 
     effects.update(sounds.rng());
+    board.update_shake(sounds.rng());
     board.advice.update();
     board.update_tutorial(&resources);
 
@@ -753,6 +777,59 @@ impl Board {
         }
     }
 
+    /// `Board::ShakeBoard`.
+    fn shake_board(&mut self, amount_x: i32, amount_y: i32) {
+        self.shake_counter = 12;
+        self.shake_amount = (amount_x, amount_y);
+    }
+
+    /// The shake part of `Board::Update`: the board jolts for a moment.
+    fn update_shake(&mut self, rng: &mut sexy::rand::MtRand) {
+        if self.shake_counter == 0 {
+            return;
+        }
+        self.shake_counter -= 1;
+        if self.shake_counter == 0 {
+            (self.x, self.y) = (0, 0);
+            return;
+        }
+        if rng.next_range(3) == 0 {
+            self.shake_amount.0 = -self.shake_amount.0;
+        }
+        let bounce = |amount| sexy::tod::animate_curve(12, 0, self.shake_counter, 0, amount, sexy::tod::TodCurve::Bounce);
+        self.x = bounce(self.shake_amount.0);
+        self.y = bounce(self.shake_amount.1);
+    }
+
+    /// `Board::KillAllZombiesInRadius`: with `burn`, the zombies are
+    /// charred, otherwise blown to bits.
+    #[allow(clippy::too_many_arguments)]
+    fn kill_all_zombies_in_radius(
+        &mut self,
+        row: i32,
+        x: i32,
+        y: i32,
+        radius: i32,
+        row_range: i32,
+        burn: bool,
+        env: &zombie::ZombieEnv,
+        fx: &mut Fx,
+    ) {
+        for (_, zombie) in self.zombies.iter_mut() {
+            if !zombie.effected_by_damage(zombie::damage_range::GROUND) {
+                continue;
+            }
+            let row_dist = zombie.row - row;
+            if row_dist.abs() <= row_range && circle_rect_overlap(x, y, radius, zombie.zombie_rect()) {
+                if burn {
+                    zombie.apply_burn(env, fx);
+                } else {
+                    zombie.take_damage(1800, 18, env, fx);
+                }
+            }
+        }
+    }
+
     /// Carries out what a plant did this tick.
     fn do_plant_action(
         &mut self,
@@ -763,12 +840,33 @@ impl Board {
         sounds: &mut Sounds,
     ) {
         match action {
-            PlantAction::Shoot { x, y, row, render_order } => {
+            PlantAction::Shoot { x, y, row, render_order, snow } => {
                 sounds.play_foley(FoleyType::Throw);
                 let grid_x = self.pixel_to_grid_x(x).max(0);
                 let shadow_y = self.grid_to_pixel_y(grid_x, row) as f32 + 67.0;
                 // TODO: shadows sit 12 pixels higher on the roof's left side.
-                self.projectiles.alloc(Projectile::new(x, y, render_order, row, shadow_y, ProjectileType::Pea));
+                let ty = if snow { ProjectileType::Snowpea } else { ProjectileType::Pea };
+                self.projectiles.alloc(Projectile::new(x, y, render_order, row, shadow_y, ty));
+            }
+            PlantAction::Particle { x, y, render_order, effect } => {
+                self.add_particle(x as f32, y as f32, render_order, effect);
+            }
+            PlantAction::Foley(foley) => sounds.play_foley(foley),
+            PlantAction::CherryBomb { x, y, row } => {
+                let env = self.zombie_env();
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                self.kill_all_zombies_in_radius(row, x, y, 115, 1, true, &env, &mut fx);
+                self.add_particle(x as f32, y as f32, render_layer::TOP, ParticleEffect::Powie);
+                self.shake_board(3, -4);
+            }
+            PlantAction::PotatoMine { x, y, row } => {
+                sounds.play_sample("SOUND_POTATO_MINE");
+                let env = self.zombie_env();
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                self.kill_all_zombies_in_radius(row, x, y, 60, 0, false, &env, &mut fx);
+                let order = make_render_order(render_layer::PARTICLE, row, 0);
+                self.add_particle((x + 20) as f32, y as f32, order, ParticleEffect::PotatoMine);
+                self.shake_board(3, -4);
             }
             PlantAction::MakeSun { x, y } => {
                 sounds.play_foley(FoleyType::SpawnSun);

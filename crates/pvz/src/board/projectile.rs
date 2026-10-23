@@ -1,4 +1,4 @@
-//! Things plants shoot (`Projectile`). So far the plain pea.
+//! Things plants shoot (`Projectile`). So far the pea and the snow pea.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Projectile.cpp`:
 //! `ProjectileInitialize`, `Update`, `UpdateMotion`, `UpdateNormalMotion`,
@@ -12,20 +12,21 @@ use crate::graphics::Graphics;
 use crate::particle::ParticleEffect;
 use crate::resources::GameResources;
 
-use super::zombie::{Fx, HelmType, IRect, Zombie, ZombieEnv, damage_range, rect_overlap};
+use super::zombie::{Fx, HelmType, IRect, Zombie, ZombieEnv, damage, damage_range, rect_overlap};
 use super::{make_render_order, render_layer};
 
 /// `ProjectileType`, for what's ported so far.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectileType {
     Pea,
+    Snowpea,
 }
 
 impl ProjectileType {
     /// `ProjectileDefinition::mDamage`.
     fn damage(self) -> i32 {
         match self {
-            Self::Pea => 20,
+            Self::Pea | Self::Snowpea => 20,
         }
     }
 }
@@ -73,7 +74,7 @@ impl Projectile {
     /// `Projectile::GetProjectileRect`.
     fn rect(&self) -> IRect {
         match self.ty {
-            ProjectileType::Pea => IRect::new(self.x - 15, self.y, self.width + 15, self.height),
+            ProjectileType::Pea | ProjectileType::Snowpea => IRect::new(self.x - 15, self.y, self.width + 15, self.height),
         }
     }
 
@@ -145,7 +146,8 @@ impl Projectile {
     fn do_impact(&mut self, zombies: &mut DataArray<Zombie>, id: sexy::data_array::Id<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
         let Some(zombie) = zombies.get_mut(id) else { return };
         self.play_impact_sound(zombie, fx);
-        zombie.take_damage(self.ty.damage(), 0, env, fx);
+        let flags = if self.ty == ProjectileType::Snowpea { damage::FREEZE } else { 0 };
+        zombie.take_damage(self.ty.damage(), flags, env, fx);
 
         // The splat sits on the zombie and moves with it.
         let (splat_x, splat_y) = (self.pos_x + 12.0 - 15.0, self.pos_y + 12.0);
@@ -154,13 +156,15 @@ impl Projectile {
         if self.pos_x > (zombie.x + 40) as f32 {
             x -= 60.0;
         }
-        zombie.add_attached_particle(x, y, ParticleEffect::PeaSplat, fx);
+        let effect = if self.ty == ProjectileType::Snowpea { ParticleEffect::SnowpeaSplat } else { ParticleEffect::PeaSplat };
+        zombie.add_attached_particle(x, y, effect, fx);
         self.dead = true;
     }
 
     /// `Projectile::Draw`: in the projectile's own coordinates.
     pub fn draw(&self, g: &mut Graphics, res: &GameResources) {
-        let Some(image) = res.image("IMAGE_PROJECTILEPEA") else { return };
+        let id = if self.ty == ProjectileType::Snowpea { "IMAGE_PROJECTILESNOWPEA" } else { "IMAGE_PROJECTILEPEA" };
+        let Some(image) = res.image(id) else { return };
         g.push_state();
         g.translate(self.x as f32, self.y as f32);
         g.draw_image(image, 0.0, 0.0);
@@ -173,7 +177,12 @@ impl Projectile {
         let (offset_x, offset_y) = (self.pos_x - self.x as f32 + 3.0, self.pos_y - self.y as f32);
         g.push_state();
         g.translate(self.x as f32, self.y as f32);
-        g.draw_image_cel(image, offset_x, self.shadow_y - self.pos_y + offset_y, night as u32, 0);
+        let y = self.shadow_y - self.pos_y + offset_y;
+        if self.ty == ProjectileType::Snowpea {
+            g.draw_image_cel_center_scaled(image, offset_x - 4.0, y, night as u32, 1.3, 1.3);
+        } else {
+            g.draw_image_cel(image, offset_x, y, night as u32, 0);
+        }
         g.pop_state();
     }
 }

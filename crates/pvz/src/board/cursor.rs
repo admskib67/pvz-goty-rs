@@ -410,6 +410,9 @@ impl Board {
         self.plants.alloc(plant);
         // TODO: water sounds and splashes in the pool.
         sounds.play_foley(FoleyType::Plant);
+        if seed == SeedType::Cherrybomb {
+            sounds.play_foley(FoleyType::ReverseExplosion);
+        }
         let (px, py) = ((x + 41) as f32, (y + 74) as f32);
         let py = match seed {
             SeedType::Lilypad => py + 15.0,

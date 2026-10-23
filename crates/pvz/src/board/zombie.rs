@@ -116,6 +116,8 @@ pub enum ZombiePhase {
     Dying,
     /// Run over by a lawn mower.
     Mowered,
+    /// Burned to a crisp (the ones that have lost their head stay standing).
+    Burned,
 }
 
 /// What the board tells its zombies each tick.
@@ -164,6 +166,9 @@ pub struct Zombie {
     variant: bool,
     pub is_eating: bool,
     just_got_shot_counter: i32,
+    /// Ticks left of being slowed by cold (`mChilledCounter`).
+    chilled_counter: i32,
+    phase_counter: i32,
     pub has_head: bool,
     has_arm: bool,
     /// The flag zombie still has its flag.
@@ -231,6 +236,8 @@ impl Zombie {
             variant,
             is_eating: false,
             just_got_shot_counter: 0,
+            chilled_counter: 0,
+            phase_counter: 0,
             has_head: true,
             has_arm: true,
             has_object: false,
@@ -495,8 +502,59 @@ impl Zombie {
     }
 
     fn apply_anim_rate(&self, effects: &mut EffectSystem, rate: f32) {
+        let rate = if self.chilled_counter > 0 { rate * 0.5 } else { rate };
         if let Some(body) = self.body.and_then(|b| effects.get_mut(b)) {
             body.anim_rate = rate;
+        }
+    }
+
+    /// `Zombie::ApplyChill`: frozen zombies move and bite at half speed.
+    fn apply_chill(&mut self, fx: &mut Fx) {
+        if self.is_dead_or_dying() {
+            return;
+        }
+        if self.chilled_counter == 0 {
+            fx.sounds.play_foley(FoleyType::Frozen);
+        }
+        self.chilled_counter = self.chilled_counter.max(1000);
+        self.update_anim_speed(fx.effects);
+    }
+
+    /// `Zombie::ApplyBurn`: cherry bombs and jalapenos.
+    pub fn apply_burn(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        if self.dead || self.phase == ZombiePhase::Burned {
+            return;
+        }
+        if self.body_health >= 1800 {
+            self.take_damage(1800, 18, env, fx);
+            return;
+        }
+        if self.phase != ZombiePhase::Normal {
+            self.die_with_loot(fx);
+        } else if !self.has_head {
+            // Headless zombies stay standing, charred, for a few moments.
+            self.apply_anim_rate(fx.effects, 0.0);
+            self.original_anim_rate = 0.0;
+            self.phase = ZombiePhase::Burned;
+            self.phase_counter = 300;
+            self.just_got_shot_counter = 0;
+            self.drop_loot();
+        } else {
+            if let Ok((_, charred)) =
+                fx.effects.add_reanimation(self.pos_x + 22.0, self.pos_y - 10.0, ReanimationType::ZombieCharred, fx.res, fx.images)
+            {
+                charred.anim_rate *= fx.sounds.rng().range_f32(0.9, 1.1);
+                charred.render_order = self.render_order;
+            }
+            self.die_with_loot(fx);
+        }
+    }
+
+    /// `Zombie::UpdateBurn`.
+    fn update_burn(&mut self, fx: &mut Fx) {
+        self.phase_counter -= 1;
+        if self.phase_counter == 0 {
+            self.die_with_loot(fx);
         }
     }
 
@@ -641,6 +699,7 @@ impl Zombie {
                 self.update_zombie_walking(fx.effects);
             }
             ZombiePhase::Mowered => self.update_mowered(fx),
+            ZombiePhase::Burned => self.update_burn(fx),
             ZombiePhase::Normal => {
                 self.update_playing(plants, env, fx);
                 self.animate(plants, fx);
@@ -746,6 +805,12 @@ impl Zombie {
 
     /// `Zombie::UpdatePlaying`.
     fn update_playing(&mut self, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
+        if self.chilled_counter > 0 {
+            self.chilled_counter -= 1;
+            if self.chilled_counter == 0 {
+                self.update_anim_speed(fx.effects);
+            }
+        }
         self.groan_counter -= 1;
         if self.groan_counter == 0
             && fx.sounds.rng().next_range(env.zombie_count.max(1) as u32) == 0
@@ -784,6 +849,7 @@ impl Zombie {
         }
         let speed = match self.body.and_then(|b| effects.get(b)) {
             Some(body) if body.definition.find_track("_ground").is_some() => body.track_velocity("_ground"),
+            _ if self.chilled_counter > 0 => self.vel_x * 0.4,
             _ => self.vel_x,
         };
         self.pos_x -= speed;
@@ -791,7 +857,8 @@ impl Zombie {
 
     /// `Zombie::CheckIfPreyCaught`: every few ticks, bite whatever's in reach.
     fn check_if_prey_caught(&mut self, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
-        if !self.has_head || self.age % TICKS_BETWEEN_EATS != 0 {
+        let ticks_between_eats = if self.chilled_counter > 0 { TICKS_BETWEEN_EATS * 2 } else { TICKS_BETWEEN_EATS };
+        if !self.has_head || self.age % ticks_between_eats != 0 {
             return;
         }
         if let Some(id) = self.find_plant_target(plants) {
@@ -815,6 +882,9 @@ impl Zombie {
     /// `Zombie::EatPlant`.
     fn eat_plant(&mut self, plants: &mut DataArray<Plant>, id: sexy::data_array::Id<Plant>, fx: &mut Fx) {
         self.start_eating(fx.effects);
+        if self.chilled_counter > 0 && self.age % 2 == 1 {
+            return;
+        }
         let Some(plant) = plants.get_mut(id) else { return };
         // TODO: instant plants and others in a special state aren't eaten
         // (cherry bomb, jalapeno, squash, ...).
@@ -869,12 +939,20 @@ impl Zombie {
         let offset_x = pos.image_offset_x + 15.0;
         let offset_y = pos.image_offset_y + pos.body_y - 28.0 + 20.0;
         let fade = if self.zombie_fade >= 0 { (255 * self.zombie_fade / 10).clamp(0, 255) as u8 } else { 255 };
+        let tint = if self.phase == ZombiePhase::Burned {
+            [0, 0, 0]
+        } else if self.chilled_counter > 0 {
+            // TODO: the original adds the same blue on top (additive drawing).
+            [150, 175, 255]
+        } else {
+            [255, 255, 255]
+        };
         if let Some(body) = effects.get_mut(body_id) {
             body.overlay.m01 = 0.0;
             body.overlay.m10 = 0.0;
             body.override_scale(1.0, 1.0);
             body.set_position(offset_x, offset_y);
-            body.color_override = [255, 255, 255, fade];
+            body.color_override = [tint[0], tint[1], tint[2], fade];
         }
         // The mower's animation carries the zombie along.
         if let Some(mowered) = self.mowered_reanim {
@@ -936,6 +1014,9 @@ impl Zombie {
         let absorbed = self.helm_health.min(damage);
         let remaining = damage - absorbed;
         self.helm_health -= absorbed;
+        if flags & damage::FREEZE != 0 {
+            self.apply_chill(fx);
+        }
         if self.helm_health == 0 {
             self.drop_helm(flags, fx);
             return remaining;
@@ -978,7 +1059,9 @@ impl Zombie {
         if flags & damage::DOESNT_CAUSE_FLASH == 0 {
             self.just_got_shot_counter = 25;
         }
-        // TODO: DAMAGE_FREEZE chills the zombie (ApplyChill).
+        if flags & damage::FREEZE != 0 {
+            self.apply_chill(fx);
+        }
         self.body_health -= damage;
         self.update_damage_states(flags, fx);
         if self.body_health <= 0 {
