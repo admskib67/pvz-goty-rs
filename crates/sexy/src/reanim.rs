@@ -227,6 +227,12 @@ impl LoopType {
 /// RGBA, 0..=255.
 pub type Rgba = [u8; 4];
 
+/// Tracks in this render group aren't drawn.
+pub const RENDER_GROUP_HIDDEN: i32 = -1;
+pub const RENDER_GROUP_NORMAL: i32 = 0;
+/// `frame_base_pose` value meaning attachments use no base pose.
+pub const NO_BASE_POSE: i32 = -2;
+
 pub const WHITE: Rgba = [255; 4];
 
 /// `ColorsMultiply`.
@@ -244,6 +250,9 @@ pub struct TrackInstance {
     pub truncate_disappearing_frames: bool,
     pub track_color: Rgba,
     pub ignore_color_override: bool,
+    pub ignore_clip_rect: bool,
+    /// Image id drawn instead of the keyframe's image.
+    pub image_override: Option<String>,
 }
 
 impl Default for TrackInstance {
@@ -256,6 +265,8 @@ impl Default for TrackInstance {
             truncate_disappearing_frames: true,
             track_color: WHITE,
             ignore_color_override: false,
+            ignore_clip_rect: false,
+            image_override: None,
         }
     }
 }
@@ -283,6 +294,8 @@ pub struct Reanimation<D = std::sync::Arc<ReanimDefinition>> {
     /// Position and scale applied on top of every track.
     pub overlay: Matrix3,
     pub color_override: Rgba,
+    /// Frame whose pose attachments are measured from; -1 means `frame_start`.
+    pub frame_base_pose: i32,
     pub tracks: Vec<TrackInstance>,
 }
 
@@ -302,8 +315,53 @@ impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
             loop_count: 0,
             overlay: Matrix3::translation(x, y),
             color_override: WHITE,
+            frame_base_pose: -1,
             tracks,
         }
+    }
+
+    /// `FindTrackIndex`: like the original, an unknown name gives track 0.
+    pub fn find_track(&self, name: &str) -> usize {
+        self.definition.find_track(name).unwrap_or(0)
+    }
+
+    pub fn assign_render_group_to_track(&mut self, name: &str, group: i32) {
+        if let Some(i) = self.definition.find_track(name) {
+            self.tracks[i].render_group = group;
+        }
+    }
+
+    /// Every track whose name starts with `prefix` (case-insensitive).
+    pub fn assign_render_group_to_prefix(&mut self, prefix: &str, group: i32) {
+        for (inst, track) in self.tracks.iter_mut().zip(&self.definition.tracks) {
+            let name = track.name.as_bytes();
+            if name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes()) {
+                inst.render_group = group;
+            }
+        }
+    }
+
+    pub fn set_image_override(&mut self, track: &str, image: Option<&str>) {
+        let i = self.find_track(track);
+        self.tracks[i].image_override = image.map(str::to_owned);
+    }
+
+    /// `GetTrackBasePoseMatrix`.
+    pub fn track_base_pose_matrix(&self, track: usize) -> Matrix3 {
+        if self.frame_base_pose == NO_BASE_POSE {
+            return Matrix3::IDENTITY;
+        }
+        let pose = if self.frame_base_pose == -1 { self.frame_start } else { self.frame_base_pose as usize };
+        let last = self.definition.frame_count().saturating_sub(1);
+        let time = FrameTime { fraction: 0.0, before: pose.min(last), after: (pose + 1).min(last) };
+        self.transform_at(track, &time).matrix()
+    }
+
+    /// `GetAttachmentOverlayMatrix`: how far `track` has moved from its base
+    /// pose, for things attached to it.
+    pub fn attachment_overlay_matrix(&self, track: usize) -> Matrix3 {
+        let current = self.overlay * self.current_transform(track).matrix();
+        current * self.track_base_pose_matrix(track).inverse()
     }
 
     pub fn set_position(&mut self, x: f32, y: f32) {

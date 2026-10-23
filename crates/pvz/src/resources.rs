@@ -125,25 +125,30 @@ impl GameResources {
         let def = Arc::new(ReanimDefinition::parse(text).map_err(|e| format!("{path}: {e}"))?);
 
         for id in def.image_ids() {
-            if self.images.contains_key(id) {
-                continue;
-            }
-            let image = match self.manifest.get(id).and_then(|r| r.image().map(|info| (r, info))) {
-                Some((res, info)) => load_image_resource(&self.files, &res.path, info)
-                    .map(|i| (i, info.rows, info.cols))
-                    .map_err(|e| format!("{path}: {id}: {e}"))?,
-                None => image_search_paths(id)
-                    .iter()
-                    .find_map(|p| load_image(&self.files, p, true, 0xFF_FFFF))
-                    .map(|i| (i, 1, 1))
-                    .ok_or_else(|| format!("{path}: image {id} not found"))?,
-            };
-            let (image, rows, cols) = image;
-            self.images.insert(id.to_owned(), upload(image, rows, cols, assets));
+            self.load_image(id, assets).map_err(|e| format!("{path}: {e}"))?;
         }
 
         self.reanim_definitions.insert(path.to_owned(), def.clone());
         Ok(def)
+    }
+
+    /// Returns an image, loading it now if it hasn't been: from the manifest,
+    /// or by path for ids that aren't in it (`DefinitionLoadImage`).
+    pub fn load_image(&mut self, id: &str, assets: &mut Assets<Image>) -> Result<&ImageRes, String> {
+        if !self.images.contains_key(id) {
+            let (image, rows, cols) = match self.manifest.get(id).and_then(|r| r.image().map(|info| (r, info))) {
+                Some((res, info)) => load_image_resource(&self.files, &res.path, info)
+                    .map(|i| (i, info.rows, info.cols))
+                    .map_err(|e| format!("{id}: {e}"))?,
+                None => image_search_paths(id)
+                    .iter()
+                    .find_map(|p| load_image(&self.files, p, true, 0xFF_FFFF))
+                    .map(|i| (i, 1, 1))
+                    .ok_or_else(|| format!("image {id} not found"))?,
+            };
+            self.images.insert(id.to_owned(), upload(image, rows, cols, assets));
+        }
+        Ok(&self.images[id])
     }
 
     /// Loads a group on the calling thread. Only for tiny groups like `Init`.

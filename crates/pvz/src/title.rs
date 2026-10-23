@@ -21,6 +21,7 @@ pub struct TitlePlugin;
 impl Plugin for TitlePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(AppState::Title), start_title)
+            .add_systems(OnExit(AppState::Title), end_title)
             .add_systems(FixedUpdate, update_title.run_if(resource_exists::<TitleScreen>))
             .add_systems(Update, (title_input, draw_title).chain().run_if(resource_exists::<TitleScreen>));
     }
@@ -86,6 +87,9 @@ impl Default for TitleScreen {
         }
     }
 }
+
+/// Development aid: continue past the title screen as soon as loading is done.
+const AUTO_START_ENV: &str = "PVZ_AUTO_START";
 
 const WIDTH: i32 = GAME_WIDTH as i32;
 const HEIGHT: i32 = GAME_HEIGHT as i32;
@@ -228,7 +232,7 @@ fn update_title(
         let ty = if i == 4 { ReanimationType::LoadbarZombieHead } else { ReanimationType::LoadbarSprout };
         let (x, y) = (trigger + 225.0, 511.0);
         let sprout = match effects.add_reanimation(x, y, ty, &mut resources, &mut images) {
-            Ok(sprout) => sprout,
+            Ok((_, sprout)) => sprout,
             Err(e) => {
                 error!("{e}");
                 continue;
@@ -249,17 +253,28 @@ fn update_title(
     }
 }
 
-/// `TitleScreen::MouseDown`/`KeyDown`: any click or key once loading is done.
+/// `TitleScreen::MouseDown`/`KeyDown`: any click or key once loading is done
+/// calls `LawnApp::LoadingCompleted`, which shows the main menu.
 fn title_input(
     title: Res<TitleScreen>,
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
+    mut next: ResMut<NextState<AppState>>,
 ) {
-    let pressed = mouse.get_just_pressed().next().is_some() || keys.get_just_pressed().next().is_some();
+    let pressed = mouse.get_just_pressed().next().is_some()
+        || keys.get_just_pressed().next().is_some()
+        || std::env::var_os(AUTO_START_ENV).is_some();
     if pressed && title.loading_thread_complete {
-        // TODO: LawnApp::LoadingCompleted → game selector, once it exists.
-        info!("loading completed; the main menu isn't ported yet");
+        // TODO: SOUND_BUTTONCLICK.
+        next.set(AppState::GameSelector);
     }
+}
+
+/// Removes the title screen. Its sprouts go too; the original leaves them in
+/// the effect system, where nothing draws them again.
+fn end_title(mut commands: Commands, mut effects: ResMut<EffectSystem>) {
+    commands.remove_resource::<TitleScreen>();
+    effects.clear();
 }
 
 /// Draws the title screen, then its start link on top (it's a child widget).

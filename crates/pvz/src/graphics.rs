@@ -191,6 +191,30 @@ impl Graphics {
         width
     }
 
+    /// `TodDrawImageCelF`: one cel of an image strip, top-left at (x, y).
+    pub fn draw_image_cel(&mut self, image: &ImageRes, x: f32, y: f32, col: u32, row: u32) {
+        let (w, h) = (image.cel_width() as f32, image.cel_height() as f32);
+        self.draw_image_src(image, x, y, SexyRect::new(col as f32 * w, row as f32 * h, w, h));
+    }
+
+    /// `TodDrawStringMatrix`: text laid out from (0, baseline 0), then placed
+    /// by `transform`.
+    pub fn draw_string_matrix(&mut self, font: &FontRes, transform: Affine2, text: &str) {
+        let c = self.state.color;
+        let (glyphs, _) = font.font.layout(0, 0, text, [c.r, c.g, c.b, c.a]);
+        self.push_state();
+        self.set_colorize_images(true);
+        for glyph in glyphs {
+            let [r, g, b, a] = glyph.color;
+            self.set_color(SexyColor::rgba(r, g, b, a));
+            let src = SexyRect::new(glyph.src.x as f32, glyph.src.y as f32, glyph.src.w as f32, glyph.src.h as f32);
+            let center = Vec2::new(glyph.dest.0 as f32 + src.w / 2.0, glyph.dest.1 as f32 + src.h / 2.0);
+            let placed = transform * Affine2::from_translation(center);
+            self.draw_image_matrix_src(&font.layer_images[glyph.layer], placed, src);
+        }
+        self.pop_state();
+    }
+
     /// Draws `image` centered on `transform`'s origin, like `TodBltMatrix`.
     /// Clipping isn't applied to transformed images.
     pub fn draw_image_matrix(&mut self, image: &ImageRes, transform: Affine2) {

@@ -1,0 +1,8 @@
+[package]
+name = "openmpt"
+description = "Safe wrapper over libopenmpt, linked statically from prebuilt libraries in dev/"
+edition.workspace = true
+version.workspace = true
+# Our code; libopenmpt itself is BSD-3-Clause (see dev/libopenmpt-*/*/LICENSE).
+license.workspace = true
+links = "openmpt"

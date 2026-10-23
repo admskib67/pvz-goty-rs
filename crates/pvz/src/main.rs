@@ -1,12 +1,15 @@
 mod devshot;
+mod game_selector;
 mod graphics;
 mod input;
 mod install;
 mod pak_source;
+mod player;
 mod reanim;
 mod resources;
 mod setup;
 mod title;
+mod widgets;
 
 use std::path::PathBuf;
 
@@ -31,6 +34,8 @@ pub enum AppState {
     /// Asking the player where their copy of PvZ is.
     Setup,
     Title,
+    /// The main menu.
+    GameSelector,
 }
 
 /// Command-line flag that wipes all saved app data before starting.
@@ -62,6 +67,8 @@ fn main() {
         }))
         .init_state::<AppState>()
         .init_resource::<SetupStatus>()
+        .init_resource::<player::PlayerInfo>()
+        .init_resource::<player::GameRng>()
         .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND))
         .insert_resource(ClearColor(Color::BLACK))
         .add_plugins((
@@ -70,6 +77,7 @@ fn main() {
             input::InputPlugin,
             resources::ResourcesPlugin,
             title::TitlePlugin,
+            game_selector::GameSelectorPlugin,
             devshot::DevShotPlugin,
         ))
         .add_systems(Startup, spawn_camera)

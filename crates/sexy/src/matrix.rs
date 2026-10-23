@@ -25,6 +25,19 @@ impl Matrix3 {
         Self { m02: self.m02 + x, m12: self.m12 + y, ..self }
     }
 
+    /// `SexyMatrix3Inverse` (for affine matrices).
+    pub fn inverse(&self) -> Self {
+        let inv_det = 1.0 / (self.m00 * self.m11 - self.m01 * self.m10);
+        Self {
+            m00: self.m11 * inv_det,
+            m01: -self.m01 * inv_det,
+            m02: (self.m12 * self.m01 - self.m02 * self.m11) * inv_det,
+            m10: -self.m10 * inv_det,
+            m11: self.m00 * inv_det,
+            m12: (self.m02 * self.m10 - self.m12 * self.m00) * inv_det,
+        }
+    }
+
     pub fn transform_point(&self, x: f32, y: f32) -> (f32, f32) {
         (self.m00 * x + self.m01 * y + self.m02, self.m10 * x + self.m11 * y + self.m12)
     }
@@ -56,6 +69,14 @@ impl Mul for Matrix3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inverse_undoes_transform() {
+        let m = Matrix3 { m00: 2.0, m01: 0.5, m02: 3.0, m10: -1.0, m11: 1.5, m12: -4.0 };
+        let (x, y) = m.transform_point(5.0, 7.0);
+        let (bx, by) = m.inverse().transform_point(x, y);
+        assert!((bx - 5.0).abs() < 1e-4 && (by - 7.0).abs() < 1e-4);
+    }
 
     #[test]
     fn multiply_applies_right_first() {

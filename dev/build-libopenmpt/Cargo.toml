@@ -1,0 +1,14 @@
+[package]
+name = "build-libopenmpt"
+description = "Dev tool: builds libopenmpt for this machine into dev/libopenmpt-<os>/"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+cc = "1"
+ureq = "3"
+flate2 = "1"
+tar = "0.4"
+sha2 = "0.11"
