@@ -14,7 +14,7 @@ use crate::dialog::{ButtonMode, DialogButton, DialogEvent, DialogId, Dialogs, La
 use crate::install::{self, Config};
 use crate::player::ProfileMgr;
 use crate::resources::GameResources;
-use crate::UiSet;
+use crate::{AppState, UiSet};
 
 pub struct LawnAppPlugin;
 
@@ -143,6 +143,7 @@ struct DialogActions<'a, 'c, 'e> {
     profiles: &'a mut ProfileMgr,
     changed: &'a mut MessageWriter<'c, PlayerChanged>,
     exit: &'a mut MessageWriter<'e, AppExit>,
+    next_state: &'a mut NextState<AppState>,
 }
 
 impl DialogActions<'_, '_, '_> {
@@ -232,6 +233,10 @@ impl DialogActions<'_, '_, '_> {
                 self.dialogs.kill_dialog(DialogId::Quit);
                 self.exit.write(AppExit::Success);
             }
+            DialogId::ConfirmBackToMain if yes => {
+                self.dialogs.kill_dialog(DialogId::ConfirmBackToMain);
+                self.do_back_to_main();
+            }
             DialogId::UserDialog => self.finish_user_dialog(yes),
             DialogId::CreateUser => self.finish_create_user_dialog(yes),
             DialogId::ConfirmDeleteUser => self.finish_confirm_delete_user_dialog(yes),
@@ -241,6 +246,14 @@ impl DialogActions<'_, '_, '_> {
                 self.dialogs.kill_dialog(id);
             }
         }
+    }
+
+    /// `LawnApp::DoBackToMain`: leaves the level for the main menu. Leaving
+    /// the board state stops its music and clears it away (`KillBoard`).
+    /// TODO: save the game in progress (`Board::TryToSaveGame`).
+    fn do_back_to_main(&mut self) {
+        self.profiles.save_current_details();
+        self.next_state.set(AppState::GameSelector);
     }
 
     /// `UserDialog::ButtonDepress` for Rename and Delete.
@@ -277,10 +290,18 @@ fn handle_dialog_events(
     profiles: Option<ResMut<ProfileMgr>>,
     mut changed: MessageWriter<PlayerChanged>,
     mut exit: MessageWriter<AppExit>,
+    mut next_state: ResMut<NextState<AppState>>,
 ) {
     let events = dialogs.take_events();
     let (Some(res), Some(mut profiles)) = (res, profiles) else { return };
-    let mut app = DialogActions { dialogs: &mut dialogs, res: &res, profiles: &mut profiles, changed: &mut changed, exit: &mut exit };
+    let mut app = DialogActions {
+        dialogs: &mut dialogs,
+        res: &res,
+        profiles: &mut profiles,
+        changed: &mut changed,
+        exit: &mut exit,
+        next_state: &mut next_state,
+    };
     for event in events {
         match event {
             DialogEvent::Button(id, DialogButton::Yes) => app.button_depress(id, true),

@@ -89,7 +89,8 @@ impl Default for TitleScreen {
     }
 }
 
-/// Development aid: continue past the title screen as soon as loading is done.
+/// Development aid: continue past the title screen as soon as loading is
+/// done; `adventure` goes straight on into the player's next adventure level.
 const AUTO_START_ENV: &str = "PVZ_AUTO_START";
 
 const WIDTH: i32 = GAME_WIDTH as i32;
@@ -273,12 +274,12 @@ fn title_input(
     mut next: ResMut<NextState<AppState>>,
     mut sounds: Sounds,
 ) {
-    let pressed = mouse.get_just_pressed().next().is_some()
-        || keys.get_just_pressed().next().is_some()
-        || std::env::var_os(AUTO_START_ENV).is_some();
+    let auto_start = std::env::var(AUTO_START_ENV).ok();
+    let pressed =
+        mouse.get_just_pressed().next().is_some() || keys.get_just_pressed().next().is_some() || auto_start.is_some();
     if pressed && title.loading_thread_complete {
         sounds.play_sample("SOUND_BUTTONCLICK");
-        next.set(AppState::GameSelector);
+        next.set(if auto_start.as_deref() == Some("adventure") { AppState::Board } else { AppState::GameSelector });
     }
 }
 

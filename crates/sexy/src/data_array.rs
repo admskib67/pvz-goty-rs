@@ -50,6 +50,15 @@ impl<T> Default for DataArray<T> {
 }
 
 impl<T> DataArray<T> {
+    /// How many items are allocated (`mSize`).
+    pub fn len(&self) -> usize {
+        self.slots.iter().filter(|s| s.item.is_some()).count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn alloc(&mut self, item: T) -> Id<T> {
         let index = match self.free.pop() {
             Some(i) => i,

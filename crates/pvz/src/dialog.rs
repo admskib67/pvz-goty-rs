@@ -43,6 +43,7 @@ pub enum DialogId {
     CreateUserError,
     RenameUserError,
     Message,
+    ConfirmBackToMain,
 }
 
 /// `Dialog::BUTTONS_*`.

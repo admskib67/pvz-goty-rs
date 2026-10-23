@@ -27,6 +27,7 @@ impl Plugin for GameSelectorPlugin {
     fn build(&self, app: &mut App) {
         let open = resource_exists::<GameSelector>;
         app.add_systems(OnEnter(AppState::GameSelector), start_selector)
+            .add_systems(OnExit(AppState::GameSelector), kill_selector)
             .add_systems(FixedUpdate, update_selector.run_if(open))
             .add_systems(Update, (selector_input, player_changed).chain().in_set(UiSet::ScreenInput).run_if(open))
             .add_systems(Update, draw_selector.in_set(UiSet::ScreenDraw).run_if(open));
@@ -533,9 +534,17 @@ impl GameSelector {
     }
 }
 
+/// `LawnApp::KillGameSelector`.
+fn kill_selector(mut commands: Commands, mut effects: ResMut<EffectSystem>) {
+    commands.remove_resource::<GameSelector>();
+    effects.clear();
+}
+
 /// `GameSelector::Update`, at 100 ticks per second.
+#[allow(clippy::too_many_arguments)]
 fn update_selector(
     mut selector: ResMut<GameSelector>,
+    mut next_state: ResMut<NextState<AppState>>,
     mut effects: ResMut<EffectSystem>,
     mut dialogs: ResMut<Dialogs>,
     resources: Res<GameResources>,
@@ -546,9 +555,12 @@ fn update_selector(
 
     if gs.starting_game {
         gs.starting_game_counter += 1;
-        if gs.starting_game_counter == 450 {
-            // TODO: KillGameSelector + PreNewGame(GAMEMODE_ADVENTURE) once the board exists.
-            info!("adventure mode isn't ported yet");
+        if gs.starting_game_counter > 450 {
+            // KillGameSelector + PreNewGame(GAMEMODE_ADVENTURE). TODO: the
+            // first-ever adventure's intro, Dave's taco level, and the zen
+            // garden tutorial before 5-5.
+            next_state.set(AppState::Board);
+            return;
         }
         gs.buttons.adventure.color =
             if gs.starting_game_counter % 20 < 10 { SexyColor::rgba(80, 80, 80, 255) } else { SexyColor::WHITE };

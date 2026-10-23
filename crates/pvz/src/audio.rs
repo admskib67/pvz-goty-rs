@@ -289,7 +289,6 @@ impl Music {
         }
     }
 
-    #[allow(dead_code, reason = "used once levels end")]
     /// `FadeOut`: fades the main part out over `duration` ticks, then stops.
     pub fn fade_out(&mut self, duration: i32) {
         if self.cur_tune.is_some() {
@@ -346,7 +345,6 @@ fn setup_music_file_for_tune(module: &mut openmpt::Module, file: MusicFile, tune
 mod foley_flags {
     pub const LOOP: u32 = 1 << 0;
     pub const ONE_AT_A_TIME: u32 = 1 << 1;
-    #[allow(dead_code)]
     pub const MUTE_ON_PAUSE: u32 = 1 << 2;
     #[allow(dead_code)]
     pub const USES_MUSIC_VOLUME: u32 = 1 << 3;
@@ -359,6 +357,14 @@ pub enum FoleyType {
     Bleep,
     LimbsPop,
     DirtRise,
+    /// The level intro's sod rolling out.
+    Digger,
+    /// Collecting sun.
+    Sun,
+    /// Planting.
+    Plant,
+    /// Putting a carried plant back.
+    Drop,
 }
 
 struct FoleyParams {
@@ -375,6 +381,14 @@ impl FoleyType {
             Self::Bleep => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_BLEEP"], flags: 0 },
             Self::LimbsPop => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_LIMBS_POP"], flags: 0 },
             Self::DirtRise => FoleyParams { pitch_range: 5.0, sounds: &["SOUND_DIRT_RISE"], flags: 0 },
+            Self::Sun => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_POINTS"], flags: 0 },
+            Self::Plant => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_PLANT", "SOUND_PLANT2"], flags: 0 },
+            Self::Drop => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_TAP2"], flags: 0 },
+            Self::Digger => FoleyParams {
+                pitch_range: 0.0,
+                sounds: &["SOUND_DIGGER_ZOMBIE"],
+                flags: foley_flags::LOOP | foley_flags::ONE_AT_A_TIME | foley_flags::MUTE_ON_PAUSE,
+            },
         }
     }
 }
@@ -436,15 +450,16 @@ impl Sounds<'_, '_> {
         &mut self.rng.0
     }
 
-    fn spawn(&mut self, id: &str, speed: f32) -> Option<Entity> {
+    fn spawn(&mut self, id: &str, speed: f32, looping: bool) -> Option<Entity> {
         let handle = self.system.sounds.get(id)?.clone();
-        let settings = PlaybackSettings::DESPAWN.with_volume(Volume::Linear(SFX_VOLUME)).with_speed(speed);
+        let mode = if looping { PlaybackSettings::LOOP } else { PlaybackSettings::DESPAWN };
+        let settings = mode.with_volume(Volume::Linear(SFX_VOLUME)).with_speed(speed);
         Some(self.commands.spawn((AudioPlayer(handle), settings)).id())
     }
 
     /// `PlaySample`: plays a sound once.
     pub fn play_sample(&mut self, id: &str) {
-        self.spawn(id, 1.0);
+        self.spawn(id, 1.0, false);
     }
 
     /// `TodFoley::PlayFoley`: a random variation with random pitch.
@@ -487,11 +502,27 @@ impl Sounds<'_, '_> {
         let variation = choices[self.rng.0.next_range(choices.len() as u32) as usize];
         self.system.foley.get_mut(&foley).unwrap().last_variation = Some(variation);
 
-        // TODO: looping foley (FOLEYFLAGS_LOOP) and StopFoley once something needs them.
+        // TODO: pausing MUTE_ON_PAUSE foley while the game is paused.
         let speed = 2f32.powf(pitch / 12.0);
-        if let Some(entity) = self.spawn(params.sounds[variation], speed) {
+        let looping = params.flags & foley_flags::LOOP != 0;
+        if let Some(entity) = self.spawn(params.sounds[variation], speed, looping) {
             self.system.foley.get_mut(&foley).unwrap().instances[free] =
                 Some(FoleyInstance { entity, ref_count: 1, start_time: now });
+        }
+    }
+
+    /// `TodFoley::StopFoley`: releases one play of a foley type, stopping it
+    /// once nothing holds it (one-at-a-time types count their plays).
+    pub fn stop_foley(&mut self, foley: FoleyType) {
+        let Some(data) = self.system.foley.get_mut(&foley) else { return };
+        let Some(slot) = data.instances.iter_mut().find(|i| i.is_some()) else { return };
+        let instance = slot.as_mut().expect("found above");
+        instance.ref_count -= 1;
+        if instance.ref_count == 0 {
+            if let Ok(mut entity) = self.commands.get_entity(instance.entity) {
+                entity.despawn();
+            }
+            *slot = None;
         }
     }
 }

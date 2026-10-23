@@ -283,10 +283,61 @@ impl Graphics {
         height
     }
 
+    /// `TodDrawString`: `text` in `color`, its baseline at `y` and `x` its
+    /// left, center or right edge.
+    pub fn tod_draw_string(&mut self, font: &FontRes, x: i32, y: i32, text: &str, color: SexyColor, justify: Justify) {
+        let x = match justify.horizontal() {
+            0 => x - font.font.string_width(text) / 2,
+            1 => x - font.font.string_width(text),
+            _ => x,
+        };
+        self.push_state();
+        self.set_color(color);
+        self.draw_string(font, x, y, text);
+        self.pop_state();
+    }
+
+    /// `TodDrawStringWrapped`: `text` wrapped to the rectangle's width, its
+    /// first line's top at the rectangle's top (or the block centered in it,
+    /// for the `*Middle` justifications). `{FORMAT}` codes aren't supported.
+    pub fn tod_draw_string_wrapped(&mut self, font: &FontRes, rect: SexyRect, text: &str, color: SexyColor, justify: Justify) {
+        let (x, w) = (rect.x as i32, rect.w as i32);
+        let spacing = font.font.line_spacing();
+        let (lines, height) = font.font.word_wrap(text, w, spacing);
+        let mut y = rect.y as i32;
+        if justify.vertical_middle() {
+            y += (rect.h as i32 - height) / 2;
+        }
+        self.push_state();
+        self.set_color(color);
+        for (line, baseline) in lines {
+            let line_x = match justify.horizontal() {
+                0 => x + (w - font.font.string_width(&line)) / 2,
+                1 => x + w - font.font.string_width(&line),
+                _ => x,
+            };
+            self.draw_string(font, line_x, y + baseline, &line);
+        }
+        self.pop_state();
+    }
+
     /// `Widget::WriteCenteredLine`: `text` centered across `width`, baseline at `y`.
     pub fn write_centered_line(&mut self, font: &FontRes, width: i32, y: i32, text: &str) {
         let x = (width - font.font.string_width(text)) / 2;
         self.draw_string(font, x, y, text);
+    }
+
+    /// `TodDrawImageCelCenterScaledF`: one cel, top-left at (x, y) before
+    /// scaling about the cel's center.
+    pub fn draw_image_cel_center_scaled(&mut self, image: &ImageRes, x: f32, y: f32, col: u32, sx: f32, sy: f32) {
+        let (w, h) = (image.cel_width() as f32, image.cel_height() as f32);
+        let src = SexyRect::new(col as f32 * w, 0.0, w, h);
+        if sx == 1.0 && sy == 1.0 {
+            self.draw_image_src(image, x, y, src);
+            return;
+        }
+        let transform = Affine2::from_cols_array(&[sx, 0.0, 0.0, sy, x + w * 0.5, y + h * 0.5]);
+        self.draw_image_matrix_src(image, transform, src);
     }
 
     /// `TodDrawImageCelF`: one cel of an image strip, top-left at (x, y).
@@ -338,6 +389,33 @@ impl Graphics {
 
     fn image_color(&self) -> SexyColor {
         if self.state.colorize_images { self.state.color } else { SexyColor::WHITE }
+    }
+}
+
+/// `DrawStringJustification`.
+#[allow(dead_code, reason = "the full set; screens use more of it as they're ported")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Justify {
+    Left,
+    Right,
+    Center,
+    LeftMiddle,
+    RightMiddle,
+    CenterMiddle,
+}
+
+impl Justify {
+    /// -1 left, 0 center, 1 right.
+    fn horizontal(self) -> i32 {
+        match self {
+            Self::Left | Self::LeftMiddle => -1,
+            Self::Center | Self::CenterMiddle => 0,
+            Self::Right | Self::RightMiddle => 1,
+        }
+    }
+
+    fn vertical_middle(self) -> bool {
+        matches!(self, Self::LeftMiddle | Self::RightMiddle | Self::CenterMiddle)
     }
 }
 

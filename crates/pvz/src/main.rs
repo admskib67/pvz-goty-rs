@@ -1,4 +1,5 @@
 mod audio;
+mod board;
 mod devshot;
 mod dialog;
 mod game_selector;
@@ -7,6 +8,7 @@ mod input;
 mod install;
 mod lawn_app;
 mod pak_source;
+mod plant;
 mod player;
 mod reanim;
 mod resources;
@@ -39,6 +41,8 @@ pub enum AppState {
     Title,
     /// The main menu.
     GameSelector,
+    /// Playing a level.
+    Board,
 }
 
 /// Frame-by-frame order of input handling and drawing: dialogs get the
@@ -97,6 +101,7 @@ fn main() {
             resources::ResourcesPlugin,
             title::TitlePlugin,
             game_selector::GameSelectorPlugin,
+            board::BoardPlugin,
             dialog::DialogPlugin,
             lawn_app::LawnAppPlugin,
             devshot::DevShotPlugin,

@@ -1,0 +1,358 @@
+//! Plants on the lawn (`Plant`). So far a plant is planted, idles and blinks;
+//! what it does (shooting, making sun, ...) comes with the zombies.
+//!
+//! Behaviour per ruslan831 decomp, `Lawn/Plant.cpp`: `PlantInitialize`,
+//! `CalcRenderOrder`, `Update`, `Animate`, `UpdateReanim`, `UpdateBlink`,
+//! `DoBlink`, `AttachBlinkAnim`, `EndBlink`, `Draw`, `DrawShadow`, `Die`
+//! and `PlantDrawHeightOffset`.
+
+use bevy::prelude::*;
+use sexy::rand::MtRand;
+use sexy::reanim::{LoopType, RENDER_GROUP_HIDDEN, RENDER_GROUP_NORMAL};
+
+use crate::graphics::Graphics;
+use crate::plant::SeedType;
+use crate::reanim::{EffectSystem, ReanimationId};
+use crate::resources::GameResources;
+
+use super::{make_render_order, render_layer};
+
+/// `PLANT_ORDER`: how plants in the same square stack.
+#[allow(dead_code, reason = "the full set; plants use more of it as they're ported")]
+#[derive(Debug, Clone, Copy)]
+enum PlantOrder {
+    Lilypad,
+    Normal,
+    Pumpkin,
+    Flyer,
+    Cherrybomb,
+}
+
+#[derive(Debug, Clone)]
+pub struct Plant {
+    pub seed: SeedType,
+    /// Grid column (`mPlantCol`) and row.
+    pub col: i32,
+    pub row: i32,
+    /// Top-left of its square, in board pixels.
+    pub x: i32,
+    pub y: i32,
+    pub render_order: i32,
+    pub health: i32,
+    pub dead: bool,
+    shake_offset_x: f32,
+    blink_countdown: i32,
+    pub launch_rate: i32,
+    pub launch_counter: i32,
+    pub shooting_counter: i32,
+    body: Option<ReanimationId>,
+    head: Option<ReanimationId>,
+    blink: Option<ReanimationId>,
+}
+
+/// `PlantDrawHeightOffset`, without the pool's bobbing and flower pots.
+pub fn plant_draw_height_offset(seed: SeedType) -> f32 {
+    use SeedType::*;
+    // TODO: plants floating in the pool bob up and down, plants in flower
+    // pots sit higher, and spikeweed depends on its row and the stage.
+    match seed {
+        Flowerpot => 26.0,
+        Lilypad => 25.0,
+        Starfruit => 10.0,
+        Tanglekelp => 24.0,
+        Seashroom => 28.0,
+        InstantCoffee => -20.0,
+        Pumpkinshell => 15.0,
+        Puffshroom => 5.0,
+        Scaredyshroom => -14.0,
+        Gravebuster => -40.0,
+        Spikeweed => 15.0,
+        Spikerock => 21.0,
+        _ => 0.0,
+    }
+}
+
+impl Plant {
+    /// `Plant::PlantInitialize`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        col: i32,
+        row: i32,
+        x: i32,
+        y: i32,
+        seed: SeedType,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut MtRand,
+    ) -> Self {
+        let def = seed.definition();
+        let mut plant = Self {
+            seed,
+            col,
+            row,
+            x,
+            y,
+            render_order: 0,
+            health: 300,
+            dead: false,
+            shake_offset_x: 0.0,
+            blink_countdown: 0,
+            launch_rate: def.launch_rate,
+            launch_counter: 0,
+            shooting_counter: 0,
+            body: None,
+            head: None,
+            blink: None,
+        };
+        plant.render_order = plant.calc_render_order();
+
+        let offset_y = plant_draw_height_offset(seed);
+        match effects.add_reanimation(0.0, offset_y, def.reanim, res, images) {
+            Ok((id, body)) => {
+                body.render_order = plant.render_order + 1;
+                body.loop_type = LoopType::Loop;
+                body.anim_rate = rng.range_f32(10.0, 15.0);
+                if body.definition.find_track("anim_idle").is_some() {
+                    body.set_frames_for_layer("anim_idle");
+                }
+                body.is_attachment = true;
+                plant.body = Some(id);
+                plant.blink_countdown = 400 + rng.next_range(400) as i32;
+            }
+            Err(e) => error!("{e}"),
+        }
+        // TODO: mushrooms asleep in the day (SetSleeping).
+
+        if plant.launch_rate > 0 {
+            // TODO: sun makers start between 300 and half their rate.
+            plant.launch_counter = rng.range_int(0, plant.launch_rate);
+        }
+
+        use SeedType::*;
+        match seed {
+            Peashooter | Snowpea | Repeater | Leftpeater | Gatlingpea => {
+                if let Some(body_id) = plant.body {
+                    let rate = rng.range_f32(15.0, 20.0);
+                    if let Some(body) = effects.get_mut(body_id) {
+                        body.anim_rate = rate;
+                    }
+                    if let Ok((head_id, head)) = effects.add_reanimation(0.0, 0.0, def.reanim, res, images) {
+                        head.render_order = plant.render_order + 2;
+                        head.loop_type = LoopType::Loop;
+                        head.anim_rate = rate;
+                        head.set_frames_for_layer("anim_head_idle");
+                        plant.head = Some(head_id);
+                        let stem = match effects.get(body_id) {
+                            Some(b) if b.definition.find_track("anim_stem").is_some() => "anim_stem",
+                            _ => "anim_idle",
+                        };
+                        effects.attach_to_another(head_id, body_id, stem);
+                    }
+                }
+            }
+            Wallnut | ExplodeONut | GiantWallnut => {
+                plant.health = 4000;
+                plant.blink_countdown = 1000 + rng.next_range(1000) as i32;
+            }
+            Tallnut => {
+                plant.health = 8000;
+                plant.blink_countdown = 1000 + rng.next_range(1000) as i32;
+            }
+            // TODO: the rest of PlantInitialize's per-plant setup as plants are ported.
+            _ => {}
+        }
+        plant
+    }
+
+    /// `Plant::CalcRenderOrder`: plants further right draw first, so the ones
+    /// on their left overlap them.
+    fn calc_render_order(&self) -> i32 {
+        use SeedType::*;
+        let order = match self.seed {
+            Pumpkinshell => PlantOrder::Pumpkin,
+            InstantCoffee => PlantOrder::Flyer,
+            Flowerpot | Lilypad => PlantOrder::Lilypad,
+            _ => PlantOrder::Normal,
+        };
+        make_render_order(render_layer::PLANT, self.row, order as i32 * 5 - self.x + 800)
+    }
+
+    /// `Plant::Update`, while playing.
+    pub fn update(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, rng: &mut MtRand) {
+        // TODO: UpdateAbilities (shooting and the rest) once zombies exist.
+        self.update_blink(effects, res, images, rng);
+        if self.health < 0 {
+            self.die(effects);
+        }
+        self.update_reanim(effects);
+    }
+
+    /// `Plant::UpdateReanim`.
+    fn update_reanim(&mut self, effects: &mut EffectSystem) {
+        let Some(body) = self.body else { return };
+        let (mut offset_x, mut offset_y) = (self.shake_offset_x, plant_draw_height_offset(self.seed));
+        let (mut scale_x, mut scale_y) = (1.0, 1.0);
+        match self.seed {
+            SeedType::GiantWallnut => {
+                (scale_x, scale_y) = (2.0, 2.0);
+                offset_x -= 76.0;
+                offset_y -= 64.0;
+            }
+            SeedType::InstantCoffee => {
+                (scale_x, scale_y) = (0.8, 0.8);
+                offset_x += 12.0;
+                offset_y += 10.0;
+            }
+            SeedType::Potatomine => {
+                (scale_x, scale_y) = (0.8, 0.8);
+                offset_x += 12.0;
+                offset_y += 12.0;
+            }
+            _ => {}
+        }
+        effects.update_reanimation(body);
+        if self.seed == SeedType::Leftpeater {
+            offset_x += 80.0 * scale_x;
+            scale_x = -scale_x;
+        }
+        if let Some(body) = effects.get_mut(body) {
+            body.set_position(offset_x, offset_y);
+            body.override_scale(scale_x, scale_y);
+        }
+    }
+
+    /// `Plant::UpdateBlink`.
+    fn update_blink(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, rng: &mut MtRand) {
+        if let Some(blink) = self.blink
+            && effects.get(blink).is_none_or(|b| b.loop_count > 0)
+        {
+            self.end_blink(effects);
+        }
+        if self.blink_countdown > 0 {
+            self.blink_countdown -= 1;
+            if self.blink_countdown == 0 {
+                self.do_blink(effects, res, images, rng);
+            }
+        }
+    }
+
+    /// `Plant::DoBlink` + `AttachBlinkAnim`.
+    fn do_blink(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, rng: &mut MtRand) {
+        use SeedType::*;
+        self.blink_countdown = 400 + rng.next_range(400) as i32;
+        if self.shooting_counter != 0 {
+            return;
+        }
+        self.end_blink(effects);
+        let Some(body_id) = self.body else { return };
+        let nut = matches!(self.seed, Wallnut | Tallnut | ExplodeONut | GiantWallnut);
+        if nut {
+            self.blink_countdown = 1000 + rng.next_range(1000) as i32;
+        }
+
+        let Some(body) = effects.get(body_id) else { return };
+        let has_track = |name: &str| body.definition.find_track(name).is_some();
+        let mut track_to_play = "anim_blink";
+        if nut {
+            let hit = rng.next_range(10);
+            track_to_play = if hit < 1 && has_track("anim_blink_twitch") {
+                "anim_blink_twitch"
+            } else if hit < 7 {
+                "anim_blink_twice"
+            } else {
+                "anim_blink_thrice"
+            };
+        }
+        // Peashooters blink on their head; most plants on their body.
+        // TODO: the threepeater's, split pea's and twin sunflower's several faces.
+        let attach_to = match self.seed {
+            Peashooter | Snowpea | Repeater | Leftpeater | Gatlingpea => self.head,
+            _ => Some(body_id),
+        };
+        let Some(attach_to) = attach_to else { return };
+        if !has_track(track_to_play) {
+            return;
+        }
+        let color = body.color_override;
+        let ty = self.seed.definition().reanim;
+        let Ok((blink_id, blink)) = effects.add_reanimation(0.0, 0.0, ty, res, images) else { return };
+        blink.set_frames_for_layer(track_to_play);
+        blink.loop_type = LoopType::PlayOnceFullLastFrameAndHold;
+        blink.anim_rate = 15.0;
+        blink.color_override = color;
+        let face = effects.get(attach_to).map(|r| {
+            if r.definition.find_track("anim_face").is_some() { "anim_face" } else { "anim_idle" }
+        });
+        if let Some(face) = face {
+            effects.attach_to_another(blink_id, attach_to, face);
+        }
+        self.blink = Some(blink_id);
+        if let Some(body) = effects.get_mut(body_id) {
+            body.assign_render_group_to_prefix("anim_eye", RENDER_GROUP_HIDDEN);
+        }
+    }
+
+    /// `Plant::EndBlink`.
+    fn end_blink(&mut self, effects: &mut EffectSystem) {
+        if let Some(blink) = self.blink.take() {
+            effects.kill(blink);
+            if let Some(body) = self.body.and_then(|b| effects.get_mut(b)) {
+                body.assign_render_group_to_prefix("anim_eye", RENDER_GROUP_NORMAL);
+            }
+        }
+    }
+
+    /// `Plant::Die`.
+    pub fn die(&mut self, effects: &mut EffectSystem) {
+        self.dead = true;
+        for id in [self.body.take(), self.head.take(), self.blink.take()].into_iter().flatten() {
+            effects.kill(id);
+        }
+    }
+
+    /// `Plant::Draw`: its shadow, then its body (with head and blink attached).
+    /// Drawn in the plant's own coordinates (its square's top-left).
+    pub fn draw(&self, g: &mut Graphics, stage_is_night: bool, effects: &EffectSystem, res: &GameResources) {
+        g.push_state();
+        g.translate(self.x as f32, self.y as f32);
+        let offset_y = plant_draw_height_offset(self.seed);
+        self.draw_shadow(g, 0.0, offset_y, stage_is_night, res);
+        if let Some(body) = self.body {
+            effects.draw(g, body, res);
+        }
+        g.pop_state();
+    }
+
+    /// `Plant::DrawShadow`.
+    fn draw_shadow(&self, g: &mut Graphics, x: f32, y: f32, night: bool, res: &GameResources) {
+        use SeedType::*;
+        if matches!(self.seed, Lilypad | Starfruit | Tanglekelp | Seashroom | Cobcannon | Spikeweed | Spikerock | Gravebuster | Cattail)
+        {
+            return;
+        }
+        let (dx, dy, scale) = match self.seed {
+            Puffshroom => (-3.0, 42.0, 0.5),
+            Sunshroom => (-3.0, 42.0, 1.0),
+            Umbrella => (-7.0, 52.0, 0.5),
+            Fumeshroom | Gloomshroom => (-3.0, 47.0, 1.3),
+            Cabbagepult | Melonpult | Wintermelon => (-3.0, 47.0, 1.0),
+            Kernelpult => (0.0, 47.0, 1.0),
+            Scaredyshroom => (-9.0, 55.0, 1.0),
+            Chomper => (-21.0, 57.0, 1.0),
+            Flowerpot => (-4.0, 46.0, 1.0),
+            Tallnut => (-3.0, 54.0, 1.3),
+            Pumpkinshell => (-3.0, 46.0, 1.4),
+            Cactus => (-8.0, 50.0, 1.0),
+            Plantern => (-3.0, 57.0, 1.0),
+            InstantCoffee => (-3.0, 81.0, 1.0),
+            GiantWallnut => (-33.0, 56.0, 1.7),
+            _ => (-3.0, 51.0, 1.0),
+        };
+        // TODO: the squash's shadow stays on the ground as it jumps.
+        let id = if night { "IMAGE_PLANTSHADOW2" } else { "IMAGE_PLANTSHADOW" };
+        if let Some(shadow) = res.image(id) {
+            g.draw_image_cel_center_scaled(shadow, x + dx, y + dy, 0, scale, scale);
+        }
+    }
+}

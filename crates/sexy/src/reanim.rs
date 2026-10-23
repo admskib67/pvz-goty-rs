@@ -423,6 +423,10 @@ pub struct Reanimation<D = std::sync::Arc<ReanimDefinition>> {
     /// Frame whose pose attachments are measured from; -1 means `frame_start`.
     pub frame_base_pose: i32,
     pub tracks: Vec<TrackInstance>,
+    /// Where the board draws it among its objects (`mRenderOrder`).
+    pub render_order: i32,
+    /// Drawn by its owner rather than by the board (`mIsAttachment`).
+    pub is_attachment: bool,
 }
 
 impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
@@ -443,6 +447,8 @@ impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
             color_override: WHITE,
             frame_base_pose: -1,
             tracks,
+            render_order: 0,
+            is_attachment: false,
         }
     }
 

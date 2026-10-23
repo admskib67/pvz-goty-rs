@@ -142,6 +142,11 @@ impl GameResources {
         Ok(def)
     }
 
+    /// A reanimation definition already loaded by [`Self::reanim_definition`].
+    pub fn loaded_reanim_definition(&self, path: &str) -> Option<Arc<ReanimDefinition>> {
+        self.reanim_definitions.get(path).cloned()
+    }
+
     /// Returns an image, loading it now if it hasn't been: from the manifest,
     /// or by path for ids that aren't in it (`DefinitionLoadImage`).
     pub fn load_image(&mut self, id: &str, assets: &mut Assets<Image>) -> Result<&ImageRes, String> {
@@ -161,8 +166,12 @@ impl GameResources {
         Ok(&self.images[id])
     }
 
-    /// Loads a group on the calling thread. Only for tiny groups like `Init`.
+    /// Loads a group on the calling thread (`TodLoadResources`), e.g. `Init`
+    /// or a level's background. Does nothing if it's already loaded.
     pub fn load_group_now(&mut self, group: &str, assets: &mut Assets<Image>) -> Result<(), String> {
+        if self.is_group_loaded(group) {
+            return Ok(());
+        }
         let loaded = load_group(&self.files, &self.manifest, group, &|| {})?;
         self.insert(loaded, assets);
         Ok(())
