@@ -1,5 +1,5 @@
-//! Parses `resources.xml` from a pak and decodes every image resource,
-//! reporting any that fail.
+//! Parses `resources.xml` from a pak and loads every image and font
+//! resource, reporting any that fail.
 //!
 //!     cargo run -p sexy --release --example check_resources -- <main.pak>
 
@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use sexy::files::GameFiles;
+use sexy::font::load_font;
 use sexy::image::load_image_resource;
-use sexy::resources::Manifest;
+use sexy::resources::{Manifest, ResourceKind};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = PathBuf::from(std::env::args_os().nth(1).ok_or("usage: check_resources <main.pak>")?);
@@ -18,18 +19,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manifest = Manifest::parse(std::str::from_utf8(xml)?)?;
 
     let (mut ok, mut failed) = (0, 0);
+    let mut report = |group: &str, id: &str, result: Result<(), String>| match result {
+        Ok(()) => ok += 1,
+        Err(e) => {
+            failed += 1;
+            println!("{group}/{id}: {e}");
+        }
+    };
     for group in manifest.group_names() {
         for res in manifest.group(group).unwrap() {
-            let Some(info) = res.image() else { continue };
-            match load_image_resource(&files, &res.path, info) {
-                Ok(_) => ok += 1,
-                Err(e) => {
-                    failed += 1;
-                    println!("{group}/{}: {e}", res.id);
-                }
+            match &res.kind {
+                ResourceKind::Image(info) => report(
+                    group,
+                    &res.id,
+                    load_image_resource(&files, &res.path, info).map(|_| ()).map_err(|e| e.to_string()),
+                ),
+                ResourceKind::Font => report(
+                    group,
+                    &res.id,
+                    load_font(&files, &res.path).map(|f| {
+                        let w = f.font.string_width("Plants vs. Zombies");
+                        println!("{}: {} layer(s), ascent {}, sample width {w}", res.id, f.font.layers.len(), f.font.ascent);
+                    }).map_err(|e| e.to_string()),
+                ),
+                ResourceKind::Sound => {}
             }
         }
     }
-    println!("{ok} images decoded, {failed} failed");
+    println!("{ok} images and fonts loaded, {failed} failed");
     Ok(())
 }

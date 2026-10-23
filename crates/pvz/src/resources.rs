@@ -15,13 +15,16 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use sexy::files::{Files, GameFiles};
+use sexy::font::{Font, LoadedFont, latin1_to_string, load_font};
 use sexy::image::{DecodedImage, load_image_resource};
 use sexy::resources::{Manifest, ResourceKind};
+use sexy::strings::StringTable;
 
 /// Group loaded synchronously at startup (PopCap logo).
 pub const INIT_GROUP: &str = "Init";
 /// Group the title screen needs before it can show the loading bar.
 pub const LOADER_BAR_GROUP: &str = "LoaderBar";
+const STRINGS_PATH: &str = "properties/LawnStrings.txt";
 
 /// Groups the loading thread loads after `LoaderBar`, with the original's
 /// per-resource progress weights ("average ms to load").
@@ -48,12 +51,22 @@ pub struct ImageRes {
     pub cols: u32,
 }
 
+/// An image font with each layer's glyph sheet uploaded.
+#[derive(Clone, Debug)]
+pub struct FontRes {
+    pub font: Arc<Font>,
+    /// One per `font.layers` entry.
+    pub layer_images: Vec<ImageRes>,
+}
+
 /// The parsed manifest plus every resource loaded so far.
 #[derive(Resource)]
 pub struct GameResources {
     files: GameFiles,
     manifest: Arc<Manifest>,
     images: HashMap<String, ImageRes>,
+    fonts: HashMap<String, FontRes>,
+    strings: StringTable,
     loaded_groups: HashSet<String>,
 }
 
@@ -62,11 +75,27 @@ impl GameResources {
         let xml = files.read("properties/resources.xml").ok_or("properties/resources.xml is missing")?;
         let xml = std::str::from_utf8(&xml).map_err(|e| format!("resources.xml isn't UTF-8: {e}"))?;
         let manifest = Manifest::parse(xml).map_err(|e| format!("resources.xml: {e}"))?;
-        Ok(Self { files, manifest: Arc::new(manifest), images: HashMap::new(), loaded_groups: HashSet::new() })
+        Ok(Self {
+            files,
+            manifest: Arc::new(manifest),
+            images: HashMap::new(),
+            fonts: HashMap::new(),
+            strings: StringTable::default(),
+            loaded_groups: HashSet::new(),
+        })
     }
 
     pub fn image(&self, id: &str) -> Option<&ImageRes> {
         self.images.get(id)
+    }
+
+    pub fn font(&self, id: &str) -> Option<&FontRes> {
+        self.fonts.get(id)
+    }
+
+    /// `TodStringTranslate`: `[NAME]` → text from `LawnStrings.txt`.
+    pub fn translate(&self, s: &str) -> String {
+        self.strings.translate(s)
     }
 
     pub fn is_group_loaded(&self, group: &str) -> bool {
@@ -96,12 +125,19 @@ impl GameResources {
 
     fn insert(&mut self, group: LoadedGroup, assets: &mut Assets<Image>) {
         for (id, image, rows, cols) in group.images {
-            let (width, height) = (image.width, image.height);
-            let handle = assets.add(to_bevy_image(image));
-            self.images.insert(id, ImageRes { handle, width, height, rows, cols });
+            self.images.insert(id, upload(image, rows, cols, assets));
+        }
+        for (id, loaded) in group.fonts {
+            let layer_images = loaded.images.into_iter().map(|i| upload(i, 1, 1, assets)).collect();
+            self.fonts.insert(id, FontRes { font: Arc::new(loaded.font), layer_images });
         }
         self.loaded_groups.insert(group.name);
     }
+}
+
+fn upload(image: DecodedImage, rows: u32, cols: u32, assets: &mut Assets<Image>) -> ImageRes {
+    let (width, height) = (image.width, image.height);
+    ImageRes { handle: assets.add(to_bevy_image(image)), width, height, rows, cols }
 }
 
 fn to_bevy_image(image: DecodedImage) -> Image {
@@ -118,32 +154,39 @@ fn to_bevy_image(image: DecodedImage) -> Image {
 struct LoadedGroup {
     name: String,
     images: Vec<(String, DecodedImage, u32, u32)>,
+    fonts: Vec<(String, LoadedFont)>,
+}
+
+/// What the loading thread hands to the main thread.
+enum Loaded {
+    Group(LoadedGroup),
+    Strings(StringTable),
 }
 
 /// Loads every resource of a group, calling `tick` after each one.
 fn load_group(files: &GameFiles, manifest: &Manifest, group: &str, tick: &dyn Fn()) -> Result<LoadedGroup, String> {
     let resources = manifest.group(group).ok_or_else(|| format!("resource group {group:?} doesn't exist"))?;
-    let mut images = Vec::new();
+    let (mut images, mut fonts) = (Vec::new(), Vec::new());
     for res in resources {
         match &res.kind {
             ResourceKind::Image(info) => {
                 let image = load_image_resource(files, &res.path, info).map_err(|e| format!("{}: {e}", res.id))?;
                 images.push((res.id.clone(), image, info.rows, info.cols));
             }
-            // TODO: decode once audio and image fonts exist. For now just
-            // check the files are present so missing data fails early.
+            ResourceKind::Font => {
+                fonts.push((res.id.clone(), load_font(files, &res.path).map_err(|e| format!("{}: {e}", res.id))?));
+            }
+            // TODO: decode once audio exists. For now just check the file is
+            // present so missing data fails early.
             ResourceKind::Sound => {
                 if !["ogg", "wav", "mp3"].iter().any(|e| files.read(&format!("{}.{e}", res.path)).is_some()) {
                     return Err(format!("{}: sound {:?} not found", res.id, res.path));
                 }
             }
-            ResourceKind::Font => {
-                files.read(&res.path).ok_or_else(|| format!("{}: font {:?} not found", res.id, res.path))?;
-            }
         }
         tick();
     }
-    Ok(LoadedGroup { name: group.to_owned(), images })
+    Ok(LoadedGroup { name: group.to_owned(), images, fonts })
 }
 
 #[derive(Default)]
@@ -152,7 +195,7 @@ struct LoadingShared {
     total: AtomicU32,
     finished: AtomicBool,
     error: Mutex<Option<String>>,
-    inbox: Mutex<Vec<LoadedGroup>>,
+    inbox: Mutex<Vec<Loaded>>,
 }
 
 /// Handle to the background loader. Groups it finishes are moved into
@@ -185,7 +228,10 @@ impl LoadingThread {
 
 fn loading_thread_proc(files: &GameFiles, manifest: &Manifest, shared: &LoadingShared) -> Result<(), String> {
     let loader_bar = load_group(files, manifest, LOADER_BAR_GROUP, &|| {})?;
-    shared.inbox.lock().unwrap().push(loader_bar);
+    let strings = files.read(STRINGS_PATH).ok_or(format!("{STRINGS_PATH} is missing"))?;
+    let strings = StringTable::parse(&latin1_to_string(&strings)).map_err(|e| format!("{STRINGS_PATH}: {e}"))?;
+    // Strings first: the title screen shows "LOADING..." as soon as LoaderBar is in.
+    shared.inbox.lock().unwrap().extend([Loaded::Strings(strings), Loaded::Group(loader_bar)]);
 
     let mut total = 0;
     for (group, weight) in LOADING_GROUPS {
@@ -199,7 +245,7 @@ fn loading_thread_proc(files: &GameFiles, manifest: &Manifest, shared: &LoadingS
         let loaded = load_group(files, manifest, group, &|| {
             shared.completed.fetch_add(weight, Ordering::AcqRel);
         })?;
-        shared.inbox.lock().unwrap().push(loaded);
+        shared.inbox.lock().unwrap().push(Loaded::Group(loaded));
     }
     Ok(())
 }
@@ -210,9 +256,19 @@ fn receive_loaded_groups(
     mut assets: ResMut<Assets<Image>>,
 ) {
     let Some(thread) = thread else { return };
-    let groups = std::mem::take(&mut *thread.shared.inbox.lock().unwrap());
-    for group in groups {
-        info!("loaded resource group {} ({} images)", group.name, group.images.len());
-        resources.insert(group, &mut assets);
+    let loaded = std::mem::take(&mut *thread.shared.inbox.lock().unwrap());
+    for item in loaded {
+        match item {
+            Loaded::Strings(strings) => resources.strings = strings,
+            Loaded::Group(group) => {
+                info!(
+                    "loaded resource group {} ({} images, {} fonts)",
+                    group.name,
+                    group.images.len(),
+                    group.fonts.len()
+                );
+                resources.insert(group, &mut assets);
+            }
+        }
     }
 }

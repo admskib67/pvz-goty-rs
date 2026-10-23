@@ -5,6 +5,8 @@
 //! by tools.
 
 pub mod files;
+pub mod font;
 pub mod image;
 pub mod resources;
+pub mod strings;
 pub mod tod;

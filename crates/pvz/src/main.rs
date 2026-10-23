@@ -1,5 +1,6 @@
 mod devshot;
 mod graphics;
+mod input;
 mod install;
 mod pak_source;
 mod resources;
@@ -65,6 +66,7 @@ fn main() {
         .add_plugins((
             setup::SetupPlugin,
             graphics::GraphicsPlugin,
+            input::InputPlugin,
             resources::ResourcesPlugin,
             title::TitlePlugin,
             devshot::DevShotPlugin,

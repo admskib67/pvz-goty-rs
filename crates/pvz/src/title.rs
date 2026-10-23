@@ -1,8 +1,8 @@
 //! The title screen: PopCap logo, then the loading bar while resources load.
 //!
-//! Behaviour per ruslan831 decomp, `Lawn/Widget/TitleScreen.cpp`. Not yet
-//! ported: the "Loading..."/"Click to Start" label (needs image fonts), the
-//! sprouts popping out of the bar (needs reanimation) and sounds.
+//! Behaviour per ruslan831 decomp, `Lawn/Widget/TitleScreen.cpp` and
+//! `HyperlinkWidget::Draw`. Not yet ported: the sprouts popping out of the
+//! bar (needs reanimation) and sounds.
 
 use std::f32::consts::PI;
 
@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use sexy::tod::{TodCurve, animate_curve, animate_curve_float_time};
 
 use crate::graphics::{Graphics, SexyColor, scale_rotate_transform};
+use crate::input::GameCursor;
 use crate::pak_source::GamePak;
 use crate::resources::{GameResources, INIT_GROUP, LOADER_BAR_GROUP, LoadingThread};
 use crate::{AppState, GAME_HEIGHT, GAME_WIDTH};
@@ -31,12 +32,21 @@ enum TitleState {
     Screen,
 }
 
-/// The "Loading..." / "Click to Start" link under the bar. Only its
-/// position matters until fonts are ported.
+/// The "LOADING..." / "CLICK TO START!" link under the bar (a `HyperlinkWidget`).
 #[derive(Debug, Clone, Copy)]
 struct StartButton {
     x: f32,
     y: f32,
+    label: &'static str,
+    disabled: bool,
+    visible: bool,
+}
+
+impl StartButton {
+    const HEIGHT: f32 = 50.0;
+    const COLOR: SexyColor = SexyColor::rgba(218, 184, 33, 255);
+    const OVER_COLOR: SexyColor = SexyColor::rgba(250, 90, 15, 255);
+    const FONT: &str = "FONT_BRIANNETOD16";
 }
 
 #[derive(Resource)]
@@ -71,7 +81,7 @@ impl Default for TitleScreen {
             state: TitleState::WaitingForFirstDraw,
             state_duration: 0,
             state_counter: 0,
-            start_button: StartButton { x: 0.0, y: 0.0 },
+            start_button: StartButton { x: 0.0, y: 0.0, label: "", disabled: true, visible: false },
         }
     }
 }
@@ -145,7 +155,10 @@ fn update_title(
     let current_progress = thread.progress();
     if t.need_to_init {
         t.need_to_init = false;
-        t.start_button = StartButton { x: (WIDTH / 2 - dirt.width as i32 / 2) as f32, y: 650.0 };
+        t.start_button.label = "[LOADING]";
+        t.start_button.x = (WIDTH / 2 - dirt.width as i32 / 2) as f32;
+        t.start_button.y = 650.0;
+        t.start_button.visible = true;
 
         let estimated_total_load_time =
             if current_progress > 0.000001 { t.title_age as f32 / current_progress } else { 3000.0 };
@@ -170,6 +183,7 @@ fn update_title(
     if !t.loading_thread_complete {
         t.cur_bar_width = t.cur_bar_width.min(t.total_bar_width * 0.99);
     } else if t.cur_bar_width > t.total_bar_width {
+        t.start_button.label = "[CLICK_TO_START]";
         t.cur_bar_width = t.total_bar_width;
     }
 
@@ -191,6 +205,8 @@ fn update_title(
 
     if !t.loading_thread_complete && thread.is_complete() {
         t.loading_thread_complete = true;
+        t.start_button.disabled = false;
+        t.start_button.visible = true;
         if let Some(e) = thread.error() {
             error!("loading thread failed: {e}");
         }
@@ -210,10 +226,33 @@ fn title_input(
     }
 }
 
+/// Draws the title screen, then its start link on top (it's a child widget).
+fn draw_title(
+    mut title: ResMut<TitleScreen>,
+    resources: Res<GameResources>,
+    cursor: Res<GameCursor>,
+    mut g: ResMut<Graphics>,
+) {
+    draw_screen(&mut title, &resources, &mut g);
+    draw_start_button(&title, &resources, &cursor, &mut g);
+}
+
+/// `HyperlinkWidget::Draw` for the start link.
+fn draw_start_button(t: &TitleScreen, resources: &GameResources, cursor: &GameCursor, g: &mut Graphics) {
+    let b = &t.start_button;
+    let Some(font) = resources.font(StartButton::FONT).filter(|_| b.visible) else { return };
+    let label = resources.translate(b.label);
+    let over = !b.disabled && cursor.is_in(b.x, b.y, t.total_bar_width, StartButton::HEIGHT);
+
+    let font_x = (t.total_bar_width as i32 - font.font.string_width(&label)) / 2;
+    let font_y = (StartButton::HEIGHT as i32 + font.font.ascent) / 2 - 1;
+    g.set_color(if over { StartButton::OVER_COLOR } else { StartButton::COLOR });
+    g.draw_string(font, b.x as i32 + font_x, b.y as i32 + font_y, &label);
+}
+
 /// `TitleScreen::Draw`.
-fn draw_title(mut title: ResMut<TitleScreen>, resources: Res<GameResources>, mut g: ResMut<Graphics>) {
+fn draw_screen(t: &mut TitleScreen, resources: &GameResources, g: &mut Graphics) {
     let (w, h) = (GAME_WIDTH, GAME_HEIGHT);
-    let t = &mut *title;
 
     if t.state == TitleState::WaitingForFirstDraw {
         g.set_color(SexyColor::BLACK);

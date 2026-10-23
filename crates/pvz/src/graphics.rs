@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use bevy::transform::TransformSystems;
 
-use crate::resources::ImageRes;
+use crate::resources::{FontRes, ImageRes};
 use crate::{GAME_HEIGHT, GAME_WIDTH};
 
 pub struct GraphicsPlugin;
@@ -153,6 +153,24 @@ impl Graphics {
         let src = SexyRect::new(src.x + clipped.x - x, src.y + clipped.y - y, clipped.w, clipped.h);
         let color = self.image_color();
         self.cmds.push(DrawCmd::Image { image: image.handle.clone(), dest: clipped, src, color });
+    }
+
+    /// `DrawString` with an image font, in the current color. `y` is the
+    /// baseline. Returns the text's advance width.
+    pub fn draw_string(&mut self, font: &FontRes, x: i32, y: i32, text: &str) -> i32 {
+        let c = self.state.color;
+        let (glyphs, width) = font.font.layout(x, y, text, [c.r, c.g, c.b, c.a]);
+        // DrawStringEx always draws glyphs colorized, with each layer's color.
+        self.push_state();
+        self.set_colorize_images(true);
+        for glyph in glyphs {
+            let [r, g, b, a] = glyph.color;
+            self.set_color(SexyColor::rgba(r, g, b, a));
+            let src = SexyRect::new(glyph.src.x as f32, glyph.src.y as f32, glyph.src.w as f32, glyph.src.h as f32);
+            self.draw_image_src(&font.layer_images[glyph.layer], glyph.dest.0 as f32, glyph.dest.1 as f32, src);
+        }
+        self.pop_state();
+        width
     }
 
     /// Draws `image` centered on `transform`'s origin, like `TodBltMatrix`.
