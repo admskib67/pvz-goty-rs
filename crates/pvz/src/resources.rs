@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bevy::asset::RenderAssetUsages;
+use bevy::audio::AudioSource;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::tasks::{AsyncComputeTaskPool, Task};
@@ -21,6 +22,8 @@ use sexy::reanim::{ReanimDefinition, image_search_paths};
 use sexy::resources::{Manifest, ResourceKind};
 use sexy::strings::StringTable;
 
+use crate::audio::{Music, MusicFile, SoundSystem, load_song};
+
 /// Group loaded synchronously at startup (PopCap logo).
 pub const INIT_GROUP: &str = "Init";
 /// Group the title screen needs before it can show the loading bar.
@@ -30,6 +33,10 @@ const STRINGS_PATH: &str = "properties/LawnStrings.txt";
 /// Groups the loading thread loads after `LoaderBar`, with the original's
 /// per-resource progress weights ("average ms to load").
 const LOADING_GROUPS: [(&str, u32); 3] = [("LoadingImages", 9), ("LoadingFonts", 54), ("LoadingSounds", 54)];
+/// Progress weight of each music file loaded by the thread (`Music::GetNumLoadingTasks`).
+const MUSIC_TASK_WEIGHT: u32 = 3500;
+/// Music the loading thread loads (`Music::MusicInit`); `Main` is loaded by the title screen.
+const THREAD_MUSIC: [MusicFile; 2] = [MusicFile::Drums, MusicFile::Hihats];
 
 pub struct ResourcesPlugin;
 
@@ -94,6 +101,11 @@ impl GameResources {
             reanim_definitions: HashMap::new(),
             loaded_groups: HashSet::new(),
         })
+    }
+
+    /// Raw bytes of a game file (pak first, then loose files).
+    pub fn read_file(&self, path: &str) -> Option<Vec<u8>> {
+        self.files.read(path).map(|b| b.into_owned())
     }
 
     pub fn image(&self, id: &str) -> Option<&ImageRes> {
@@ -172,7 +184,8 @@ impl GameResources {
         LoadingThread { shared, _task: task }
     }
 
-    fn insert(&mut self, group: LoadedGroup, assets: &mut Assets<Image>) {
+    /// Uploads a group's images and fonts; returns its sounds for the [`SoundSystem`].
+    fn insert(&mut self, group: LoadedGroup, assets: &mut Assets<Image>) -> Vec<(String, Vec<u8>)> {
         for (id, image, rows, cols) in group.images {
             self.images.insert(id, upload(image, rows, cols, assets));
         }
@@ -181,6 +194,7 @@ impl GameResources {
             self.fonts.insert(id, FontRes { font: Arc::new(loaded.font), layer_images });
         }
         self.loaded_groups.insert(group.name);
+        group.sounds
     }
 }
 
@@ -204,18 +218,20 @@ struct LoadedGroup {
     name: String,
     images: Vec<(String, DecodedImage, u32, u32)>,
     fonts: Vec<(String, LoadedFont)>,
+    sounds: Vec<(String, Vec<u8>)>,
 }
 
 /// What the loading thread hands to the main thread.
 enum Loaded {
     Group(LoadedGroup),
     Strings(StringTable),
+    Music(MusicFile, Result<openmpt::Module, String>),
 }
 
 /// Loads every resource of a group, calling `tick` after each one.
 fn load_group(files: &GameFiles, manifest: &Manifest, group: &str, tick: &dyn Fn()) -> Result<LoadedGroup, String> {
     let resources = manifest.group(group).ok_or_else(|| format!("resource group {group:?} doesn't exist"))?;
-    let (mut images, mut fonts) = (Vec::new(), Vec::new());
+    let (mut images, mut fonts, mut sounds) = (Vec::new(), Vec::new(), Vec::new());
     for res in resources {
         match &res.kind {
             ResourceKind::Image(info) => {
@@ -225,18 +241,19 @@ fn load_group(files: &GameFiles, manifest: &Manifest, group: &str, tick: &dyn Fn
             ResourceKind::Font => {
                 fonts.push((res.id.clone(), load_font(files, &res.path).map_err(|e| format!("{}: {e}", res.id))?));
             }
-            // TODO: decode once audio exists. For now just check the file is
-            // present so missing data fails early. Extensions in the order
-            // DSoundManager::LoadSound tries them; the Windows pak has `.au` sounds.
+            // Extensions in the order DSoundManager::LoadSound tries them;
+            // the Windows pak has `.au` sounds.
             ResourceKind::Sound => {
-                if !["wav", "mp3", "ogg", "au"].iter().any(|e| files.read(&format!("{}.{e}", res.path)).is_some()) {
-                    return Err(format!("{}: sound {:?} not found", res.id, res.path));
-                }
+                let bytes = ["wav", "mp3", "ogg", "au"]
+                    .iter()
+                    .find_map(|e| files.read(&format!("{}.{e}", res.path)))
+                    .ok_or_else(|| format!("{}: sound {:?} not found", res.id, res.path))?;
+                sounds.push((res.id.clone(), bytes.into_owned()));
             }
         }
         tick();
     }
-    Ok(LoadedGroup { name: group.to_owned(), images, fonts })
+    Ok(LoadedGroup { name: group.to_owned(), images, fonts, sounds })
 }
 
 #[derive(Default)]
@@ -287,8 +304,9 @@ fn loading_thread_proc(files: &GameFiles, manifest: &Manifest, shared: &LoadingS
     for (group, weight) in LOADING_GROUPS {
         total += manifest.group(group).map_or(0, |g| g.count() as u32) * weight;
     }
-    // TODO: the original also counts music, reanimation, particle and preload
-    // tasks here; add them as those systems get ported.
+    total += THREAD_MUSIC.len() as u32 * MUSIC_TASK_WEIGHT;
+    // TODO: the original also counts reanimation, particle and preload tasks
+    // here; add them as those systems get ported.
     shared.total.store(total, Ordering::Release);
 
     for (group, weight) in LOADING_GROUPS {
@@ -296,6 +314,15 @@ fn loading_thread_proc(files: &GameFiles, manifest: &Manifest, shared: &LoadingS
             shared.completed.fetch_add(weight, Ordering::AcqRel);
         })?;
         shared.inbox.lock().unwrap().push(Loaded::Group(loaded));
+
+        // LoadingThreadProc runs MusicInit between the fonts and the sounds.
+        if group == "LoadingFonts" {
+            for file in THREAD_MUSIC {
+                let song = files.read(file.path()).ok_or(format!("{} is missing", file.path())).and_then(|b| load_song(&b));
+                shared.inbox.lock().unwrap().push(Loaded::Music(file, song));
+                shared.completed.fetch_add(MUSIC_TASK_WEIGHT, Ordering::AcqRel);
+            }
+        }
     }
     Ok(())
 }
@@ -304,12 +331,20 @@ fn receive_loaded_groups(
     thread: Option<Res<LoadingThread>>,
     mut resources: ResMut<GameResources>,
     mut assets: ResMut<Assets<Image>>,
+    mut sounds: ResMut<SoundSystem>,
+    mut audio: ResMut<Assets<AudioSource>>,
+    mut music: Option<ResMut<Music>>,
 ) {
     let Some(thread) = thread else { return };
     let loaded = std::mem::take(&mut *thread.shared.inbox.lock().unwrap());
     for item in loaded {
         match item {
             Loaded::Strings(strings) => resources.strings = strings,
+            Loaded::Music(file, song) => {
+                if let Some(music) = &mut music {
+                    music.set_song(file, song);
+                }
+            }
             Loaded::Group(group) => {
                 info!(
                     "loaded resource group {} ({} images, {} fonts)",
@@ -317,7 +352,9 @@ fn receive_loaded_groups(
                     group.images.len(),
                     group.fonts.len()
                 );
-                resources.insert(group, &mut assets);
+                for (id, bytes) in resources.insert(group, &mut assets) {
+                    sounds.insert(id, bytes, &mut audio);
+                }
             }
         }
     }

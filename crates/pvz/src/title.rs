@@ -1,7 +1,7 @@
 //! The title screen: PopCap logo, then the loading bar while resources load.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Widget/TitleScreen.cpp` and
-//! `HyperlinkWidget::Draw`. Not yet ported: sounds.
+//! `HyperlinkWidget::Draw`.
 
 use std::f32::consts::PI;
 
@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use sexy::reanim::LoopType;
 use sexy::tod::{TodCurve, animate_curve, animate_curve_float_time};
 
+use crate::audio::{Music, MusicFile, MusicTune, Sounds, load_song};
 use crate::graphics::{Graphics, SexyColor, scale_rotate_transform};
 use crate::input::GameCursor;
 use crate::pak_source::GamePak;
@@ -120,12 +121,15 @@ fn start_title(
 }
 
 /// `TitleScreen::Update`, run at the original's 100 ticks per second.
+#[allow(clippy::too_many_arguments)]
 fn update_title(
     mut commands: Commands,
     mut title: ResMut<TitleScreen>,
     mut resources: ResMut<GameResources>,
     mut images: ResMut<Assets<Image>>,
     mut effects: ResMut<EffectSystem>,
+    mut music: ResMut<Music>,
+    mut sounds: Sounds,
     thread: Option<Res<LoadingThread>>,
 ) {
     let t = &mut *title;
@@ -134,7 +138,11 @@ fn update_title(
     }
 
     if t.state == TitleState::WaitingForFirstDraw {
-        // TODO: MusicTitleScreenInit once music is ported.
+        // MusicTitleScreenInit: the main tune loads now, the rest on the loading thread.
+        let path = MusicFile::Main.path();
+        let song = resources.read_file(path).ok_or(format!("{path} is missing")).and_then(|b| load_song(&b));
+        music.set_song(MusicFile::Main, song);
+        music.make_sure_music_is_playing(MusicTune::TitleCrazyDaveMainTheme);
         commands.insert_resource(resources.start_loading_thread());
         t.state = TitleState::PopcapLogo;
         t.state_duration = 200;
@@ -249,7 +257,10 @@ fn update_title(
             4 => sprout.set_position(x - 20.0, y),
             _ => {}
         }
-        // TODO: SOUND_LOADINGBAR_FLOWER (and SOUND_LOADINGBAR_ZOMBIE for the head).
+        sounds.play_sample("SOUND_LOADINGBAR_FLOWER");
+        if i == 4 {
+            sounds.play_sample("SOUND_LOADINGBAR_ZOMBIE");
+        }
     }
 }
 
@@ -260,12 +271,13 @@ fn title_input(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut next: ResMut<NextState<AppState>>,
+    mut sounds: Sounds,
 ) {
     let pressed = mouse.get_just_pressed().next().is_some()
         || keys.get_just_pressed().next().is_some()
         || std::env::var_os(AUTO_START_ENV).is_some();
     if pressed && title.loading_thread_complete {
-        // TODO: SOUND_BUTTONCLICK.
+        sounds.play_sample("SOUND_BUTTONCLICK");
         next.set(AppState::GameSelector);
     }
 }

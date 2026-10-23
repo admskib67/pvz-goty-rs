@@ -32,6 +32,7 @@ The application. Bevy supplies the window, input, rendering, audio and asset plu
 - **Game logic ticks at 100 Hz** in `FixedUpdate`, like the original, so timings ported from the reference behave the same.
 - **Drawing goes through `graphics`**, an immediate-mode API shaped like the original's `Graphics` (800×600, top-left origin). Ported `Draw()` code reads almost line for line like the reference; the module turns it into Bevy sprites.
 - **Resources load in groups** on a background task, as the original did, which drives the loading bar.
+- **Music is played live** by libopenmpt through Bevy's audio, so the game can switch songs and fade the drum layers like the original; sound effects are ordinary Bevy audio.
 - **Screens are Bevy states** (`Boot → Setup → Title → GameSelector`). `bevy_ui` is used only for screens the original doesn't have, like the first-run install picker.
 
 ## Game data

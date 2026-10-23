@@ -2,17 +2,18 @@
 //! and the wooden name sign.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Widget/GameSelector.cpp`. Not yet
-//! ported: music and sounds, the create-user and other dialogs, tooltips,
-//! the trophy, zen garden needs, and the screens the buttons lead to.
+//! ported: the create-user and other dialogs, tooltips, the trophy, zen
+//! garden needs, and the screens the buttons lead to.
 
 use bevy::math::Affine2;
 use bevy::prelude::*;
 use sexy::matrix::Matrix3;
 use sexy::reanim::{LoopType, RENDER_GROUP_HIDDEN, RENDER_GROUP_NORMAL};
 
+use crate::audio::{FoleyType, Music, MusicTune, Sounds};
 use crate::graphics::{Graphics, SexyColor};
 use crate::input::GameCursor;
-use crate::player::{GameRng, PlayerInfo};
+use crate::player::PlayerInfo;
 use crate::reanim::{EffectSystem, ReanimationId, ReanimationType, draw_reanimation, draw_render_group};
 use crate::resources::GameResources;
 use crate::widgets::{ButtonEvent, GameButton, update_buttons};
@@ -152,7 +153,8 @@ fn start_selector(
     mut resources: ResMut<GameResources>,
     mut images: ResMut<Assets<Image>>,
     mut effects: ResMut<EffectSystem>,
-    mut rng: ResMut<GameRng>,
+    mut music: ResMut<Music>,
+    mut sounds: Sounds,
     player: Res<PlayerInfo>,
 ) {
     for id in SELECTOR_IMAGES {
@@ -160,8 +162,12 @@ fn start_selector(
             error!("{e}");
         }
     }
-    match build_selector(&mut resources, &mut images, &mut effects, &mut rng.0, &player) {
-        Ok(selector) => commands.insert_resource(selector),
+    music.make_sure_music_is_playing(MusicTune::TitleCrazyDaveMainTheme);
+    match build_selector(&mut resources, &mut images, &mut effects, sounds.rng(), &player) {
+        Ok(selector) => {
+            commands.insert_resource(selector);
+            sounds.play_sample("SOUND_ROLL_IN");
+        }
         Err(e) => error!("couldn't open the main menu: {e}"),
     }
 }
@@ -254,7 +260,7 @@ fn build_selector(
     almanac.resize(327, 428, width_of("IMAGE_SELECTORSCREEN_ALMANAC"), height_of("IMAGE_SELECTORSCREEN_ALMANAC"));
     almanac.mouse_visible = false;
 
-    // TODO: MakeSureMusicIsPlaying(MUSIC_TUNE_TITLE_CRAZY_DAVE_MAIN_THEME).
+    // MakeSureMusicIsPlaying(MUSIC_TUNE_TITLE_CRAZY_DAVE_MAIN_THEME) happens in start_selector.
 
     let (selector_reanim, selector) = effects.add_reanimation(0.5, 0.5, ReanimationType::SelectorScreen, resources, images)?;
     selector.play("anim_open", LoopType::PlayOnceAndHold, 0, 30.0);
@@ -324,7 +330,6 @@ fn build_selector(
         },
     };
     gs.sync_profile(player, effects);
-    // TODO: SOUND_ROLL_IN.
     Ok(gs)
 }
 
@@ -448,8 +453,11 @@ impl GameSelector {
         effects: &mut EffectSystem,
         resources: &mut GameResources,
         images: &mut Assets<Image>,
+        music: &mut Music,
+        sounds: &mut Sounds,
     ) {
-        // TODO: StopAllMusic, SOUND_LOSEMUSIC, FOLEY_DIRT_RISE.
+        music.stop_all_music();
+        sounds.play_sample("SOUND_LOSEMUSIC");
         self.starting_game = true;
         for b in self.buttons.all_mut() {
             b.disabled = true;
@@ -463,12 +471,14 @@ impl GameSelector {
                     }
                 }
                 self.hand_reanim = Some(id);
+                sounds.play_foley(FoleyType::DirtRise);
             }
             Err(e) => error!("{e}"),
         }
     }
 
     /// `GameSelector::ButtonDepress`.
+    #[allow(clippy::too_many_arguments)]
     fn button_depress(
         &mut self,
         id: ButtonId,
@@ -476,6 +486,8 @@ impl GameSelector {
         resources: &mut GameResources,
         images: &mut Assets<Image>,
         exit: &mut MessageWriter<AppExit>,
+        music: &mut Music,
+        sounds: &mut Sounds,
     ) {
         let locked = match id {
             ButtonId::Minigame if self.minigames_locked => Some("[MINIGAME_LOCKED_MESSAGE]"),
@@ -489,7 +501,7 @@ impl GameSelector {
             return;
         }
         match id {
-            ButtonId::Adventure => self.clicked_adventure(effects, resources, images),
+            ButtonId::Adventure => self.clicked_adventure(effects, resources, images, music, sounds),
             // TODO: ConfirmQuit's "are you sure" dialog.
             ButtonId::Quit => {
                 exit.write(AppExit::Success);
@@ -500,13 +512,8 @@ impl GameSelector {
 }
 
 /// `GameSelector::Update`, at 100 ticks per second.
-fn update_selector(
-    mut selector: ResMut<GameSelector>,
-    mut effects: ResMut<EffectSystem>,
-    mut rng: ResMut<GameRng>,
-) {
+fn update_selector(mut selector: ResMut<GameSelector>, mut effects: ResMut<EffectSystem>, mut sounds: Sounds) {
     let gs = &mut *selector;
-    let rng = &mut rng.0;
 
     if gs.starting_game {
         gs.starting_game_counter += 1;
@@ -516,7 +523,9 @@ fn update_selector(
         }
         gs.buttons.adventure.color =
             if gs.starting_game_counter % 20 < 10 { SexyColor::rgba(80, 80, 80, 255) } else { SexyColor::WHITE };
-        // TODO: SOUND_EVILLAUGH at 125.
+        if gs.starting_game_counter == 125 {
+            sounds.play_sample("SOUND_EVILLAUGH");
+        }
     }
 
     let Some(selector) = effects.get_mut(gs.selector_reanim) else { return };
@@ -555,7 +564,7 @@ fn update_selector(
                 cloud.anim_rate = 0.5;
             }
         } else if cloud.loop_count > 0 {
-            *counter = rng.range_int(2000, 4000);
+            *counter = sounds.rng().range_int(2000, 4000);
         }
     }
 
@@ -571,9 +580,9 @@ fn update_selector(
         leaf.set_position(bg.x - 71.0, bg.y - 41.0);
         gs.leaf_counter -= 1;
         if gs.leaf_counter == 0 {
-            let rate = rng.range_f32(3.0, 12.0);
+            let rate = sounds.rng().range_f32(3.0, 12.0);
             leaf.play("anim_grass", LoopType::Loop, 20, rate);
-            gs.leaf_counter = rng.range_int(200, 400);
+            gs.leaf_counter = sounds.rng().range_int(200, 400);
         }
     }
     for id in gs.flower_reanims {
@@ -605,13 +614,32 @@ fn selector_input(
     cursor: Res<GameCursor>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut exit: MessageWriter<AppExit>,
+    mut music: ResMut<Music>,
+    mut sounds: Sounds,
 ) {
     let gs = &mut *selector;
     let result = update_buttons(&mut gs.buttons.front_to_back(), &cursor, &mouse);
     for event in result.events {
-        // TODO: FOLEY_BLEEP on enter, SOUND_GRAVEBUTTON/SOUND_TAP on press.
-        if let ButtonEvent::Depress(id) = event {
-            gs.button_depress(id, &mut effects, &mut resources, &mut images, &mut exit);
+        match event {
+            // ButtonMouseEnter: locked modes stay quiet.
+            ButtonEvent::MouseEnter(id) => {
+                let locked = (id == ButtonId::Minigame && gs.minigames_locked)
+                    || (id == ButtonId::Puzzle && gs.puzzle_locked)
+                    || (id == ButtonId::Survival && gs.survival_locked);
+                if !locked {
+                    sounds.play_foley(FoleyType::Bleep);
+                }
+            }
+            // ButtonPress: the tombstone buttons sound like stone.
+            ButtonEvent::Press(id) => match id {
+                ButtonId::Adventure | ButtonId::Minigame | ButtonId::Puzzle | ButtonId::Survival => {
+                    sounds.play_sample("SOUND_GRAVEBUTTON")
+                }
+                _ => sounds.play_sample("SOUND_TAP"),
+            },
+            ButtonEvent::Depress(id) => {
+                gs.button_depress(id, &mut effects, &mut resources, &mut images, &mut exit, &mut music, &mut sounds)
+            }
         }
     }
     if let Some(p) = result.background_press {
@@ -621,7 +649,7 @@ fn selector_input(
                 && Vec2::new(fx, fy).distance(p) < 20.0
             {
                 flower.anim_rate = 24.0;
-                // TODO: FOLEY_LIMBS_POP.
+                sounds.play_foley(FoleyType::LimbsPop);
             }
         }
     }

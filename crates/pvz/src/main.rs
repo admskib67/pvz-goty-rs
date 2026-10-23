@@ -1,3 +1,4 @@
+mod audio;
 mod devshot;
 mod game_selector;
 mod graphics;
@@ -74,6 +75,7 @@ fn main() {
         .add_plugins((
             setup::SetupPlugin,
             graphics::GraphicsPlugin,
+            audio::AudioPlugin,
             input::InputPlugin,
             resources::ResourcesPlugin,
             title::TitlePlugin,

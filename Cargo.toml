@@ -10,7 +10,8 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 pak = { path = "crates/pak" }
 sexy = { path = "crates/sexy" }
-bevy = { version = "0.20", features = ["jpeg", "wayland"] }
+openmpt = { path = "crates/openmpt" }
+bevy = { version = "0.20", features = ["jpeg", "wav", "wayland"] }
 rfd = "0.17"
 directories = "6"
 serde = { version = "1", features = ["derive"] }

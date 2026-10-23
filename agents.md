@@ -9,6 +9,16 @@ A Rust reconstruction of Plants vs. Zombies: Game of the Year Edition, built on 
 - Targets: Windows and macOS arm64 for now. Linux (Wayland) is deferred: its libopenmpt libraries exist (built under WSL) but nothing is tested there. Development happens on macOS; the user also builds and runs on Windows 11.
 - Current phase: engine and architecture foundations. Gameplay comes later.
 
+## Branches
+
+- `main` is the shared, stable line.
+- `core` is where the macOS-side agent moves the engine and game forward (new systems and screens).
+- Windows-specific fixes are done by a separate agent on Windows. Keep platform fixes and core features in separate commits so the branches merge cleanly, and keep this file current on whichever branch you work on.
+
+## Git
+
+- **Never commit or push.** The user writes every commit and does all pushes themselves. Leave changes uncommitted in the working tree, and don't amend, reset, stash, rebase or otherwise rewrite their history either. Only switch or create branches when the user asks.
+
 ## Files agents must not edit
 
 - **`readme.md` is maintained by the user only.** Don't edit, rewrite, rename or delete it, even for small fixes or to add credits. If something in it looks wrong or out of date, tell the user instead.
@@ -36,7 +46,7 @@ Game assets never go in the repo (`.gitignore` excludes `*.pak` and `/extracted`
   - **Windows** (Steam GOTY): `C:\Program Files (x86)\Steam\steamapps\common\Plants Vs Zombies\main.pak`, an install folder rather than a `.app`. 3,198 files. Some sounds aren't `.ogg` (`SOUND_DIAMOND` wasn't found until `.au` was added to the extensions tried). Reanims and particles are expected to be compiled binaries only, at `compiled/<xml path>.compiled` (e.g. `compiled/reanim/LoadBar_sprout.reanim.compiled`) — verify with `extract` before relying on exact names.
 - Compiled definitions, per ruslan831 decomp `Sexy.TodLib/Definition.cpp` (`DefinitionReadCompiledFile`, `DefinitionUncompressCompiledBuffer`, `DefinitionGetCompiledFilePathFromXMLFilePath`): a header with cookie `0xDEADFED4` and the uncompressed size, then zlib data. Uncompressed, it's a schema hash followed by the definition's structs as laid out in memory by the 32-bit game (pointers are 4 bytes and get replaced on load, strings and arrays follow inline), described by the `DefMap`/`DefField` tables in `Definition.cpp`. The original prefers the compiled file when it's in the pak, otherwise it parses the XML.
 - `properties/resources.xml` names files without extensions; resolve them with `Pak::find_with_extensions`.
-- Sound effects are `.ogg` on Mac; Windows also has others. The original's `DSoundManager::LoadSound` tries `.wav`, `.mp3`, `.ogg`, `.au` in that order, and `pvz::resources` matches it. Music is `.mo3`, a tracker module that only libopenmpt (or the original's BASS) can play; it must be played live with order jumps and per-channel volumes, so it can't be pre-rendered. Plan: libopenmpt behind a custom `bevy_audio` source.
+- Sound effects are `.ogg` on Mac; Windows also has others. The original's `DSoundManager::LoadSound` tries `.wav`, `.mp3`, `.ogg`, `.au` in that order, and `pvz::resources` matches it. Music is `.mo3`, a tracker module that only libopenmpt (or the original's BASS) can play; it must be played live with order jumps and per-channel volumes, so it can't be pre-rendered. It plays through libopenmpt in a custom `bevy_audio` source (see `pvz::audio`).
 
 ## Commands
 
@@ -67,7 +77,7 @@ The dev profile builds our crates at `opt-level = 1` and dependencies at `3`, be
 ## Platform status
 
 - **macOS arm64:** everything runs: setup screen, title screen with sprouts, main menu.
-- **Windows 11 (x86_64, MSVC from Visual Studio 2026, AMD GPU on Vulkan):** builds and links, including libopenmpt (`dev/libopenmpt-win/x86_64-pc-windows-msvc/`, plus `rpcrt4` for `UuidCreate`). The setup screen works and resource loading completes after the `.au` fix. **Blocker:** reanimations (loading-bar sprouts, main menu) need the compiled-definition parser above; nothing tested past the loading bar yet. Next Windows work: add compiled `.reanim` support in `sexy::reanim` (keeping the XML path for Mac), make the loaders prefer `compiled/…` when present like the original, then run `check_resources` against the Windows pak and extend it to cover compiled files.
+- **Windows 11 (x86_64, MSVC from Visual Studio 2026, AMD GPU on Vulkan):** builds and links (the `core` branch's audio is untested there; `.au` sounds stay silent until a decoder is added), including libopenmpt (`dev/libopenmpt-win/x86_64-pc-windows-msvc/`, plus `rpcrt4` for `UuidCreate`). The setup screen works and resource loading completes after the `.au` fix. **Blocker:** reanimations (loading-bar sprouts, main menu) need the compiled-definition parser above; nothing tested past the loading bar yet. Next Windows work: add compiled `.reanim` support in `sexy::reanim` (keeping the XML path for Mac), make the loaders prefer `compiled/…` when present like the original, then run `check_resources` against the Windows pak and extend it to cover compiled files.
 - **Linux:** deferred. `dev/libopenmpt-linux/x86_64-unknown-linux-gnu/` was built under WSL (real Linux libraries) but nothing has been run on Linux.
 
 Windows gotchas already hit:
@@ -103,13 +113,17 @@ A Cargo workspace (`crates/*`) on Bevy 0.20. Bevy's API changes between releases
   - The camera shows an 800×600 logical space (`ScalingMode::AutoMin`), the original game's resolution.
   - Game logic runs in `FixedUpdate` at 100 Hz (`TICKS_PER_SECOND`), like the original's `Update()`; drawing runs every frame in `Update`.
   - `graphics` is an immediate-mode `Graphics` resource modelled on SexyFramework's: screens call `fill_rect`, `draw_image`, `draw_string`, `clip_rect`, `push_state`/`pop_state` and `draw_image_matrix` in 800×600 top-left, y-down coordinates, so ported `Draw()` code stays close to the reference. The call list is cleared in `First` and turned into reused entities in `PostUpdate`, depth by call order: axis-aligned draws become sprites; `draw_image_matrix`/`draw_image_matrix_src` (which may skew) become quad meshes with vertex colors and our own `QuadMaterial` (`quad_material.wesl`), pooled per texture.
-  - `resources` turns manifest groups into Bevy assets: `GameResources::image("IMAGE_...")`, `font("FONT_...")` and `translate("[NAME]")`. `Init` loads synchronously; `GameResources::start_loading_thread` loads `LoaderBar` and `LawnStrings.txt`, then `LoadingImages`/`LoadingFonts`/`LoadingSounds` on a background task with the original's weighted progress. Sounds are only checked for presence until audio exists.
+  - `resources` turns manifest groups into Bevy assets: `GameResources::image("IMAGE_...")`, `font("FONT_...")` and `translate("[NAME]")`; sounds go to the `SoundSystem`. `Init` loads synchronously; `GameResources::start_loading_thread` loads `LoaderBar` and `LawnStrings.txt`, then `LoadingImages`, `LoadingFonts`, the drum and hi-hat music modules (`MusicInit`), then `LoadingSounds`, on a background task with the original's weighted progress.
+  - `audio` ports `Music` and `TodFoley`:
+    - Music: one endless `MusicStream` (a custom `Decodable`) renders up to three libopenmpt modules side by side, the original's main/drums/hi-hats instances, each with channels masked per tune (`SetupMusicFileForTune`). Because they're rendered in one loop they stay sample-locked, so the original's BPM resync isn't needed. `Music::make_sure_music_is_playing(MusicTune)`, `stop_all_music`, `fade_out`; it ticks in `FixedUpdate`. The title screen loads the main module (`MusicTitleScreenInit`). Not yet: drum/hi-hat bursts during levels, pause, the credits song.
+    - Sounds: the `Sounds` system param has `play_sample("SOUND_X")` and `play_foley(FoleyType)` (random variation and pitch, the 10-tick repeat guard, max 8 instances, one-at-a-time and don't-repeat flags). `FoleyType` lists only the types used so far; add entries from the reference's `gLawnFoleyParamArray` as needed. Systems that play sounds and need randomness use `Sounds::rng()` (the shared `GameRng`) instead of a separate `GameRng` param. Only Ogg and WAV are decoded; other formats (the Windows pak's `.au`) are skipped with a warning, because rodio would panic on them.
+    - `UpdateCount` counts 100 Hz ticks (`mUpdateCount`).
   - `reanim` maps `ReanimationType` to files (only types in use so far), loads definitions and their images on demand (`GameResources::reanim_definition`), and draws tracks (`draw_reanimation`, a port of `DrawTrack`; text and "fullscreen" tracks are still TODO). `EffectSystem` holds running reanimations in a `DataArray`, like the original's effect system.
   - `widgets`: `GameButton` (`NewLawnButton`: normal/over/down images, offsets, tint, optional polygon hit area) and `update_buttons`, which routes the mouse through buttons front to back like `WidgetManager` and reports enter/press/click.
   - `player`: `PlayerInfo` (stub profile: always a new player named "Player" until profiles and the create-user dialog exist) and `GameRng`.
-  - `game_selector` ports `GameSelector` (main menu): `SelectorScreen.reanim` with clouds, leaves, clickable flowers, buttons that track reanim tracks, locked modes greyed out, the name sign, level numbers, and the zombie hand on Adventure. Buttons lead nowhere yet except Quit (exits without the confirm dialog).
+  - `game_selector` ports `GameSelector` (main menu): `SelectorScreen.reanim` with clouds, leaves, clickable flowers, buttons that track reanim tracks, locked modes greyed out, the name sign, level numbers, the zombie hand on Adventure, the title theme and its sounds. Buttons lead nowhere yet except Quit (exits without the confirm dialog).
   - `input` keeps `GameCursor`, the mouse in 800×600 game coordinates.
-  - `title` ports `TitleScreen` (PopCap logo, logo drop, grass bar with rolling sod cap, "LOADING..."/"CLICK TO START!" link with hover color, sprouts and zombie head popping out of the bar). Still missing: sounds.
+  - `title` ports `TitleScreen` (PopCap logo, logo drop, grass bar with rolling sod cap, "LOADING..."/"CLICK TO START!" link with hover color, sprouts and zombie head popping out of the bar, title music and its sounds).
 
 Planned direction:
 - Game simulation as plain Rust structs on a fixed timestep, following the original's structure and names as documented by the reference (`Board`, `DataArray<T>` as a generational slot map with ID handles, type enums with `match` rather than trait objects), so code can be compared against it.
