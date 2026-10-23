@@ -160,7 +160,12 @@ pub fn update(
     board.cut_scene.cutscene_time += 10;
 
     if board.cut_scene.cutscene_time >= board.cut_scene.time_to_start() {
-        // TODO: RemoveCutsceneZombies once street zombies exist.
+        // RemoveCutsceneZombies.
+        for (_, zombie) in board.zombies.iter_mut() {
+            if !zombie.is_on_board() {
+                zombie.die_no_loot(effects);
+            }
+        }
         board.menu_button.no_draw = false;
         show_shovel(board);
         board.start_playing(music);

@@ -571,6 +571,10 @@ fn new_game(
     }
     let player_name = player.map_or("", |p| p.name.as_str());
     cutscene::start_level_intro(&mut board, &resources, &mut music, player_name);
+    {
+        let mut fx = Fx { effects: &mut effects, res: &mut resources, images: &mut images, sounds: &mut sounds };
+        board.place_street_zombies(&mut fx);
+    }
     commands.insert_resource(board);
 }
 
@@ -627,7 +631,7 @@ fn update_board(
         if board.main_counter == 1 && board.first_time_adventure && board.level == 1 {
             board.set_tutorial_state(&resources, TutorialState::Level1PickUpPeashooter);
         }
-        // TODO: the progress meter.
+        board.update_progress_meter();
     }
     if board.pending_fade_out {
         board.fade_out_level(&mut music, &mut sounds, &resources);
@@ -706,6 +710,9 @@ impl Board {
                     }
                 } else if zombies_won && zombie.is_winner() {
                     zombie.update_winner(show_walking, &self.plants, &mut fx);
+                }
+                if !zombie.is_on_board() {
+                    zombie.update_street(fx.effects);
                 }
             }
             if playing {
@@ -1113,7 +1120,7 @@ fn draw_ui_top(board: &Board, res: &GameResources, g: &mut Graphics) {
         draw_top_right_ui(board, res, g);
     }
     if board.scene == GameScene::Playing {
-        // TODO: the progress meter (DrawProgressMeter).
+        board.draw_progress_meter(res, g);
         draw_level(board, res, g);
     }
     board.advice.draw(board, res, g);
@@ -1124,8 +1131,8 @@ fn draw_ui_top(board: &Board, res: &GameResources, g: &mut Graphics) {
 fn draw_level(board: &Board, res: &GameResources, g: &mut Graphics) {
     let Some(font) = res.font("FONT_HOUSEOFTERROR16") else { return };
     let text = format!("{} {}", res.translate("[LEVEL]"), board.stage_string());
-    // TODO: x is 593 once the progress meter is drawn.
-    g.tod_draw_string(font, 780, 595, &text, SexyColor::rgba(224, 187, 98, 255), Justify::Right);
+    let x = if board.has_progress_meter() { 593 } else { 780 };
+    g.tod_draw_string(font, x, 595, &text, SexyColor::rgba(224, 187, 98, 255), Justify::Right);
 }
 
 #[cfg(test)]

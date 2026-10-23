@@ -41,6 +41,9 @@ const BOARD_EDGE: i32 = -100;
 const WIDE_BOARD_WIDTH: f32 = 800.0;
 /// `Zombie::ZOMBIE_WAVE_WINNER`: the zombie that walks into the house.
 pub const ZOMBIE_WAVE_WINNER: i32 = -4;
+/// `Zombie::ZOMBIE_WAVE_CUTSCENE`: a zombie waiting on the street during the
+/// level intro.
+pub const ZOMBIE_WAVE_CUTSCENE: i32 = -2;
 
 /// `DamageFlags`, as bit masks.
 #[allow(dead_code, reason = "the full set; zombies use more of it as they're ported")]
@@ -255,7 +258,7 @@ impl Zombie {
             render_order: 0,
             attached: Vec::new(),
         };
-        z.pos_y = z.pos_y_based_on_row(row, env);
+        z.pos_y = if z.is_on_board() { z.pos_y_based_on_row(row, env) } else { 0.0 };
         z.pick_random_speed(fx);
 
         if let Some(ty) = zombie_type.reanim() {
@@ -326,7 +329,51 @@ impl Zombie {
                 return;
             }
         }
-        self.start_walk_anim(0, env, fx);
+        if self.is_on_board() {
+            self.start_walk_anim(0, env, fx);
+        } else {
+            // Waiting on the street: shuffles about, out of step with the others.
+            let rng = fx.sounds.rng();
+            let idle2 = rng.next_range(4) > 0;
+            let (track, rate) = if idle2 { ("anim_idle2", rng.range_f32(12.0, 24.0)) } else { ("anim_idle", rng.range_f32(12.0, 18.0)) };
+            let time = rng.range_f32(0.0, 0.99);
+            let has = |name: &str| fx.effects.get(self.body.unwrap()).is_some_and(|b| b.definition.find_track(name).is_some());
+            let track = if has(track) { Some(track) } else if has("anim_idle") { Some("anim_idle") } else { None };
+            if let Some(track) = track {
+                self.play_zombie_reanim(fx.effects, track, LoopType::Loop, 0, rate);
+            }
+            if let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b)) {
+                body.anim_time = time;
+            }
+        }
+    }
+
+    /// Puts the zombie somewhere (for the street zombies).
+    pub fn place(&mut self, x: f32, y: f32) {
+        self.pos_x = x;
+        self.pos_y = y;
+        self.x = x as i32;
+        self.y = y as i32;
+        self.render_order = make_render_order(render_layer::ZOMBIE, self.row, 4);
+    }
+
+    /// `Zombie::IsOnBoard`.
+    pub fn is_on_board(&self) -> bool {
+        self.from_wave != ZOMBIE_WAVE_CUTSCENE
+    }
+
+    /// `Zombie::Update` for a zombie waiting on the street: it only
+    /// animates.
+    pub fn update_street(&mut self, effects: &mut EffectSystem) {
+        self.age += 1;
+        self.anim_counter += 1;
+        if self.anim_counter >= self.anim_frames * self.anim_ticks_per_frame {
+            self.anim_counter = 0;
+        }
+        self.frame = self.anim_counter / self.anim_ticks_per_frame;
+        self.x = self.pos_x as i32;
+        self.y = self.pos_y as i32;
+        self.update_reanim(effects);
     }
 
     /// `Zombie::LoadPlainZombieReanim` + `SetupReanimLayers`.
@@ -343,7 +390,7 @@ impl Zombie {
         ] {
             self.reanim_show_prefix(fx, prefix, RENDER_GROUP_HIDDEN);
         }
-        // TODO: the screen door's arms (SetupDoorArms).
+        self.setup_door_arms(fx, false);
         match self.zombie_type {
             ZombieType::TrafficCone => {
                 self.reanim_show_prefix(fx, "anim_cone", RENDER_GROUP_NORMAL);
@@ -359,6 +406,18 @@ impl Zombie {
                 self.reanim_show_track(fx, "Zombie_innerarm_screendoor", RENDER_GROUP_NORMAL);
             }
             _ => {}
+        }
+    }
+
+    /// `Zombie::SetupDoorArms`: the screen door zombie holds its door with
+    /// arms of its own; everyone else has the plain ones.
+    fn setup_door_arms(&self, fx: &mut Fx, show: bool) {
+        let (arm, door) = if show { (RENDER_GROUP_HIDDEN, RENDER_GROUP_NORMAL) } else { (RENDER_GROUP_NORMAL, RENDER_GROUP_HIDDEN) };
+        for prefix in ["Zombie_outerarm_hand", "Zombie_outerarm_lower", "Zombie_outerarm_upper", "anim_innerarm"] {
+            self.reanim_show_prefix(fx, prefix, arm);
+        }
+        for prefix in ["Zombie_outerarm_screendoor", "Zombie_innerarm_screendoor", "Zombie_innerarm_screendoor_hand"] {
+            self.reanim_show_prefix(fx, prefix, door);
         }
     }
 
@@ -444,6 +503,9 @@ impl Zombie {
     /// `Zombie::UpdateAnimSpeed`: the walk animation's speed follows the
     /// zombie's, so its feet don't slide.
     fn update_anim_speed(&self, effects: &mut EffectSystem) {
+        if !self.is_on_board() {
+            return;
+        }
         let Some(body) = self.body.and_then(|b| effects.get(b)) else { return };
         if self.is_dead_or_dying() {
             self.apply_anim_rate(effects, self.original_anim_rate);

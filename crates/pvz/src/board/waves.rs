@@ -6,12 +6,14 @@
 //! `PutInMissingZombies`, `PickZombieType`, `GetIntroducedZombieType`,
 //! `IsFlagWave`, `GetNumWavesPerFlag`, `SpawnZombieWave`,
 //! `UpdateZombieSpawning`, `NextWaveComing`, `TotalZombiesHealthInWave`,
-//! `PickRowForNewZombie`, `RowCanHaveZombies`, `AddZombieInRow`; and
+//! `PickRowForNewZombie`, `RowCanHaveZombies`, `AddZombieInRow`,
+//! `UpdateProgressMeter`, `HasProgressMeter`, `ProgressMeterHasFlags` and
+//! `DrawProgressMeter`; and
 //! `Lawn/TodCommon.cpp` (`TodPickFromSmoothArray`).
 //!
 //! Only the zombies ported so far (see [`ZombieType::is_implemented`]) are
 //! picked. Not yet: the huge wave banner and its siren, the final wave
-//! banner, zombies rising from graves and the progress meter.
+//! banner and zombies rising from graves.
 
 use bevy::prelude::*;
 use sexy::rand::MtRand;
@@ -23,6 +25,8 @@ use crate::zombie::{NUM_ZOMBIE_TYPES, ZombieType, can_spawn_on_level, waves_for_
 
 use super::tutorial::TutorialState;
 use super::zombie::{Fx, Zombie, ZombieEnv};
+use crate::graphics::{Graphics, SexyRect};
+
 use super::{Board, MAX_GRID_SIZE_Y, PlantRowType};
 
 const ZOMBIE_COUNTDOWN_FIRST_WAVE: i32 = 1800;
@@ -103,6 +107,10 @@ pub struct WaveState {
     pub row_picking: [SmoothEntry; MAX_GRID_SIZE_Y],
     /// The wave in which each row's mower last ran (`mWaveRowGotLawnMowered`).
     pub wave_row_got_lawn_mowered: [i32; MAX_GRID_SIZE_Y],
+    /// How far the level progress meter has filled, 0..=150.
+    pub progress_meter_width: i32,
+    /// Counts down from 100 after a flag wave starts, raising the meter's flag.
+    pub flag_raise_counter: i32,
 }
 
 impl Default for WaveState {
@@ -119,6 +127,8 @@ impl Default for WaveState {
             zombie_health_to_next_wave: -1,
             row_picking: [SmoothEntry::default(); MAX_GRID_SIZE_Y],
             wave_row_got_lawn_mowered: [-100; MAX_GRID_SIZE_Y],
+            progress_meter_width: 0,
+            flag_raise_counter: 0,
         }
     }
 }
@@ -282,6 +292,24 @@ impl Board {
         self.zombies.alloc(zombie);
     }
 
+    /// `CutScene::PlaceStreetZombies`: a few zombies shuffling about on the
+    /// street, seen as the level intro pans right. The reference doesn't
+    /// have this routine, so how many and where is a guess.
+    pub(super) fn place_street_zombies(&mut self, fx: &mut Fx) {
+        let count = (2 + self.level / 3).min(8);
+        for _ in 0..count {
+            let ty = self.pick_zombie_type(10, self.waves.num_waves - 1, fx.sounds.rng());
+            let row = fx.sounds.rng().next_range(MAX_GRID_SIZE_Y as u32) as i32;
+            self.add_zombie_in_row(ty, row, super::zombie::ZOMBIE_WAVE_CUTSCENE, fx);
+            let rng = fx.sounds.rng();
+            let (x, jitter) = (rng.range_f32(900.0, 1050.0), rng.range_f32(-15.0, 15.0));
+            let y = self.grid_to_pixel_y(0, row) as f32 - 30.0 + jitter;
+            if let Some((_, z)) = self.zombies.iter_mut().last() {
+                z.place(x, y);
+            }
+        }
+    }
+
     /// What zombies need to know about the board.
     pub(super) fn zombie_env(&self) -> ZombieEnv {
         ZombieEnv {
@@ -310,7 +338,9 @@ impl Board {
             self.add_zombie(ty, wave, fx);
         }
         // TODO: the last wave brings zombies out of the graves (mRiseFromGraveCounter).
-        // TODO: flag waves raise the progress meter's flag.
+        if self.is_flag_wave(wave) {
+            self.waves.flag_raise_counter = 100;
+        }
         self.waves.current_wave += 1;
         self.waves.total_spawned_waves += 1;
     }
@@ -370,6 +400,101 @@ impl Board {
             }
             self.waves.zombie_count_down_start = self.waves.zombie_count_down;
         }
+    }
+}
+
+impl Board {
+    /// `Board::HasProgressMeter`.
+    pub fn has_progress_meter(&self) -> bool {
+        self.waves.progress_meter_width != 0
+    }
+
+    /// `Board::ProgressMeterHasFlags`.
+    fn progress_meter_has_flags(&self) -> bool {
+        !(self.first_time_adventure && self.level == 1)
+    }
+
+    /// `Board::UpdateProgressMeter`: creeps towards where the level is.
+    pub(super) fn update_progress_meter(&mut self) {
+        let w = &mut self.waves;
+        if w.current_wave == 0 || w.num_waves < 2 {
+            return;
+        }
+        if w.flag_raise_counter > 0 {
+            w.flag_raise_counter -= 1;
+        }
+        let mut total_width = 150;
+        let per_flag = self.num_waves_per_flag();
+        let has_flags = self.progress_meter_has_flags();
+        let w = &self.waves;
+        if has_flags {
+            total_width -= 12 * w.num_waves / per_flag;
+        }
+        let wave_length = total_width / (w.num_waves - 1);
+        let mut current_wave_length = (w.current_wave - 1) * total_width / (w.num_waves - 1);
+        let mut next_wave_length = w.current_wave * total_width / (w.num_waves - 1);
+        if has_flags {
+            let extra = w.current_wave / per_flag * 12;
+            current_wave_length += extra;
+            next_wave_length += extra;
+        }
+        // How far through the wave the countdown is, or how much of the
+        // wave's zombies have been hurt, whichever is further.
+        let mut fraction = (w.zombie_count_down_start - w.zombie_count_down) as f32 / w.zombie_count_down_start as f32;
+        if w.zombie_health_to_next_wave != -1 {
+            let current = self.total_zombies_health_in_wave(w.current_wave - 1);
+            let target = (w.zombie_health_wave_start - w.zombie_health_to_next_wave).max(1);
+            let health_fraction = (target - current + w.zombie_health_to_next_wave) as f32 / target as f32;
+            fraction = fraction.max(health_fraction);
+        }
+        let length = (current_wave_length
+            + sexy::tod::float_round_to_int((next_wave_length - current_wave_length) as f32 * fraction))
+        .clamp(1, 150);
+        let delta = length - self.waves.progress_meter_width;
+        if (delta > wave_length && self.main_counter % 5 == 0) || (delta > 0 && self.main_counter % 20 == 0) {
+            self.waves.progress_meter_width += 1;
+        }
+    }
+
+    /// `Board::DrawProgressMeter`, for adventure levels.
+    pub(super) fn draw_progress_meter(&self, res: &GameResources, g: &mut Graphics) {
+        if !self.has_progress_meter() {
+            return;
+        }
+        let (Some(meter), Some(parts)) = (res.image("IMAGE_FLAGMETER"), res.image("IMAGE_FLAGMETERPARTS")) else {
+            return;
+        };
+        g.draw_image_cel(meter, 600.0, 575.0, 0, 0);
+        let (cel_w, cel_h) = (meter.cel_width() as i32, meter.cel_height() as i32);
+        let clip = sexy::tod::animate_curve(0, 150, self.waves.progress_meter_width, 0, 143, sexy::tod::TodCurve::Linear);
+        let src = SexyRect::new((cel_w - clip - 7) as f32, cel_h as f32, clip as f32, cel_h as f32);
+        g.draw_image_src(meter, (cel_w - clip + 593) as f32, 575.0, src);
+
+        if self.progress_meter_has_flags() {
+            let per_flag = self.num_waves_per_flag();
+            let flag_waves = self.waves.num_waves / per_flag;
+            let flags_end = 590 + cel_w;
+            for flag_wave in 1..=flag_waves {
+                let total_waves_at_flag = flag_wave * per_flag;
+                let height = if total_waves_at_flag < self.waves.current_wave {
+                    14
+                } else if total_waves_at_flag == self.waves.current_wave {
+                    sexy::tod::animate_curve(100, 0, self.waves.flag_raise_counter, 0, 14, sexy::tod::TodCurve::Linear)
+                } else {
+                    0
+                };
+                let x = sexy::tod::animate_curve(0, self.waves.num_waves, total_waves_at_flag, flags_end, 606, sexy::tod::TodCurve::Linear);
+                g.draw_image_cel(parts, x as f32, 571.0, 1, 0);
+                g.draw_image_cel(parts, x as f32, (572 - height) as f32, 2, 0);
+            }
+        }
+
+        if let Some(label) = res.image("IMAGE_FLAGMETERLEVELPROGRESS") {
+            g.draw_image(label, 638.0, 589.0);
+        }
+        // The zombie head marks how far along it is.
+        let head = sexy::tod::animate_curve(0, 150, self.waves.progress_meter_width, 0, 135, sexy::tod::TodCurve::Linear);
+        g.draw_image_cel(parts, (cel_w - head + 580) as f32, 572.0, 0, 0);
     }
 }
 
