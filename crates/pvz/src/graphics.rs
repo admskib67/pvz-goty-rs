@@ -280,6 +280,8 @@ impl Material2d for QuadMaterial {
 #[derive(Resource, Default)]
 struct DrawPools {
     sprites: Vec<Entity>,
+    /// How many sprites were visible last frame.
+    sprites_shown: usize,
     quads: HashMap<AssetId<Image>, QuadPool>,
 }
 
@@ -327,7 +329,7 @@ fn sync_draw_calls(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<QuadMaterial>>,
-    mut sprites: Query<(&mut Sprite, &mut Transform, &mut Anchor, &mut Visibility), Without<Mesh2d>>,
+    mut sprites: Query<(&mut Sprite, &mut Transform, &mut Visibility), Without<Mesh2d>>,
     mut quads: Query<(&mut Transform, &mut Visibility), With<Mesh2d>>,
 ) {
     let pools = &mut *pools;
@@ -397,10 +399,9 @@ fn sync_draw_calls(
             DrawCmd::Matrix { .. } => unreachable!(),
         };
         match pools.sprites.get(sprite_count).map(|&e| (e, sprites.get_mut(e))) {
-            Some((_, Ok((mut s, mut t, mut a, mut v)))) => {
+            Some((_, Ok((mut s, mut t, mut v)))) => {
                 *s = sprite;
                 *t = transform;
-                *a = Anchor::TOP_LEFT;
                 *v = Visibility::Visible;
             }
             Some((entity, Err(_))) => {
@@ -414,11 +415,12 @@ fn sync_draw_calls(
         sprite_count += 1;
     }
 
-    for &entity in pools.sprites.iter().skip(sprite_count) {
-        if let Ok((_, _, _, mut v)) = sprites.get_mut(entity) {
-            *v = Visibility::Hidden;
-        }
+    // Hide through commands rather than the query: it must work for every
+    // pooled entity, including ones whose components were just inserted.
+    for &entity in pools.sprites.iter().take(pools.sprites_shown).skip(sprite_count) {
+        commands.entity(entity).insert(Visibility::Hidden);
     }
+    pools.sprites_shown = sprite_count;
     for pool in pools.quads.values() {
         for (entity, _) in pool.entities.iter().skip(pool.used) {
             if let Ok((_, mut v)) = quads.get_mut(*entity) {

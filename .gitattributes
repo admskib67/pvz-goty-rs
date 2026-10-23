@@ -1,0 +1,14 @@
+# Store and check out text files with LF (Unix/macOS) line endings on every
+# platform, Windows included, so the same file never differs only by CRLF.
+* text=auto eol=lf
+
+# Prebuilt libraries and other binaries: never convert.
+*.a binary
+*.lib binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.wav binary
+*.ogg binary
+*.mo3 binary
+*.pak binary
