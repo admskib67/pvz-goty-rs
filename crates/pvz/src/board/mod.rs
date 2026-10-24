@@ -241,6 +241,13 @@ pub struct Board {
     pub plant_row: [PlantRowType; MAX_GRID_SIZE_Y],
     pub grid_square_type: [[GridSquareType; MAX_GRID_SIZE_Y]; MAX_GRID_SIZE_X],
     pub sun_money: i32,
+    /// The player's money, as shown by the coin bank (the profile holds the real total).
+    pub player_coins: i32,
+    /// Money collected since the last tick, for the profile.
+    pub pending_money: i32,
+    coin_bank_fade_count: i32,
+    dropped_first_coin: bool,
+    packet_upgrade_bought: bool,
     /// How far the intro's sod has rolled out, 0..=1000.
     pub sod_position: i32,
     pub main_counter: i32,
@@ -327,6 +334,11 @@ impl Board {
             plant_row: [PlantRowType::Normal; MAX_GRID_SIZE_Y],
             grid_square_type: [[GridSquareType::Grass; MAX_GRID_SIZE_Y]; MAX_GRID_SIZE_X],
             sun_money: 50,
+            player_coins: player.map_or(0, |p| p.coins),
+            pending_money: 0,
+            coin_bank_fade_count: 0,
+            dropped_first_coin: false,
+            packet_upgrade_bought: player.is_some_and(|p| p.purchases[21] >= 1),
             sod_position: 0,
             main_counter: 0,
             sun_count_down: 0,
@@ -637,6 +649,12 @@ fn update_board(
 
     effects.update(sounds.rng());
     board.update_shake(sounds.rng());
+    board.coin_bank_fade_count = (board.coin_bank_fade_count - 1).max(0);
+    if board.pending_money > 0
+        && let Some(player) = profiles.player_mut()
+    {
+        player.coins += std::mem::take(&mut board.pending_money);
+    }
     board.advice.update();
     board.update_tutorial(&resources);
 
@@ -769,8 +787,14 @@ impl Board {
             self.collect_zombie_loot(effects, res, images, sounds);
             let mut scored = 0;
             for (_, coin) in self.coins.iter_mut() {
-                if let Some(CoinEvent::Scored(sun)) = coin.update(effects, res, images, sounds.rng()) {
-                    scored += sun;
+                match coin.update(effects, res, images, sounds.rng()) {
+                    Some(CoinEvent::Scored(sun)) => scored += sun,
+                    Some(CoinEvent::Money(money)) => {
+                        self.player_coins += money;
+                        self.pending_money += money;
+                    }
+                    Some(CoinEvent::Landed(CoinType::Gold)) => sounds.play_foley(FoleyType::MoneyFalls),
+                    Some(CoinEvent::Landed(_)) | None => {}
                 }
             }
             self.add_sun_money(scored);
@@ -1244,6 +1268,7 @@ fn draw_ui_top(board: &Board, res: &GameResources, g: &mut Graphics) {
         board.draw_progress_meter(res, g);
         draw_level(board, res, g);
     }
+    board.draw_coin_bank(res, g);
     board.advice.draw(board, res, g);
     board.draw_cursor_object(res, g);
 }

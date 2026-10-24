@@ -53,6 +53,16 @@ impl Board {
             if self.try_spawn_level_award(id, center, effects, res, images, sounds) {
                 break;
             }
+            // Zombie::DropLoot.
+            let blocked = self.level_award_spawned || self.board_fade_out_counter >= 0 || !self.can_drop_loot();
+            let Some(zombie) = self.zombies.get_mut(id) else { continue };
+            if zombie.dropped_loot() || blocked {
+                continue;
+            }
+            zombie.set_dropped_loot();
+            let value = zombie.zombie_type.definition().zombie_value;
+            let (x, y) = (center.0, zombie.zombie_rect().y + zombie.zombie_rect().h / 4);
+            self.drop_loot_piece(x, y, value, effects, res, images, sounds);
         }
     }
 

@@ -314,6 +314,16 @@ impl Board {
             return;
         }
         // PlayCollectSound.
+        if coin.is_money() {
+            match coin.ty {
+                super::coin::CoinType::Diamond => sounds.play_sample("SOUND_DIAMOND"),
+                _ => sounds.play_foley(FoleyType::Coin),
+            }
+            coin.needs_bouncy_arrow = false;
+            coin.collect();
+            self.show_coin_bank();
+            return;
+        }
         sounds.play_foley(FoleyType::Sun);
         coin.collect();
         let value = coin.sun_value();

@@ -360,6 +360,10 @@ pub enum FoleyType {
     Digger,
     /// Collecting sun.
     Sun,
+    /// Collecting a silver or gold coin.
+    Coin,
+    MoneyFalls,
+    Chime,
     /// Planting.
     Plant,
     /// Putting a carried plant back.
@@ -401,6 +405,9 @@ impl FoleyType {
             Self::LimbsPop => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_LIMBS_POP"], flags: 0 },
             Self::DirtRise => FoleyParams { pitch_range: 5.0, sounds: &["SOUND_DIRT_RISE"], flags: 0 },
             Self::Sun => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_POINTS"], flags: 0 },
+            Self::Coin => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_COIN"], flags: 0 },
+            Self::MoneyFalls => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_MONEYFALLS"], flags: 0 },
+            Self::Chime => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_CHIME"], flags: 0 },
             Self::Plant => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_PLANT", "SOUND_PLANT2"], flags: 0 },
             Self::Drop => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_TAP2"], flags: 0 },
             Self::Splat => FoleyParams {
