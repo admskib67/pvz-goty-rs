@@ -127,6 +127,29 @@ impl CutScene {
     }
 }
 
+/// `StartLevelIntro`'s choice of what Crazy Dave says first, or -1 when
+/// he doesn't come.
+pub(super) fn crazy_dave_dialog_start(board: &Board) -> i32 {
+    let (first_time, level) = (board.first_time_adventure, board.level);
+    let upgrade_level = |from: i32| first_time && (from..=24).contains(&level) && !matches!(level, 15 | 20 | 21);
+    if first_time && level == 11 {
+        201
+    } else if first_time && level == 12 {
+        1401
+    } else if upgrade_level(13) && board.can_get_packet_upgrade(0) {
+        1501
+    } else if upgrade_level(16) && board.can_get_packet_upgrade(1) {
+        1551
+    } else if board.is_wallnut_bowling_level() {
+        if first_time { 2400 } else { 2411 }
+    } else if board.is_whack_a_zombie_level() {
+        401
+    } else {
+        // TODO: 3-1's (501) and the later levels' talks.
+        -1
+    }
+}
+
 /// `CutScene::StartLevelIntro`.
 pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Music, player_name: &str) {
     let seed_bank_height = res.image("IMAGE_SEEDBANK").map_or(0, |i| i.height as i32);
@@ -139,13 +162,17 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
     let level = board.level;
     let first_time = board.first_time_adventure;
     let bowling = board.is_wallnut_bowling_level();
-    // 2-5 is whack-a-zombie, whose graves aren't there from the start.
-    let graves = board.stage_has_grave_stones() && level != 15;
+    let whack = board.is_whack_a_zombie_level();
+    // Levels that don't scroll start on the lawn (IsNonScrollingCutscene).
+    let non_scrolling = bowling || whack;
+    // Whack-a-zombie's graves come up when Crazy Dave says so.
+    let graves = board.stage_has_grave_stones() && !whack;
+    let dave_start = crazy_dave_dialog_start(board);
     board.enable_grave_stones = false;
     let cs = &mut board.cut_scene;
     *cs = CutScene::default();
     cs.crazy_dave_dialog_start = -1;
-    cs.scrolled_left = !bowling;
+    cs.scrolled_left = !non_scrolling;
     if first_time && matches!(level, 1 | 2 | 4) {
         cs.sod_time = TIME_ROLL_SOD_END - TIME_ROLL_SOD_START;
         board.sod_position = 0;
@@ -154,16 +181,14 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
         board.sod_position = 1000;
     }
     cs.grave_stone_time = if graves { TIME_GRAVE_STONE_END - TIME_GRAVE_STONE_START } else { 0 };
-    cs.ready_set_plant_time = if (first_time && level <= 2) || bowling {
+    cs.ready_set_plant_time = if (first_time && level <= 2) || non_scrolling {
         0
     } else {
         TIME_READY_SET_PLANT_END - TIME_READY_SET_PLANT_START
     };
     cs.lawn_mower_time = 550;
-    // TODO: Crazy Dave's other talks, fog and the boss.
-    if bowling {
-        cs.crazy_dave_dialog_start = if first_time { 2400 } else { 2411 };
-    }
+    // TODO: fog and the boss.
+    cs.crazy_dave_dialog_start = dave_start;
     cs.crazy_dave_time = if cs.crazy_dave_dialog_start != -1 { TIME_EARLY_DAVE_LEAVE_END - TIME_PAN_RIGHT_START } else { 0 };
     cs.fog_time = 0;
     cs.boss_time = 0;
@@ -182,7 +207,7 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
         music.make_sure_music_is_playing(MusicTune::TitleCrazyDaveMainTheme);
         return;
     }
-    if bowling {
+    if non_scrolling {
         // IsNonScrollingCutscene with no Crazy Dave: CancelIntro.
         start_non_scrolling_intro(board);
         return;
@@ -205,12 +230,12 @@ fn start_non_scrolling_intro(board: &mut Board) {
     place_lawn_items(board);
     board.enable_grave_stones = true;
     board.x = 0;
+    board.show_bowling_line = board.is_wallnut_bowling_level();
     board.cut_scene.cutscene_time = board.cut_scene.time_to_start() - 20;
     board.seed_bank.x = SEED_BANK_OFFSET_X_END;
     board.seed_bank.y = 0;
     board.seed_bank.cut_scene_darken = 255;
     board.menu_button.no_draw = false;
-    board.show_bowling_line = true;
 }
 
 /// `CutScene::Update`, every tick during the level intro.
@@ -300,6 +325,9 @@ pub fn update_zombies_won(
 
 /// `CutScene::ShowShovel`: not until the shovel is introduced in 1-5.
 fn show_shovel(board: &mut Board) {
+    if board.is_whack_a_zombie_level() {
+        return;
+    }
     if !board.first_time_adventure || board.level > 4 {
         board.show_shovel = true;
     }
@@ -333,8 +361,8 @@ fn update_dave_timeline(
     }
     if time == TIME_EARLY_DAVE_ENTER_END && board.cut_scene.crazy_dave_dialog_start != -1 {
         let start = board.cut_scene.crazy_dave_dialog_start;
-        let name = board.player_name.clone();
-        board.dave.talk_index(start, &name, effects, res, images, sounds);
+        let vars = board.dave_vars();
+        board.dave.talk_index(start, &vars, effects, res, images, sounds);
         board.cut_scene.crazy_dave_dialog_start = -1;
     }
     if time == TIME_EARLY_DAVE_LEAVE_END && !board.cut_scene.is_scrolled_left_at_start() {
@@ -360,13 +388,25 @@ pub(super) fn advance_crazy_dave_dialog(
         board.dave.leave(effects, sounds);
         return false;
     }
-    let name = board.player_name.clone();
-    if !board.dave.advance_text(&name, effects, res, images, sounds) {
+    // He's waiting for an answer, not a click.
+    if board.dave.message_text().contains("{NO_CLICK}") {
+        return false;
+    }
+    let vars = board.dave_vars();
+    if !board.dave.advance_text(&vars, effects, res, images, sounds) {
         board.dave.leave(effects, sounds);
         return !board.cut_scene.is_scrolled_left_at_start();
     }
-    if matches!(board.dave.message_index, 405 | 2411) {
-        board.show_bowling_line = true;
+    match board.dave.message_index {
+        405 | 2411 if board.is_wallnut_bowling_level() => board.show_bowling_line = true,
+        // "How's that sound?": the seed slot offer.
+        1503 | 1553 => board.packet_offer = true,
+        // "And instead of ME, it's YOU!": whack-a-zombie's graves come up.
+        406 => {
+            board.enable_grave_stones = true;
+            board.add_grave_stone_particles(sounds);
+        }
+        _ => {}
     }
     false
 }

@@ -583,11 +583,28 @@ impl super::Board {
         sounds: &mut crate::audio::Sounds,
     ) {
         let mut hit = sounds.rng().next_range(30000) as i32;
+        // Whack-a-zombie's zombies drop sun, more often the less the player has.
+        if self.is_whack_a_zombie_level() {
+            let max = match self.sun_money {
+                s if s > 500 => 2800,
+                s if s > 350 => 3100,
+                s if s > 200 => 3700,
+                _ => 5000,
+            };
+            if (2500 * drop_factor..=max * drop_factor).contains(&hit) {
+                sounds.play_foley(crate::audio::FoleyType::SpawnSun);
+                for dx in [20.0, 40.0, 60.0] {
+                    let coin = Coin::new(x as f32 - dx, y as f32, CoinType::Sun, CoinMotion::Coin, effects, res, images, sounds.rng());
+                    self.coins.alloc(coin);
+                }
+                return;
+            }
+        }
         if self.first_time_adventure && self.level == 11 && !self.dropped_first_coin && self.waves.current_wave > 5 {
             hit = 1000;
         }
         let ty = if hit < 14 * drop_factor {
-            if self.packet_upgrade_bought { CoinType::Diamond } else { CoinType::Gold }
+            if self.packet_upgrades >= 1 { CoinType::Diamond } else { CoinType::Gold }
         } else if hit < 250 * drop_factor {
             CoinType::Gold
         } else if hit < 2500 * drop_factor {

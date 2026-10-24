@@ -36,6 +36,8 @@ pub enum CursorType {
     Normal,
     PlantFromBank,
     Shovel,
+    /// Whack-a-zombie's mallet.
+    Hammer,
 }
 
 /// What the mouse is carrying (`CursorObject`).
@@ -334,6 +336,9 @@ impl Board {
             self.mouse_down_with_plant(ip, right, effects, res, images, sounds);
         } else if !right && let Some(index) = self.seed_packet_at(ip) {
             self.packet_mouse_down(index, res, sounds);
+        } else if !right && self.cursor.cursor_type == CursorType::Hammer && self.scene == GameScene::Playing && !self.paused {
+            let mut fx = super::zombie::Fx { effects, res, images, sounds };
+            self.whack_mouse_down(ip.x, ip.y, &mut fx);
         }
     }
 
@@ -451,7 +456,13 @@ impl Board {
             drop(self, sounds, res);
             return;
         }
-        match self.can_plant_at(grid_x, grid_y, seed) {
+        let reason = self.can_plant_at(grid_x, grid_y, seed);
+        // Whack-a-zombie puts the plant back rather than waiting for a good spot.
+        if reason != PlantingReason::Ok && self.is_whack_a_zombie_level() {
+            drop(self, sounds, res);
+            return;
+        }
+        match reason {
             PlantingReason::Ok => {}
             // Keep holding the plant; some reasons explain themselves.
             PlantingReason::NotOnWater => {

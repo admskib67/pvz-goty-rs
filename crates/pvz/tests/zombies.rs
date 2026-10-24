@@ -41,7 +41,9 @@ fn levels_only_send_their_own_zombies() {
     for level in 1..=20 {
         let stage = format!("{}-{}", (level - 1) / 10 + 1, (level - 1) % 10 + 1);
         let t = test_board!(&stage);
-        assert_eq!(t.board.waves.num_waves, waves_for_level(level), "{stage} wave count");
+        // 2-5 is whack-a-zombie, with eight waves of its own.
+        let expected = if level == 15 { 8 } else { waves_for_level(level) };
+        assert_eq!(t.board.waves.num_waves, expected, "{stage} wave count");
         for wave in &t.board.waves.zombies_in_wave {
             for &ty in wave {
                 assert!(ty == ZombieType::Flag || can_spawn_on_level(ty, level), "{stage} sends {ty:?}");

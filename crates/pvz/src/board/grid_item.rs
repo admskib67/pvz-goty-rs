@@ -88,7 +88,6 @@ impl Board {
 
     /// `Board::StageHasGraveStones`.
     pub fn stage_has_grave_stones(&self) -> bool {
-        // TODO: 2-5 is whack-a-zombie, whose graves come and go.
         self.background == super::BackgroundType::Night && !self.is_wallnut_bowling_level()
     }
 
@@ -96,7 +95,10 @@ impl Board {
     /// levels go on. Where they go comes from the level's own generator, so
     /// a level always has the same graves.
     pub(super) fn add_level_grave_stones(&mut self, level_rng: &mut MtRand, rng: &mut MtRand) {
-        if self.stage_has_grave_stones() {
+        if self.is_whack_a_zombie_level() {
+            // No plants yet, so nothing to crush.
+            self.whack_place_graves(9, None, rng);
+        } else if self.stage_has_grave_stones() {
             let columns: &[(i32, i32)] = match self.level {
                 11..=13 => &[(6, 1), (7, 1), (8, 2)],
                 14 | 16 => &[(5, 1), (6, 1), (7, 2), (8, 3)],
@@ -140,13 +142,13 @@ impl Board {
     }
 
     /// `Board::CanAddGraveStoneAt`: plain grass with nothing else on it.
-    fn can_add_grave_stone_at(&self, grid_x: i32, grid_y: i32) -> bool {
+    pub(super) fn can_add_grave_stone_at(&self, grid_x: i32, grid_y: i32) -> bool {
         self.grid_square_type[grid_x as usize][grid_y as usize] == GridSquareType::Grass
             && !self.grid_items.iter().any(|(_, g)| g.grid_x == grid_x && g.grid_y == grid_y && !g.dead)
     }
 
     /// `Board::AddAGraveStone`.
-    fn add_a_grave_stone(&mut self, grid_x: i32, grid_y: i32, rng: &mut MtRand) {
+    pub(super) fn add_a_grave_stone(&mut self, grid_x: i32, grid_y: i32, rng: &mut MtRand) {
         self.grid_items.alloc(GridItem {
             item_type: GridItemType::GraveStone,
             state: GridItemState::Normal,

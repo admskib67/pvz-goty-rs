@@ -2,7 +2,7 @@
 //! 2-10 and 3-10): new seed packets ride in on a timer.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Challenge.cpp`:
-//! `UpdateConveyorBelt`. Only the plants ported so far are on the 1-10 belt.
+//! `UpdateConveyorBelt` and `InitSeedPickArray`'s belts for 1-10 and 2-10.
 
 use sexy::rand::MtRand;
 
@@ -10,8 +10,7 @@ use crate::plant::SeedType;
 
 use super::Board;
 
-/// The belt's plants and their weights on a mini-boss level. Plants that
-/// aren't ported yet (kernel-pult, ice-shroom, ...) are left out.
+/// The belt's plants and their weights on a mini-boss level.
 pub fn mini_boss_seeds(level: i32) -> &'static [(SeedType, i32)] {
     match level {
         10 => &[
@@ -23,7 +22,16 @@ pub fn mini_boss_seeds(level: i32) -> &'static [(SeedType, i32)] {
             (SeedType::Chomper, 5),
             (SeedType::Potatomine, 10),
         ],
-        // TODO: the night and pool belts need plants from those areas.
+        20 => &[
+            (SeedType::Gravebuster, 20),
+            (SeedType::Iceshroom, 15),
+            (SeedType::Doomshroom, 15),
+            (SeedType::Hypnoshroom, 10),
+            (SeedType::Scaredyshroom, 15),
+            (SeedType::Fumeshroom, 15),
+            (SeedType::Puffshroom, 10),
+        ],
+        // TODO: 3-10's belt needs the pool plants.
         _ => &[(SeedType::Peashooter, 100)],
     }
 }

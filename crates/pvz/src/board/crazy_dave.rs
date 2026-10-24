@@ -5,8 +5,8 @@
 //! `CrazyDaveDie`, `CrazyDaveLeave`, `CrazyDaveTalkIndex`,
 //! `CrazyDaveDoneHanding`, `CrazyDaveStopSound`, `CrazyDaveTalkMessage`,
 //! `AdvanceCrazyDaveText`, `GetCrazyDaveText`, `UpdateCrazyDave` and
-//! `DrawCrazyDave`. Not yet: handing over the hammer, fertilizer, tree food
-//! and money bag, and the store's and upsell's speech bubbles.
+//! `DrawCrazyDave`. Not yet: handing over fertilizer, tree food and the
+//! money bag, and the store's and upsell's speech bubbles.
 
 use bevy::prelude::*;
 use sexy::rand::MtRand;
@@ -28,6 +28,17 @@ pub enum DaveState {
     Leaving,
     HandingTalking,
     HandingIdling,
+}
+
+/// What Dave's messages fill in (`GetCrazyDaveText`).
+#[derive(Debug, Clone, Default)]
+pub struct DaveVars {
+    /// `{PLAYER_NAME}`.
+    pub name: String,
+    /// `{MONEY}`: the player's coins.
+    pub money: i32,
+    /// `{UPGRADE_COST}`: the next seed slot's price, in coins.
+    pub upgrade_cost: i32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -107,9 +118,18 @@ impl CrazyDave {
     }
 
     /// `GetCrazyDaveText`; `None` when there's no such message.
-    fn text(res: &GameResources, index: i32, player_name: &str) -> Option<String> {
+    fn text(res: &GameResources, index: i32, vars: &DaveVars) -> Option<String> {
         let text = res.translate(&format!("[CRAZY_DAVE_{index}]"));
-        (!text.starts_with("<Missing")).then(|| text.replace("{PLAYER_NAME}", player_name))
+        (!text.starts_with("<Missing")).then(|| {
+            text.replace("{PLAYER_NAME}", &vars.name)
+                .replace("{MONEY}", &super::coin::money_string(vars.money))
+                .replace("{UPGRADE_COST}", &super::coin::money_string(vars.upgrade_cost))
+        })
+    }
+
+    /// The message he's saying now (with its control codes).
+    pub fn message_text(&self) -> &str {
+        &self.message_text
     }
 
     /// `LawnApp::CrazyDaveTalkIndex`.
@@ -117,14 +137,14 @@ impl CrazyDave {
     pub fn talk_index(
         &mut self,
         index: i32,
-        player_name: &str,
+        vars: &DaveVars,
         effects: &mut EffectSystem,
         res: &mut GameResources,
         images: &mut Assets<Image>,
         sounds: &mut Sounds,
     ) {
         self.message_index = index;
-        let text = Self::text(res, index, player_name).unwrap_or_default();
+        let text = Self::text(res, index, vars).unwrap_or_default();
         self.talk_message(&text, effects, res, images, sounds);
     }
 
@@ -132,16 +152,16 @@ impl CrazyDave {
     #[allow(clippy::too_many_arguments)]
     pub fn advance_text(
         &mut self,
-        player_name: &str,
+        vars: &DaveVars,
         effects: &mut EffectSystem,
         res: &mut GameResources,
         images: &mut Assets<Image>,
         sounds: &mut Sounds,
     ) -> bool {
-        if Self::text(res, self.message_index + 1, player_name).is_none() {
+        if Self::text(res, self.message_index + 1, vars).is_none() {
             return false;
         }
-        self.talk_index(self.message_index + 1, player_name, effects, res, images, sounds);
+        self.talk_index(self.message_index + 1, vars, effects, res, images, sounds);
         true
     }
 
@@ -212,6 +232,11 @@ impl CrazyDave {
                 self.hand_wallnut(id, effects, res, images);
                 foley = FoleyType::CrazyDaveScream2;
                 self.state = DaveState::HandingTalking;
+            } else if has("{SHOW_HAMMER}") {
+                play(effects, "anim_talk_handing", LoopType::Loop);
+                self.hand_hammer(id, effects, res, images);
+                foley = FoleyType::CrazyDaveScream2;
+                self.state = DaveState::HandingTalking;
             } else {
                 let (track, ty) = if words < 23 {
                     ("anim_smalltalk", FoleyType::CrazyDaveShort)
@@ -239,6 +264,18 @@ impl CrazyDave {
         nut.attach_offset = offset * sexy::matrix::Matrix3 { m00: 1.2, m11: 1.2, ..sexy::matrix::Matrix3::IDENTITY };
         effects.attach_to_another(wallnut, dave, "Dave_handinghand");
         self.held = Some(wallnut);
+        effects.update_reanimation(dave);
+    }
+
+    /// The mallet he holds out for whack-a-zombie (`{SHOW_HAMMER}`).
+    fn hand_hammer(&mut self, dave: ReanimationId, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>) {
+        let Ok((hammer, mallet)) = effects.add_reanimation(0.0, 0.0, ReanimationType::Hammer, res, images) else { return };
+        mallet.play("anim_whack_zombie", LoopType::PlayOnceAndHold, 0, 24.0);
+        mallet.anim_time = 1.0;
+        let offset = sexy::matrix::Matrix3::translation(62.0, 445.0);
+        mallet.attach_offset = offset * sexy::matrix::Matrix3 { m00: 1.5, m11: 1.5, ..sexy::matrix::Matrix3::IDENTITY };
+        effects.attach_to_another(hammer, dave, "Dave_handinghand");
+        self.held = Some(hammer);
         effects.update_reanimation(dave);
     }
 

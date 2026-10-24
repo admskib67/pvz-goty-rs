@@ -45,6 +45,8 @@ pub enum DialogId {
     Message,
     ConfirmBackToMain,
     GameOver,
+    /// Crazy Dave's offer of an extra seed slot.
+    PurchasePacketSlot,
 }
 
 /// `Dialog::BUTTONS_*`.

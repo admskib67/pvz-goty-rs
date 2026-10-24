@@ -93,6 +93,7 @@ impl Board {
             || dropped
             || self.waves.current_wave < self.waves.num_waves
             || self.are_enemy_zombies_on_screen()
+            || (self.is_whack_a_zombie_level() && self.waves.zombie_count_down > 0)
         {
             return false;
         }

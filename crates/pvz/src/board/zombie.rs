@@ -1259,6 +1259,30 @@ impl Zombie {
     /// column is at `grave_x` in its row, and climbs out. TODO: rising out
     /// of the pool.
     pub fn rise_from_grave(&mut self, grave_x: i32, env: &ZombieEnv, fx: &mut Fx) {
+        self.start_rising(grave_x, env);
+        fx.sounds.play_foley(FoleyType::GravestoneRumble);
+        let order = make_render_order(render_layer::PARTICLE, self.row, 0);
+        let rng = fx.sounds.rng();
+        fx.effects.add_particle(self.pos_x + 60.0, self.pos_y + 110.0, order, ParticleEffect::ZombieRise, fx.res, fx.images, rng);
+        self.update_reanim(fx.effects);
+    }
+
+    /// `RiseFromGrave` on whack-a-zombie: it pops up quickly, at `speed`.
+    pub fn rise_out_of_whack_grave(&mut self, grave_x: i32, speed: f32, env: &ZombieEnv, fx: &mut Fx) {
+        self.start_rising(grave_x, env);
+        self.phase_counter = 50;
+        fx.sounds.play_foley(FoleyType::DirtRise);
+        let order = make_render_order(render_layer::PARTICLE, self.row, 0);
+        let rng = fx.sounds.rng();
+        let effect = ParticleEffect::WhackAZombieRise;
+        fx.effects.add_particle(self.pos_x + 60.0, self.pos_y + 110.0, order, effect, fx.res, fx.images, rng);
+        self.vel_x = speed;
+        self.update_anim_speed(fx.effects);
+        self.update_reanim(fx.effects);
+    }
+
+    /// The start of `Zombie::RiseFromGrave`, under the grave in its row.
+    fn start_rising(&mut self, grave_x: i32, env: &ZombieEnv) {
         self.pos_x = (grave_x - 25) as f32;
         self.pos_y = self.pos_y_based_on_row(self.row, env);
         self.x = self.pos_x as i32;
@@ -1266,11 +1290,28 @@ impl Zombie {
         self.altitude = CLIP_HEIGHT_OFF;
         self.phase = ZombiePhase::RisingFromGrave;
         self.phase_counter = 150;
-        fx.sounds.play_foley(FoleyType::GravestoneRumble);
-        let order = make_render_order(render_layer::PARTICLE, self.row, 0);
-        let rng = fx.sounds.rng();
-        fx.effects.add_particle(self.pos_x + 60.0, self.pos_y + 110.0, order, ParticleEffect::ZombieRise, fx.res, fx.images, rng);
-        self.update_reanim(fx.effects);
+        self.render_order = make_render_order(render_layer::ZOMBIE, self.row, 4);
+    }
+
+    /// `MouseDownWhackAZombie` on this zombie: a helmet takes 900 damage;
+    /// a bare head means it's done for. Returns whether it was knocked out.
+    pub fn whack(&mut self, fx: &mut Fx) -> bool {
+        match self.helm_type {
+            HelmType::None => {
+                fx.sounds.play_foley(FoleyType::Bonk);
+                self.die_with_loot(fx);
+                true
+            }
+            helm => {
+                match helm {
+                    HelmType::Pail => fx.sounds.play_foley(FoleyType::ShieldHit),
+                    HelmType::TrafficCone => fx.sounds.play_foley(FoleyType::PlasticHit),
+                    _ => {}
+                }
+                self.take_helm_damage(900, 0, fx);
+                false
+            }
+        }
     }
 
     /// `Zombie::UpdateZombieRiseFromGrave`.

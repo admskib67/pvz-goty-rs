@@ -162,6 +162,16 @@ impl Board {
         for i in 0..NUM_ZOMBIE_TYPES {
             self.waves.zombie_allowed[i] = can_spawn_on_level(ZombieType::from_index(i), self.level);
         }
+        if self.is_whack_a_zombie_level() {
+            // Challenge::InitZombieWaves: eight waves out of the graves.
+            self.waves.zombie_allowed = [false; NUM_ZOMBIE_TYPES];
+            for ty in [ZombieType::Normal, ZombieType::TrafficCone, ZombieType::Pail] {
+                self.waves.zombie_allowed[ty as usize] = true;
+            }
+            self.waves.num_waves = 8;
+            self.waves.zombies_in_wave = vec![Vec::new(); 8];
+            return;
+        }
         self.pick_zombie_waves(rng);
         self.waves.zombie_count_down = if self.is_wallnut_bowling_level() {
             200
@@ -522,7 +532,7 @@ impl Board {
     }
 
     /// `Board::NextWaveComing`.
-    fn next_wave_coming(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, sounds: &mut Sounds) {
+    pub(super) fn next_wave_coming(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, sounds: &mut Sounds) {
         if self.waves.current_wave + 1 == self.waves.num_waves {
             let order = super::make_render_order(super::render_layer::ABOVE_UI, 0, 0);
             match effects.add_reanimation(0.0, 30.0, crate::reanim::ReanimationType::FinalWave, res, images) {
@@ -533,9 +543,14 @@ impl Board {
         }
         if self.waves.current_wave == 0 {
             sounds.play_sample("SOUND_AWOOGA");
-        } else if self.is_flag_wave(self.waves.current_wave) {
+        } else if self.is_siren_wave(self.waves.current_wave) {
             sounds.play_sample("SOUND_SIREN");
         }
+    }
+
+    /// Whether the siren sounds before `wave`: a flag wave, or whack-a-zombie's last.
+    fn is_siren_wave(&self, wave: i32) -> bool {
+        if self.is_whack_a_zombie_level() { wave == self.waves.num_waves - 1 } else { self.is_flag_wave(wave) }
     }
 
     /// `Board::UpdateZombieSpawning`.
@@ -559,6 +574,11 @@ impl Board {
             }
         }
         if self.has_level_award_dropped() {
+            return;
+        }
+        if self.is_whack_a_zombie_level() {
+            let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+            self.whack_spawning(&mut fx);
             return;
         }
         if self.rise_from_grave_counter > 0 {

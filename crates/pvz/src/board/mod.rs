@@ -30,6 +30,7 @@ mod seed_bank;
 mod seed_chooser;
 mod tutorial;
 mod waves;
+mod whack_a_zombie;
 mod zombie;
 #[cfg(test)]
 #[path = "../../tests/mod.rs"]
@@ -90,6 +91,18 @@ pub const MAX_GRID_SIZE_Y: usize = 6;
 pub const SEED_BANK_OFFSET_X: i32 = 0;
 pub const SEED_BANK_OFFSET_X_END: i32 = 10;
 const LEVELS_PER_AREA: i32 = 10;
+/// `STORE_ITEM_PACKET_UPGRADE`, the seed slots' entry in `PlayerInfo::purchases`.
+pub const STORE_ITEM_PACKET_UPGRADE: usize = 21;
+
+/// `StoreScreen::GetItemCost` for a seed slot after `bought` of them, in coins.
+pub fn packet_upgrade_cost(bought: i32) -> i32 {
+    match bought {
+        0 => 75,
+        1 => 500,
+        2 => 2000,
+        _ => 8000,
+    }
+}
 const FINAL_LEVEL: i32 = 50;
 
 /// `GameMode`. Only adventure mode so far.
@@ -272,7 +285,14 @@ pub struct Board {
     pub pending_money: i32,
     coin_bank_fade_count: i32,
     dropped_first_coin: bool,
-    packet_upgrade_bought: bool,
+    /// Seed slots bought from Crazy Dave (`mPurchases[STORE_ITEM_PACKET_UPGRADE]`).
+    packet_upgrades: i32,
+    /// Times the player turned his offer down (`mDidntPurchasePacketUpgrade`).
+    didnt_purchase_packet_upgrade: i32,
+    /// Dave has just asked whether to buy a seed slot: the app shows the dialog.
+    packet_offer: bool,
+    /// The player's answer to that, for Dave to reply to.
+    pub packet_offer_answer: Option<bool>,
     /// How far the intro's sod has rolled out, 0..=1000.
     pub sod_position: i32,
     pub main_counter: i32,
@@ -304,6 +324,8 @@ pub struct Board {
     /// climbing out of the graves.
     rise_from_grave_counter: i32,
     waves: WaveState,
+    /// Whack-a-zombie's mallet and timer.
+    whack: whack_a_zombie::WhackState,
     plant_actions: Vec<PlantAction>,
     shake_counter: i32,
     shake_amount: (i32, i32),
@@ -393,7 +415,10 @@ impl Board {
             pending_money: 0,
             coin_bank_fade_count: 0,
             dropped_first_coin: false,
-            packet_upgrade_bought: player.is_some_and(|p| p.purchases[21] >= 1),
+            packet_upgrades: player.map_or(0, |p| p.purchases[STORE_ITEM_PACKET_UPGRADE]),
+            didnt_purchase_packet_upgrade: player.map_or(0, |p| p.didnt_purchase_packet_upgrade),
+            packet_offer: false,
+            packet_offer_answer: None,
             sod_position: 0,
             main_counter: 0,
             sun_count_down: 0,
@@ -417,6 +442,7 @@ impl Board {
             graves_cleared: 0,
             rise_from_grave_counter: 0,
             waves: WaveState::default(),
+            whack: Default::default(),
             plant_actions: Vec::new(),
             shake_counter: 0,
             shake_amount: (0, 0),
@@ -460,7 +486,11 @@ impl Board {
         board.seed_bank.update_width(resources);
         // TODO: the seed chooser; until it exists every level gets the
         // first plants in order, as levels without choosing do.
-        if !board.has_conveyor_belt_seed_bank() && !board.choose_seeds_on_current_level() {
+        if board.is_whack_a_zombie_level() {
+            for (packet, seed) in board.seed_bank.packets.iter_mut().zip(Self::WHACK_SEEDS) {
+                packet.set_packet_type(Some(seed));
+            }
+        } else if !board.has_conveyor_belt_seed_bank() && !board.choose_seeds_on_current_level() {
             for i in 0..num_packets {
                 let seed = SeedType::from_index(i as i32);
                 board.seed_bank.packets[i].set_packet_type(seed);
@@ -565,7 +595,9 @@ impl Board {
 
     /// `ChooseSeedsOnCurrentLevel`: early adventure levels hand out the plants.
     pub fn choose_seeds_on_current_level(&self) -> bool {
-        !self.has_conveyor_belt_seed_bank() && (!self.first_time_adventure || self.level > 7)
+        !self.has_conveyor_belt_seed_bank()
+            && !self.is_whack_a_zombie_level()
+            && (!self.first_time_adventure || self.level > 7)
     }
 
     /// `GetNumSeedsInBank`.
@@ -573,10 +605,51 @@ impl Board {
         if self.has_conveyor_belt_seed_bank() {
             return 10;
         }
+        if self.is_whack_a_zombie_level() {
+            return Self::WHACK_SEEDS.len();
+        }
         let Some(player) = player else { return 0 };
-        // TODO: STORE_ITEM_PACKET_UPGRADE adds slots once purchases exist.
-        let slots = 6;
+        let slots = 6 + player.purchases[STORE_ITEM_PACKET_UPGRADE];
         slots.min(seeds_available(player)).max(0) as usize
+    }
+
+    /// `StoreScreen::GetItemCost` for the next seed slot, in coins.
+    pub fn packet_upgrade_cost(&self) -> i32 {
+        packet_upgrade_cost(self.packet_upgrades)
+    }
+
+    /// `CutScene::CanGetPacketUpgrade(n)`: Dave offers the slot after `n`
+    /// bought ones if the player can afford it and hasn't refused twice.
+    pub fn can_get_packet_upgrade(&self, bought: i32) -> bool {
+        self.packet_upgrades == bought && self.player_coins >= self.packet_upgrade_cost() && self.didnt_purchase_packet_upgrade < 2
+    }
+
+    /// What Dave's messages fill in.
+    fn dave_vars(&self) -> crazy_dave::DaveVars {
+        crazy_dave::DaveVars { name: self.player_name.clone(), money: self.player_coins, upgrade_cost: self.packet_upgrade_cost() }
+    }
+
+    /// Dave's reply once the player has answered his seed slot offer.
+    fn answer_packet_offer(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, sounds: &mut Sounds) {
+        let Some(yes) = self.packet_offer_answer.take() else { return };
+        let asked = self.dave.message_index;
+        if yes {
+            self.player_coins -= self.packet_upgrade_cost();
+            self.packet_upgrades += 1;
+            // The bank (and the seed chooser) gets the new slot.
+            self.seed_bank.num_packets += 1;
+            self.seed_bank.update_width(res);
+        } else {
+            self.didnt_purchase_packet_upgrade += 1;
+        }
+        let reply = match (asked, yes) {
+            (1503, true) => 1510,
+            (1503, false) => 1520,
+            (_, true) => 1560,
+            (_, false) => 1570,
+        };
+        let vars = self.dave_vars();
+        self.dave.talk_index(reply, &vars, effects, res, images, sounds);
     }
 
     /// `LawnApp::UpdateCrazyDave`.
@@ -635,12 +708,15 @@ impl Board {
         if self.is_wallnut_bowling_level() {
             self.show_bowling_line = true;
         }
+        if self.is_whack_a_zombie_level() {
+            self.start_whack_a_zombie();
+        }
         music.make_sure_music_is_playing(self.game_music());
     }
 
     /// `Music::StartGameMusic`'s choice of tune.
     fn game_music(&self) -> MusicTune {
-        if self.is_wallnut_bowling_level() {
+        if self.is_wallnut_bowling_level() || self.is_whack_a_zombie_level() {
             MusicTune::MinigameLoonboon
         } else if self.mode == GameMode::Adventure && matches!(self.level, 10 | 20 | 30) {
             MusicTune::Conveyer
@@ -752,7 +828,10 @@ fn new_game(
             board.plants.alloc(plant);
         }
     }
-    {
+    if board.is_whack_a_zombie_level() {
+        board.add_hammer(&mut effects, &mut resources, &mut images);
+    } else {
+        // StageHasZombieWalkInFromRight: whack-a-zombie's come out of the graves instead.
         let mut fx = Fx { effects: &mut effects, res: &mut resources, images: &mut images, sounds: &mut sounds };
         board.place_street_zombies(&mut fx);
     }
@@ -777,6 +856,8 @@ pub(super) struct TickOutcome {
     game_over: bool,
     /// The level is won and over (`mLevelComplete`).
     level_complete: bool,
+    /// Dave is offering a seed slot: ask the player (slots after buying, price in coins).
+    packet_offer: Option<(i32, i32)>,
 }
 
 /// `Board::Update`, at 100 ticks per second: the game in [`Board::tick`],
@@ -808,6 +889,10 @@ fn update_board(
     }
     if outcome.game_over {
         do_game_over_dialog(&mut dialogs, &resources);
+    }
+    if let Some((slots, cost)) = outcome.packet_offer {
+        do_purchase_packet_slot_dialog(&mut dialogs, &resources, slots, cost);
+        board.show_coin_bank();
     }
     if outcome.level_complete {
         // LawnApp::CheckForGameEnd: the award screen shows what was won.
@@ -844,6 +929,10 @@ impl Board {
             self.flush_particle_requests(effects, resources, images, sounds.rng());
             return outcome;
         }
+        self.answer_packet_offer(effects, resources, images, sounds);
+        if std::mem::take(&mut self.packet_offer) {
+            outcome.packet_offer = Some((self.packet_upgrades + 7, self.packet_upgrade_cost()));
+        }
         cutscene::update(self, effects, resources, images, music, sounds);
         self.update_seed_chooser();
         if self.paused {
@@ -861,6 +950,9 @@ impl Board {
         self.update_tutorial(resources);
 
         self.update_grid_items();
+        if self.is_whack_a_zombie_level() {
+            self.update_whack_a_zombie(effects);
+        }
         // UpdateGame.
         self.update_game_objects(effects, resources, images, sounds);
         if let Some(zombie) = self.zombies_won_trigger.take() {
@@ -1344,6 +1436,15 @@ fn do_game_over_dialog(dialogs: &mut Dialogs, res: &GameResources) {
     }
 }
 
+/// `CutScene::AdvanceCrazyDaveDialog`'s question: buy a seed slot for `cost` coins?
+fn do_purchase_packet_slot_dialog(dialogs: &mut Dialogs, res: &GameResources, slots: i32, cost: i32) {
+    let body = res.translate("[UPGRADE_DIALOG_BODY]").replace("{SLOTS}", &slots.to_string());
+    let header = coin::money_string(cost);
+    let dialog = dialogs.do_dialog(res, DialogId::PurchasePacketSlot, &header, &body, "", ButtonMode::YesNo);
+    dialog.x += 120;
+    dialog.y += 130;
+}
+
 /// `LawnApp::DoConfirmBackToMain`.
 fn do_confirm_back_to_main(dialogs: &mut Dialogs, res: &GameResources) {
     let lines = "Do you want to return\nto the main menu?\n\nYour game will be saved.";
@@ -1449,7 +1550,7 @@ fn draw_board(
         match item {
             RenderItem::Backdrop => draw_backdrop(board, &resources, &mut g),
             RenderItem::BottomUi => draw_ui_bottom(board, &resources, &mut g),
-            RenderItem::TopUi => draw_ui_top(board, &resources, &mut g),
+            RenderItem::TopUi => draw_ui_top(board, &effects, &resources, &mut g),
             RenderItem::IntroOverlay => cutscene::draw_intro(board, &resources, &mut g),
             RenderItem::SeedChooser => board.draw_seed_chooser(&resources, &mut g),
             RenderItem::CrazyDave => {
@@ -1625,7 +1726,7 @@ fn draw_menu_button(board: &Board, res: &GameResources, g: &mut Graphics) {
 }
 
 /// `Board::DrawUITop`: the level name and the advice banner.
-fn draw_ui_top(board: &Board, res: &GameResources, g: &mut Graphics) {
+fn draw_ui_top(board: &Board, effects: &EffectSystem, res: &GameResources, g: &mut Graphics) {
     if board.stage_has_fog() {
         draw_top_right_ui(board, res, g);
     }
@@ -1636,6 +1737,7 @@ fn draw_ui_top(board: &Board, res: &GameResources, g: &mut Graphics) {
     board.draw_coin_bank(res, g);
     board.advice.draw(board, res, g);
     board.draw_cursor_object(res, g);
+    board.draw_hammer(effects, res, g);
 }
 
 /// `Board::DrawLevel`: "Level 1-1" in the bottom-right corner.

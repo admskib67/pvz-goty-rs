@@ -225,6 +225,21 @@ impl DialogActions<'_, '_, '_> {
         self.dialogs.kill_dialog(DialogId::RenameUser);
     }
 
+    /// `CutScene::AdvanceCrazyDaveDialog`'s answer to Dave's seed slot
+    /// offer: buying it spends the player's coins.
+    fn finish_purchase_packet_slot(&mut self, yes: bool) {
+        self.dialogs.kill_dialog(DialogId::PurchasePacketSlot);
+        let Some(player) = self.profiles.player_mut() else { return };
+        let slot = crate::board::STORE_ITEM_PACKET_UPGRADE;
+        if yes {
+            player.coins -= crate::board::packet_upgrade_cost(player.purchases[slot]);
+            player.purchases[slot] += 1;
+        } else {
+            player.didnt_purchase_packet_upgrade += 1;
+        }
+        self.profiles.save_current_details();
+    }
+
     /// `LawnApp::ButtonDepress` for a dialog's Yes/OK (2000 + id) or
     /// No/Cancel (3000 + id) button.
     fn button_depress(&mut self, id: DialogId, yes: bool) {
@@ -300,6 +315,7 @@ fn handle_dialog_events(
     mut changed: MessageWriter<PlayerChanged>,
     mut exit: MessageWriter<AppExit>,
     mut next_state: ResMut<NextState<AppState>>,
+    mut board: Option<ResMut<crate::board::Board>>,
 ) {
     let events = dialogs.take_events();
     let (Some(res), Some(mut profiles)) = (res, profiles) else { return };
@@ -313,6 +329,13 @@ fn handle_dialog_events(
     };
     for event in events {
         match event {
+            DialogEvent::Button(DialogId::PurchasePacketSlot, button) => {
+                let yes = button == DialogButton::Yes;
+                app.finish_purchase_packet_slot(yes);
+                if let Some(board) = board.as_deref_mut() {
+                    board.packet_offer_answer = Some(yes);
+                }
+            }
             DialogEvent::Button(id, DialogButton::Yes) => app.button_depress(id, true),
             DialogEvent::Button(id, DialogButton::No) => app.button_depress(id, false),
             DialogEvent::Button(DialogId::UserDialog, b) => app.user_dialog_button(b),

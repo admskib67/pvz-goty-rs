@@ -11,6 +11,7 @@
 //! (none are loaded) and the random generator has a fixed seed, so runs
 //! repeat exactly.
 
+mod levels;
 mod plants;
 mod zombies;
 
@@ -32,7 +33,7 @@ use crate::zombie::ZombieType;
 
 use super::plant::Plant;
 use super::zombie::Zombie;
-use super::{Board, GameMode, GameScene};
+use super::{Board, GameMode};
 
 #[test]
 fn render_order_sorts_rows_within_layers() {
@@ -128,15 +129,21 @@ impl TestBoard {
             mower.pos_x = -21.0;
         }
         board.enable_grave_stones = true;
-        board.scene = GameScene::Playing;
         board.seed_bank.y = 0;
-        board.show_shovel = true;
+        board.show_shovel = !board.is_whack_a_zombie_level();
         board.draw_count = 1;
+        let mut music = Music::silent();
+        // LawnApp::StartPlaying (whack-a-zombie's mallet and timer too).
+        board.start_playing(&mut music);
+        let mut effects = EffectSystem::default();
+        if board.is_whack_a_zombie_level() {
+            board.add_hammer(&mut effects, resources, images);
+        }
         let first_wave_count_down = board.waves.zombie_count_down;
         let mut test = Self {
             board,
-            effects: EffectSystem::default(),
-            music: Music::silent(),
+            effects,
+            music,
             world,
             sounds,
             shared,
