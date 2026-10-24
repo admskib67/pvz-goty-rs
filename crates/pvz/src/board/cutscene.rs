@@ -19,6 +19,7 @@ use crate::reanim::{EffectSystem, ReanimationType};
 use crate::resources::GameResources;
 
 use super::message::MessageStyle;
+use super::tutorial::TutorialState;
 use super::{
     BOARD_IMAGE_WIDTH_OFFSET, BOARD_OFFSET, BOARD_WIDTH, BackgroundType, Board, GameScene, SEED_BANK_OFFSET_X,
     SEED_BANK_OFFSET_X_END, make_render_order, render_layer,
@@ -26,6 +27,9 @@ use super::{
 
 const TIME_PAN_RIGHT_START: i32 = 1500;
 const TIME_PAN_RIGHT_END: i32 = 3500;
+const TIME_EARLY_DAVE_ENTER_START: i32 = 2000;
+const TIME_EARLY_DAVE_ENTER_END: i32 = 2750;
+const TIME_EARLY_DAVE_LEAVE_END: i32 = 4000;
 const TIME_SEED_CHOOSER_SLIDE_ON_START: i32 = 4000;
 const TIME_SEED_CHOOSER_SLIDE_ON_END: i32 = 4250;
 const TIME_SEED_CHOOSER_SLIDE_OFF_END: i32 = 4750;
@@ -56,6 +60,10 @@ pub struct CutScene {
     fog_time: i32,
     boss_time: i32,
     crazy_dave_time: i32,
+    /// `mCrazyDaveDialogStart`: the first message of his talk, or -1.
+    pub(super) crazy_dave_dialog_start: i32,
+    /// `IsScrolledLeftAtStart`: the view starts on the house; levels that don't scroll don't.
+    scrolled_left: bool,
     lawn_mower_time: i32,
     placed_lawn_items: bool,
     /// `mSeedChoosing`: the intro's clock waits while seeds are picked.
@@ -87,14 +95,22 @@ impl CutScene {
         self.cutscene_time = self.crazy_dave_time + TIME_SEED_CHOOSER_SLIDE_ON_END + 10;
     }
 
+    pub(super) fn set_time(&mut self, time: i32) {
+        self.cutscene_time = time;
+    }
+
     /// `IsAfterSeedChooser`.
     pub fn is_after_seed_chooser(&self) -> bool {
         self.cutscene_time > TIME_SEED_CHOOSER_SLIDE_OFF_START + self.crazy_dave_time
     }
 
-    /// `IsScrolledLeftAtStart`: every level ported so far starts on the house.
     fn is_scrolled_left_at_start(&self) -> bool {
-        true
+        self.scrolled_left
+    }
+
+    /// `IsShowingCrazyDave`.
+    pub(super) fn is_showing_crazy_dave(&self) -> bool {
+        self.crazy_dave_time > 0 && self.cutscene_time < TIME_PAN_RIGHT_END + self.crazy_dave_time
     }
 
     fn time_to_start(&self) -> i32 {
@@ -123,6 +139,8 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
     let bowling = board.is_wallnut_bowling_level();
     let cs = &mut board.cut_scene;
     *cs = CutScene::default();
+    cs.crazy_dave_dialog_start = -1;
+    cs.scrolled_left = !bowling;
     if first_time && matches!(level, 1 | 2 | 4) {
         cs.sod_time = TIME_ROLL_SOD_END - TIME_ROLL_SOD_START;
         board.sod_position = 0;
@@ -138,21 +156,30 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
         TIME_READY_SET_PLANT_END - TIME_READY_SET_PLANT_START
     };
     cs.lawn_mower_time = 550;
-    // TODO: Crazy Dave's talks (mCrazyDaveDialogStart), fog and the boss.
-    cs.crazy_dave_time = 0;
+    // TODO: Crazy Dave's other talks, fog and the boss.
+    if bowling {
+        cs.crazy_dave_dialog_start = if first_time { 2400 } else { 2411 };
+    }
+    cs.crazy_dave_time = if cs.crazy_dave_dialog_start != -1 { TIME_EARLY_DAVE_LEAVE_END - TIME_PAN_RIGHT_START } else { 0 };
     cs.fog_time = 0;
     cs.boss_time = 0;
 
-    if cs.is_scrolled_left_at_start() {
-        board.x = BOARD_OFFSET;
+    board.x = if cs.is_scrolled_left_at_start() { BOARD_OFFSET } else { 0 };
+    board.player_name = player_name.to_owned();
+    if bowling {
+        board.show_shovel = true;
     }
     if board.choose_seeds_on_current_level() {
         let y = super::seed_chooser::offset_y(res);
         board.seed_chooser = Some(super::seed_chooser::SeedChooser::new(board.seeds_available, y));
     }
+    if board.cut_scene.crazy_dave_time > 0 {
+        // Dave talks first; the house's name isn't shown.
+        music.make_sure_music_is_playing(MusicTune::TitleCrazyDaveMainTheme);
+        return;
+    }
     if bowling {
-        // IsNonScrollingCutscene with no Crazy Dave: CancelIntro. TODO: Dave
-        // explains the level first (mCrazyDaveDialogStart 2400).
+        // IsNonScrollingCutscene with no Crazy Dave: CancelIntro.
         start_non_scrolling_intro(board);
         return;
     }
@@ -193,7 +220,10 @@ pub fn update(
     if board.paused || board.scene != GameScene::LevelIntro || board.draw_count == 0 {
         return;
     }
-    if !board.cut_scene.seed_choosing {
+    board.update_crazy_dave(effects, res, images, sounds);
+    // The clock waits while seeds are picked, Dave is talking or the shovel is being learned.
+    let frozen = board.cut_scene.seed_choosing || board.dave.message_index != -1 || board.is_in_shovel_tutorial();
+    if !frozen {
         board.cut_scene.cutscene_time += 10;
         let start_choosing = board.cut_scene.cutscene_time
             == TIME_SEED_CHOOSER_SLIDE_ON_END + board.cut_scene.crazy_dave_time
@@ -279,6 +309,62 @@ fn place_lawn_items(board: &mut Board) {
     // TODO: flower pots on the roof, and the rake.
 }
 
+/// The start of `CutScene::AnimateBoard`: Dave walks in, starts talking and
+/// (on levels that don't scroll) the intro skips ahead once he's gone.
+fn update_dave_timeline(
+    board: &mut Board,
+    effects: &mut EffectSystem,
+    res: &mut GameResources,
+    images: &mut Assets<Image>,
+    sounds: &mut Sounds,
+) {
+    if board.cut_scene.crazy_dave_time <= 0 {
+        return;
+    }
+    let time = board.cut_scene.cutscene_time;
+    if time == TIME_EARLY_DAVE_ENTER_START {
+        board.dave.enter(effects, res, images, sounds.rng());
+    }
+    if time == TIME_EARLY_DAVE_ENTER_END && board.cut_scene.crazy_dave_dialog_start != -1 {
+        let start = board.cut_scene.crazy_dave_dialog_start;
+        let name = board.player_name.clone();
+        board.dave.talk_index(start, &name, effects, res, images, sounds);
+        board.cut_scene.crazy_dave_dialog_start = -1;
+    }
+    if time == TIME_EARLY_DAVE_LEAVE_END && !board.cut_scene.is_scrolled_left_at_start() {
+        board.cut_scene.cutscene_time = TIME_PAN_LEFT_END + board.cut_scene.crazy_dave_time;
+    }
+}
+
+/// `CutScene::AdvanceCrazyDaveDialog`: a click moves Dave's talk along.
+/// Returns true when his talk is over and the intro music should fade.
+pub(super) fn advance_crazy_dave_dialog(
+    board: &mut Board,
+    effects: &mut EffectSystem,
+    res: &mut GameResources,
+    images: &mut Assets<Image>,
+    sounds: &mut Sounds,
+) -> bool {
+    if board.dave.message_index == -1 {
+        return false;
+    }
+    // "LET THE DIGGING COMMENCE!": the shovel lesson starts.
+    if board.dave.message_index == 2406 {
+        board.set_tutorial_state(res, TutorialState::ShovelPickup);
+        board.dave.leave(effects, sounds);
+        return false;
+    }
+    let name = board.player_name.clone();
+    if !board.dave.advance_text(&name, effects, res, images, sounds) {
+        board.dave.leave(effects, sounds);
+        return !board.cut_scene.is_scrolled_left_at_start();
+    }
+    if matches!(board.dave.message_index, 405 | 2411) {
+        board.show_bowling_line = true;
+    }
+    false
+}
+
 /// `CutScene::AnimateBoard`.
 fn animate_board(
     board: &mut Board,
@@ -288,6 +374,7 @@ fn animate_board(
     music: &mut Music,
     sounds: &mut Sounds,
 ) {
+    update_dave_timeline(board, effects, res, images, sounds);
     let cs = board.cut_scene.clone();
     let time = cs.cutscene_time;
     let dave = cs.crazy_dave_time;

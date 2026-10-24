@@ -393,6 +393,8 @@ pub struct Reanimation<D = std::sync::Arc<ReanimDefinition>> {
     pub loop_count: i32,
     /// Position and scale applied on top of every track.
     pub overlay: Matrix3,
+    /// `AttachEffect::mOffset`: where this sits on the track it's attached to.
+    pub attach_offset: Matrix3,
     pub color_override: Rgba,
     /// A color added on top when drawing (the hit flash, the chill glow;
     /// `mExtraAdditiveColor`), if any.
@@ -421,6 +423,7 @@ impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
             frame_start: 0,
             loop_count: 0,
             overlay: Matrix3::translation(x, y),
+            attach_offset: Matrix3::IDENTITY,
             color_override: WHITE,
             extra_additive: None,
             frame_base_pose: -1,

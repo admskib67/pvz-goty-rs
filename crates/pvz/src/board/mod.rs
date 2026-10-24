@@ -16,6 +16,7 @@
 //! `DoConfirmBackToMain` and `DoBackToMain`.
 
 mod coin;
+mod crazy_dave;
 mod conveyor;
 mod cursor;
 mod cutscene;
@@ -248,6 +249,10 @@ pub struct Board {
     last_conveyor_seed: Option<SeedType>,
     /// The seed chooser, while the level intro has it on screen.
     seed_chooser: Option<seed_chooser::SeedChooser>,
+    /// Crazy Dave, when he's in the intro.
+    dave: crazy_dave::CrazyDave,
+    /// The player's name, for Dave's messages.
+    player_name: String,
     /// Started with `--lvl-N`: finishing it leaves the saved player alone.
     level_overridden: bool,
     /// `GetSeedsAvailable`.
@@ -354,6 +359,8 @@ impl Board {
             conveyor_belt_counter: 0,
             last_conveyor_seed: None,
             seed_chooser: None,
+            dave: crazy_dave::CrazyDave::new(),
+            player_name: String::new(),
             level_overridden: false,
             seeds_available: player.map_or(0, |p| seeds_available(p).max(0) as usize),
             show_bowling_line: false,
@@ -431,7 +438,8 @@ impl Board {
         if board.is_wallnut_bowling_level() {
             board.seed_bank.add_seed(SeedType::Wallnut);
             board.conveyor_belt_counter = 400;
-            board.show_bowling_line = true;
+            // The line appears when Crazy Dave mentions bowling (or play starts).
+            board.show_bowling_line = !board.first_time_adventure;
         } else if board.is_mini_boss_level() {
             board.conveyor_belt_counter = 200;
         }
@@ -534,6 +542,11 @@ impl Board {
         slots.min(seeds_available(player)).max(0) as usize
     }
 
+    /// `LawnApp::UpdateCrazyDave`.
+    fn update_crazy_dave(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, sounds: &mut Sounds) {
+        self.dave.update(effects, res, images, sounds);
+    }
+
     /// `LawnApp::IsWallnutBowlingLevel`, for adventure mode.
     pub fn is_wallnut_bowling_level(&self) -> bool {
         self.mode == GameMode::Adventure && self.level == 5
@@ -582,6 +595,9 @@ impl Board {
     fn start_playing(&mut self, music: &mut Music) {
         self.scene = GameScene::Playing;
         self.seed_chooser = None;
+        if self.is_wallnut_bowling_level() {
+            self.show_bowling_line = true;
+        }
         music.make_sure_music_is_playing(self.game_music());
     }
 
@@ -684,6 +700,14 @@ fn new_game(
     }
     let player_name = player.map_or("", |p| p.name.as_str());
     cutscene::start_level_intro(&mut board, &resources, &mut music, player_name);
+    // Level 1-5 starts with peashooters for Crazy Dave to have the player dig up.
+    if board.first_time_adventure && board.level == 5 {
+        for (col, row) in [(5, 1), (7, 2), (6, 3)] {
+            let (x, y) = (board.grid_to_pixel_x(col), board.grid_to_pixel_y(col, row));
+            let plant = plant::Plant::new(col, row, x, y, SeedType::Peashooter, true, &mut effects, &mut resources, &mut images, sounds.rng());
+            board.plants.alloc(plant);
+        }
+    }
     {
         let mut fx = Fx { effects: &mut effects, res: &mut resources, images: &mut images, sounds: &mut sounds };
         board.place_street_zombies(&mut fx);
@@ -830,7 +854,8 @@ impl Board {
     ) {
         let playing = self.scene == GameScene::Playing;
         let zombies_won = self.scene == GameScene::ZombiesWon;
-        if playing {
+        // Plants wait for the level to start, except the lawn's on the bowling level.
+        if playing || (self.scene == GameScene::LevelIntro && self.is_wallnut_bowling_level()) {
             let row_y: [i32; MAX_GRID_SIZE_Y] = std::array::from_fn(|row| self.grid_to_pixel_y(0, row as i32));
             for (_, plant) in self.plants.iter_mut() {
                 plant.update(&self.zombies, &mut self.plant_actions, effects, res, images, &row_y, sounds.rng());
@@ -1098,6 +1123,8 @@ fn board_input(
     mut board: ResMut<Board>,
     cursor: Res<GameCursor>,
     mouse: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut music: ResMut<Music>,
     mut dialogs: ResMut<Dialogs>,
     mut resources: ResMut<GameResources>,
     mut images: ResMut<Assets<Image>>,
@@ -1105,6 +1132,15 @@ fn board_input(
     mut sounds: Sounds,
 ) {
     let board = &mut *board;
+    // Space and Enter move Crazy Dave's talk along, like a click.
+    if !dialogs.is_modal()
+        && board.scene == GameScene::LevelIntro
+        && board.cut_scene.is_showing_crazy_dave()
+        && keys.any_just_pressed([KeyCode::Space, KeyCode::Enter])
+        && cutscene::advance_crazy_dave_dialog(board, &mut effects, &mut resources, &mut images, &mut sounds)
+    {
+        music.fade_out(50);
+    }
     board.mouse = cursor.0.map(|p| p - Vec2::new(board.x as f32, board.y as f32));
     // A dialog takes the mouse.
     let modal = dialogs.is_modal();
@@ -1117,6 +1153,10 @@ fn board_input(
     if mouse.just_pressed(MouseButton::Left) {
         if board.menu_button.is_mouse_over() && board.can_interact_with_board_buttons() {
             sounds.play_sample("SOUND_GRAVEBUTTON");
+        } else if board.scene == GameScene::LevelIntro && board.cut_scene.is_showing_crazy_dave() {
+            if cutscene::advance_crazy_dave_dialog(board, &mut effects, &mut resources, &mut images, &mut sounds) {
+                music.fade_out(50);
+            }
         } else if board.cut_scene.seed_choosing {
             let screen = p + Vec2::new(board.x as f32, board.y as f32);
             board.seed_chooser_mouse_down(screen.floor().as_ivec2(), &mut sounds);
@@ -1171,6 +1211,7 @@ enum RenderItem {
     Backdrop,
     BottomUi,
     SeedChooser,
+    CrazyDave,
     TopUi,
     LawnMower(usize),
     Reanimation(crate::reanim::ReanimationId),
@@ -1234,6 +1275,9 @@ fn draw_board(
     items.push((bottom_ui, RenderItem::BottomUi));
     // The chooser sits in front of the seed bank its seeds fly into.
     items.push((make_render_order(render_layer::ABOVE_UI, 0, 2), RenderItem::SeedChooser));
+    if board.scene == GameScene::LevelIntro {
+        items.push((make_render_order(render_layer::ABOVE_UI, 0, 3), RenderItem::CrazyDave));
+    }
     items.push((make_render_order(render_layer::UI_TOP, 0, 0), RenderItem::TopUi));
     // TODO: the coin bank, screen fade and cursor preview.
     items.sort_by_key(|(z, _)| *z);
@@ -1246,6 +1290,12 @@ fn draw_board(
             RenderItem::BottomUi => draw_ui_bottom(board, &resources, &mut g),
             RenderItem::TopUi => draw_ui_top(board, &resources, &mut g),
             RenderItem::SeedChooser => board.draw_seed_chooser(&resources, &mut g),
+            RenderItem::CrazyDave => {
+                g.push_state();
+                g.translate(-board.x as f32, -board.y as f32);
+                board.dave.draw(&effects, &resources, &mut g);
+                g.pop_state();
+            }
             RenderItem::LawnMower(i) => board.lawn_mowers[i].draw(board, &effects, &resources, &mut g),
             RenderItem::Reanimation(id) => effects.draw(&mut g, id, &resources),
             RenderItem::Plant(id) => {

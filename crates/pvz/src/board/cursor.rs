@@ -248,7 +248,7 @@ impl Board {
     }
 
     /// `Board::MouseDownWithTool`, for the shovel.
-    fn mouse_down_with_shovel(&mut self, p: IVec2, right: bool, effects: &mut EffectSystem, sounds: &mut Sounds) {
+    fn mouse_down_with_shovel(&mut self, p: IVec2, right: bool, effects: &mut EffectSystem, res: &GameResources, sounds: &mut Sounds) {
         self.cursor = CursorObject::default();
         sounds.play_foley(FoleyType::Drop);
         if right {
@@ -260,6 +260,15 @@ impl Board {
         if let Some(plant) = target.and_then(|id| self.plants.get_mut(id)) {
             sounds.play_foley(FoleyType::UseShovel);
             plant.die(effects);
+            if matches!(self.tutorial_state, TutorialState::ShovelDig | TutorialState::ShovelKeepDigging) {
+                let peashooters = self.plants.iter().filter(|(_, p)| !p.dead && p.seed == SeedType::Peashooter).count();
+                let next = if peashooters == 0 { TutorialState::ShovelCompleted } else { TutorialState::ShovelKeepDigging };
+                self.set_tutorial_state(res, next);
+            }
+        }
+        // ClearCursor: a click that missed puts the lesson back at the shovel.
+        if self.tutorial_state == TutorialState::ShovelDig {
+            self.set_tutorial_state(res, TutorialState::ShovelPickup);
         }
     }
 
@@ -277,13 +286,16 @@ impl Board {
     ) {
         let ip = p.floor().as_ivec2();
         if self.cursor.cursor_type == CursorType::Shovel {
-            self.mouse_down_with_shovel(ip, right, effects, sounds);
+            self.mouse_down_with_shovel(ip, right, effects, res, sounds);
             return;
         }
         if !right && self.cursor.cursor_type == CursorType::Normal && self.show_shovel && self.can_interact_with_board_buttons() {
             let (x, y, w, h) = self.shovel_button_rect(res);
             if ip.x >= x && ip.x < x + w && ip.y >= y && ip.y < y + h {
-                if !self.paused && self.scene == GameScene::Playing {
+                if !self.paused && (self.scene == GameScene::Playing || self.is_in_shovel_tutorial()) {
+                    if self.tutorial_state == TutorialState::ShovelPickup {
+                        self.set_tutorial_state(res, TutorialState::ShovelDig);
+                    }
                     self.cursor.cursor_type = CursorType::Shovel;
                     sounds.play_foley(FoleyType::Shovel);
                 }

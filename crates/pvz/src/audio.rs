@@ -362,6 +362,13 @@ pub enum FoleyType {
     Sun,
     /// A rolling wall-nut hits a zombie.
     BowlingImpact,
+    /// Crazy Dave talking (`FOLEY_CRAZY_DAVE_*`).
+    CrazyDaveShort,
+    CrazyDaveLong,
+    CrazyDaveExtraLong,
+    CrazyDaveCrazy,
+    CrazyDaveScream,
+    CrazyDaveScream2,
     /// Collecting a silver or gold coin.
     Coin,
     MoneyFalls,
@@ -450,6 +457,24 @@ impl FoleyType {
             Self::ReverseExplosion => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_REVERSE_EXPLOSION"], flags: 0 },
             Self::Frozen => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_FROZEN"], flags: 0 },
             Self::SnowPeaSparkles => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_SNOW_PEA_SPARKLES"], flags: 0 },
+            Self::CrazyDaveShort => FoleyParams {
+                pitch_range: 0.0,
+                sounds: &["SOUND_CRAZYDAVESHORT1", "SOUND_CRAZYDAVESHORT2", "SOUND_CRAZYDAVESHORT3"],
+                flags: foley_flags::DONT_REPEAT,
+            },
+            Self::CrazyDaveLong => FoleyParams {
+                pitch_range: 0.0,
+                sounds: &["SOUND_CRAZYDAVELONG1", "SOUND_CRAZYDAVELONG2", "SOUND_CRAZYDAVELONG3"],
+                flags: foley_flags::DONT_REPEAT,
+            },
+            Self::CrazyDaveExtraLong => FoleyParams {
+                pitch_range: 0.0,
+                sounds: &["SOUND_CRAZYDAVEEXTRALONG1", "SOUND_CRAZYDAVEEXTRALONG2", "SOUND_CRAZYDAVEEXTRALONG3"],
+                flags: foley_flags::DONT_REPEAT,
+            },
+            Self::CrazyDaveCrazy => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_CRAZYDAVECRAZY"], flags: 0 },
+            Self::CrazyDaveScream => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_CRAZYDAVESCREAM"], flags: 0 },
+            Self::CrazyDaveScream2 => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_CRAZYDAVESCREAM2"], flags: 0 },
             Self::BowlingImpact => FoleyParams { pitch_range: -3.0, sounds: &["SOUND_BOWLINGIMPACT"], flags: 0 },
             Self::Shovel => FoleyParams { pitch_range: 5.0, sounds: &["SOUND_SHOVEL"], flags: 0 },
             Self::UseShovel => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_PLANT2"], flags: 0 },

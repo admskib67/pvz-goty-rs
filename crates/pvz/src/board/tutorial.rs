@@ -30,6 +30,11 @@ pub enum TutorialState {
     MoreSunPlantSunflower,
     MoreSunRefreshSunflower,
     MoreSunCompleted,
+    /// Level 1-5: Crazy Dave has the player dig up the peashooters.
+    ShovelPickup,
+    ShovelDig,
+    ShovelKeepDigging,
+    ShovelCompleted,
 }
 
 impl TutorialState {
@@ -124,6 +129,14 @@ impl Board {
         });
     }
 
+    /// `CutScene::IsInShovelTutorial`.
+    pub(super) fn is_in_shovel_tutorial(&self) -> bool {
+        matches!(
+            self.tutorial_state,
+            TutorialState::ShovelPickup | TutorialState::ShovelDig | TutorialState::ShovelKeepDigging
+        )
+    }
+
     /// `Board::TutorialArrowRemove`.
     pub(super) fn tutorial_arrow_remove(&mut self) {
         self.particle_requests.push(ParticleRequest::RemoveTutorialArrow);
@@ -174,6 +187,23 @@ impl Board {
                     self.waves.zombie_count_down = 999;
                     self.waves.zombie_count_down_start = 999;
                 }
+            }
+            TutorialState::ShovelPickup => {
+                self.display_advice(res, "[ADVICE_CLICK_SHOVEL]", MessageStyle::HintStay, None);
+                let (x, y, w, h) = self.shovel_button_rect(res);
+                self.tutorial_arrow_show_at(x + w / 2 - 25, y + h - 65);
+            }
+            TutorialState::ShovelDig => {
+                self.display_advice(res, "[ADVICE_CLICK_PLANT]", MessageStyle::HintStay, None);
+                self.tutorial_arrow_remove();
+            }
+            TutorialState::ShovelKeepDigging => {
+                self.display_advice(res, "[ADVICE_KEEP_DIGGING]", MessageStyle::HintStay, None);
+            }
+            TutorialState::ShovelCompleted => {
+                self.clear_advice(None);
+                self.cut_scene.set_time(1500);
+                self.cut_scene.crazy_dave_dialog_start = 2410;
             }
             TutorialState::MoreSunCompleted | TutorialState::Off => {}
         }

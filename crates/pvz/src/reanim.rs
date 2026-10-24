@@ -387,7 +387,7 @@ impl EffectSystem {
             let Some(matrix) = self.reanimations.get(id).map(|r| r.attachment_overlay_matrix(track)) else { break };
             let (color, extra) = self.reanimations.get(id).map_or((sexy::reanim::WHITE, None), |r| (r.color_override, r.extra_additive));
             if let Some(c) = self.reanimations.get_mut(child) {
-                c.overlay = matrix;
+                c.overlay = matrix * c.attach_offset;
                 // PropogateColorToAttachments.
                 c.color_override = color;
                 c.extra_additive = extra;
