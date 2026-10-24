@@ -72,7 +72,7 @@ pub enum PlantAction {
 
 /// `PlantState`, for the plants ported so far.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PlantState {
+pub(super) enum PlantState {
     NotReady,
     Ready,
     PotatoRising,
@@ -486,6 +486,12 @@ impl Plant {
         if asleep {
             self.end_blink(effects);
         }
+    }
+
+    /// What the plant is doing (`mState`).
+    #[cfg(test)]
+    pub(super) fn state(&self) -> PlantState {
+        self.state
     }
 
     /// A mushroom asleep in the day (`mIsAsleep`).

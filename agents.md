@@ -58,6 +58,7 @@ cargo run -p pvz
 cargo run -p pvz -- --clean                  # wipe all saved app data first (back to the setup screen)
 cargo test --workspace
 cargo test -p pak directories                # single test, filtered by name
+cargo test -p pvz board::tests               # plant and zombie tests in crates/pvz/tests (need the game; see Testing notes)
 cargo clippy --workspace --all-targets
 cargo run -p pak --example extract -- <main.pak> [out_dir]  # list or extract a pak
 cargo run -p openmpt --example render -- <module> <out.wav> [seconds] [order]  # render a tracker module
@@ -89,6 +90,7 @@ Windows gotchas already hit:
 - Paths inside the pak use `\`; `pak` normalises them, but anything building file paths by hand should use `/` and let `pak`/`GameFiles` handle it.
 
 Testing notes:
+- `crates/pvz/tests/` holds the plant and zombie tests: unit tests compiled into the crate as `board::tests` (through a `#[path]` module in `board/mod.rs`; `autotests = false` stops Cargo treating the folder as integration tests, which a binary crate can't have). `TestBoard::new("2-1")` (through the `test_board!` macro) is that level with the intro skipped (mowers out, graves up, playing) and zombie waves held back unless `.with_waves()`; helpers place plants (`plant`, `plant_from_bank` by clicking), dig (`dig`, by clicking the shovel), place zombies (`zombie`), and run (`tick`, `ticks`, `run_until`). It runs `Board::tick`, the same tick as the game (`update_board` only adds the app's side: dialogs, the profile, the next screen). Sounds are silent and the RNG is seeded, so runs repeat. They load the real `main.pak` (`PVZ_GAME_PATH`, else the saved install; resources are loaded once and tests take turns with them) and print "skipped" and pass without it. Add a test there for each plant or zombie behaviour you port; getters only tests need are `#[cfg(test)]`.
 - On macOS, `PVZ_SCREENSHOT` captures sometimes come out fully black after the app has run for a few seconds (it happened even with all new drawing disabled, so it's the capture, not the game). Don't spend time debugging it; ask the user to check screens by eye instead.
 
 ## Architecture

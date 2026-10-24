@@ -894,6 +894,21 @@ impl Zombie {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn helm_health(&self) -> i32 {
+        self.helm_health
+    }
+
+    #[cfg(test)]
+    pub(super) fn shield_health(&self) -> i32 {
+        self.shield_health
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_arm(&self) -> bool {
+        self.has_arm
+    }
+
     /// Slowed by cold (`mChilledCounter`).
     pub fn is_chilled(&self) -> bool {
         self.chilled_counter > 0

@@ -31,6 +31,9 @@ mod seed_chooser;
 mod tutorial;
 mod waves;
 mod zombie;
+#[cfg(test)]
+#[path = "../../tests/mod.rs"]
+mod tests;
 
 use std::collections::HashSet;
 
@@ -763,7 +766,21 @@ fn kill_board(mut commands: Commands, mut effects: ResMut<EffectSystem>, mut mus
     music.stop_all_music();
 }
 
-/// `Board::Update`, at 100 ticks per second.
+/// What a tick of the board leaves for the app to do.
+#[derive(Debug, Default)]
+pub(super) struct TickOutcome {
+    /// The intro cinematic is over: start level 1.
+    intro_done: bool,
+    /// Money picked up this tick, for the player's profile.
+    money: i32,
+    /// The lost-level cutscene is over: show the game over dialog.
+    game_over: bool,
+    /// The level is won and over (`mLevelComplete`).
+    level_complete: bool,
+}
+
+/// `Board::Update`, at 100 ticks per second: the game in [`Board::tick`],
+/// then what it means for the app (dialogs, the profile, the next screen).
 #[allow(clippy::too_many_arguments)]
 fn update_board(
     mut commands: Commands,
@@ -780,75 +797,19 @@ fn update_board(
     let board = &mut *board;
     // LawnApp::NeedPauseGame: an open dialog pauses the game.
     board.paused = dialogs.is_modal();
-
-    if board.mode == GameMode::Intro {
-        let done = cutscene::update_intro(board, &mut effects, &mut resources, &mut images, &mut music, &mut sounds);
-        if !board.paused {
-            effects.update(sounds.rng());
-        }
-        board.flush_particle_requests(&mut effects, &mut resources, &mut images, sounds.rng());
-        if done {
-            next_state.set(AppState::Board);
-        }
-        return;
+    let outcome = board.tick(&mut effects, &mut resources, &mut images, &mut music, &mut sounds);
+    if outcome.intro_done {
+        next_state.set(AppState::Board);
     }
-    cutscene::update(board, &mut effects, &mut resources, &mut images, &mut music, &mut sounds);
-    board.update_seed_chooser();
-    if board.paused {
-        return;
-    }
-    if !board.menu_button.no_draw {
-        board.menu_button.disabled = !board.can_interact_with_board_buttons();
-    }
-
-    effects.update(sounds.rng());
-    board.update_shake(sounds.rng());
-    board.coin_bank_fade_count = (board.coin_bank_fade_count - 1).max(0);
-    if board.pending_money > 0
+    if outcome.money > 0
         && let Some(player) = profiles.player_mut()
     {
-        player.coins += std::mem::take(&mut board.pending_money);
+        player.coins += outcome.money;
     }
-    board.advice.update();
-    board.update_tutorial(&resources);
-
-    board.update_grid_items();
-    // UpdateGame.
-    board.update_game_objects(&mut effects, &mut resources, &mut images, &mut sounds);
-    if let Some(zombie) = board.zombies_won_trigger.take() {
-        board.zombies_won(zombie, &mut music, &mut sounds, &resources);
-    }
-    if board.scene == GameScene::ZombiesWon
-        && cutscene::update_zombies_won(board, &mut effects, &mut resources, &mut images, &mut sounds)
-    {
-        board.pending_game_over = true;
-    }
-    if board.scene == GameScene::Playing {
-        board.main_counter += 1;
-        board.update_sun_spawning(&mut effects, &mut resources, &mut images, &mut sounds);
-        if board.has_conveyor_belt_seed_bank() {
-            board.update_conveyor_belt(sounds.rng());
-        }
-        board.update_zombie_spawning(&mut effects, &mut resources, &mut images, &mut sounds);
-        if board.main_counter == 1 && board.first_time_adventure && board.level == 1 {
-            board.set_tutorial_state(&resources, TutorialState::Level1PickUpPeashooter);
-        } else if board.main_counter == 1 && board.first_time_adventure && board.level == 2 {
-            board.set_tutorial_state(&resources, TutorialState::Level2PickUpSunflower);
-            board.display_advice(&resources, "[ADVICE_PLANT_SUNFLOWER1]", MessageStyle::TutorialLevel2, None);
-            board.tutorial_timer = 500;
-        }
-        board.update_progress_meter();
-    }
-    if board.pending_fade_out {
-        board.fade_out_level(&mut music, &mut sounds, &resources);
-    }
-    board.update_level_end_sequence(&mut sounds);
-    board.process_delete_queue();
-    if board.pending_game_over {
-        board.pending_game_over = false;
+    if outcome.game_over {
         do_game_over_dialog(&mut dialogs, &resources);
     }
-    if board.level_complete {
+    if outcome.level_complete {
         // LawnApp::CheckForGameEnd: the award screen shows what was won.
         let (first_time, level) = (board.first_time_adventure, board.level);
         board.finish_level(&mut profiles);
@@ -861,7 +822,79 @@ fn update_board(
             None => next_state.set(AppState::Board),
         }
     }
-    board.flush_particle_requests(&mut effects, &mut resources, &mut images, sounds.rng());
+}
+
+impl Board {
+    /// One 100 Hz tick of the level (`Board::Update`): everything but the
+    /// app's side of things, so tests can run it too.
+    pub(super) fn tick(
+        &mut self,
+        effects: &mut EffectSystem,
+        resources: &mut GameResources,
+        images: &mut Assets<Image>,
+        music: &mut Music,
+        sounds: &mut Sounds,
+    ) -> TickOutcome {
+        let mut outcome = TickOutcome::default();
+        if self.mode == GameMode::Intro {
+            outcome.intro_done = cutscene::update_intro(self, effects, resources, images, music, sounds);
+            if !self.paused {
+                effects.update(sounds.rng());
+            }
+            self.flush_particle_requests(effects, resources, images, sounds.rng());
+            return outcome;
+        }
+        cutscene::update(self, effects, resources, images, music, sounds);
+        self.update_seed_chooser();
+        if self.paused {
+            return outcome;
+        }
+        if !self.menu_button.no_draw {
+            self.menu_button.disabled = !self.can_interact_with_board_buttons();
+        }
+
+        effects.update(sounds.rng());
+        self.update_shake(sounds.rng());
+        self.coin_bank_fade_count = (self.coin_bank_fade_count - 1).max(0);
+        outcome.money = std::mem::take(&mut self.pending_money);
+        self.advice.update();
+        self.update_tutorial(resources);
+
+        self.update_grid_items();
+        // UpdateGame.
+        self.update_game_objects(effects, resources, images, sounds);
+        if let Some(zombie) = self.zombies_won_trigger.take() {
+            self.zombies_won(zombie, music, sounds, resources);
+        }
+        if self.scene == GameScene::ZombiesWon && cutscene::update_zombies_won(self, effects, resources, images, sounds) {
+            self.pending_game_over = true;
+        }
+        if self.scene == GameScene::Playing {
+            self.main_counter += 1;
+            self.update_sun_spawning(effects, resources, images, sounds);
+            if self.has_conveyor_belt_seed_bank() {
+                self.update_conveyor_belt(sounds.rng());
+            }
+            self.update_zombie_spawning(effects, resources, images, sounds);
+            if self.main_counter == 1 && self.first_time_adventure && self.level == 1 {
+                self.set_tutorial_state(resources, TutorialState::Level1PickUpPeashooter);
+            } else if self.main_counter == 1 && self.first_time_adventure && self.level == 2 {
+                self.set_tutorial_state(resources, TutorialState::Level2PickUpSunflower);
+                self.display_advice(resources, "[ADVICE_PLANT_SUNFLOWER1]", MessageStyle::TutorialLevel2, None);
+                self.tutorial_timer = 500;
+            }
+            self.update_progress_meter();
+        }
+        if self.pending_fade_out {
+            self.fade_out_level(music, sounds, resources);
+        }
+        self.update_level_end_sequence(sounds);
+        self.process_delete_queue();
+        outcome.game_over = std::mem::take(&mut self.pending_game_over);
+        outcome.level_complete = self.level_complete;
+        self.flush_particle_requests(effects, resources, images, sounds.rng());
+        outcome
+    }
 }
 
 impl Board {
@@ -1611,15 +1644,4 @@ fn draw_level(board: &Board, res: &GameResources, g: &mut Graphics) {
     let text = format!("{} {}", res.translate("[LEVEL]"), board.stage_string());
     let x = if board.has_progress_meter() { 593 } else { 780 };
     g.tod_draw_string(font, x, 595, &text, SexyColor::rgba(224, 187, 98, 255), Justify::Right);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn render_order_sorts_rows_within_layers() {
-        assert!(make_render_order(render_layer::LAWN_MOWER, 0, 0) < make_render_order(render_layer::PLANT, 1, 0));
-        assert_eq!(make_render_order(render_layer::TOP, 0, 1), 400001);
-    }
 }

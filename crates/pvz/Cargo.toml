@@ -3,6 +3,9 @@ name = "pvz"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+# `tests/` holds unit tests of the board, compiled into the crate as
+# `board::tests` (pvz is a binary, so it can't have integration tests).
+autotests = false
 
 [dependencies]
 pak.workspace = true

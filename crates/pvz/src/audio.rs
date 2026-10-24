@@ -206,6 +206,12 @@ impl Music {
         }
     }
 
+    /// Music with nothing loaded and no audio output, for tests.
+    #[cfg(test)]
+    pub fn silent() -> Self {
+        Self::new(Arc::new(Mutex::new(Mixer::default())))
+    }
+
     /// `LoadSong`. A failed load disables music, like the original.
     pub fn set_song(&mut self, file: MusicFile, song: Result<openmpt::Module, String>) {
         match song {
