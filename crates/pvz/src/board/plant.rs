@@ -400,8 +400,10 @@ impl Plant {
             }
             PlantState::ChomperBiting if self.state_countdown == 0 => {
                 actions.push(PlantAction::Foley(FoleyType::BigChomp));
-                // TODO: gargantuars and bosses are only hurt, pole vaulters mid-jump are missed.
+                // TODO: gargantuars and bosses are only hurt.
                 match self.find_chomper_target(zombies) {
+                    // Pole vaulters running or jumping are missed.
+                    Some(id) if zombies.get(id).is_some_and(Zombie::is_vaulting) => self.state = PlantState::ChomperBitingMissed,
                     Some(id) => {
                         actions.push(PlantAction::EatZombie(id));
                         self.state = PlantState::ChomperBitingGotOne;
@@ -432,7 +434,7 @@ impl Plant {
     fn find_potato_target(&self, zombies: &DataArray<Zombie>) -> bool {
         let attack = IRect::new(self.x, self.y, PLANT_SIZE - 25, PLANT_SIZE);
         zombies.iter().any(|(_, z)| {
-            if z.row != self.row || !z.effected_by_damage(77) || !z.has_head {
+            if z.row != self.row || !z.effected_by_damage(77) || !z.has_head || z.is_vaulting() {
                 return false;
             }
             let extra = if z.is_eating { 30 } else { 0 };

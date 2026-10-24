@@ -580,7 +580,7 @@ fn new_game(
     effects.clear();
     music.stop_all_music();
     // CutScene::PreloadResources, for what this stage draws.
-    for ty in [ReanimationType::SodRoll, ReanimationType::LawnMower, ReanimationType::Zombie, ReanimationType::Flag] {
+    for ty in [ReanimationType::SodRoll, ReanimationType::LawnMower, ReanimationType::Zombie, ReanimationType::Flag, ReanimationType::Polevaulter] {
         if let Err(e) = resources.reanim_definition(ty.file(), &mut images) {
             error!("{e}");
         }

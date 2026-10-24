@@ -118,6 +118,10 @@ pub enum ZombiePhase {
     Mowered,
     /// Burned to a crisp (the ones that have lost their head stay standing).
     Burned,
+    /// The pole vaulter running up to the first plant it meets.
+    PolePreVault,
+    /// The pole vaulter in mid-jump, untouchable.
+    PoleInVault,
 }
 
 /// What the board tells its zombies each tick.
@@ -287,6 +291,17 @@ impl Zombie {
                 z.helm_type = HelmType::Pail;
                 z.helm_health = 1100;
             }
+            ZombieType::Polevaulter => {
+                z.body_health = 500;
+                z.anim_ticks_per_frame = 6;
+                z.phase = ZombiePhase::PolePreVault;
+                z.has_object = true;
+                z.variant = false;
+                z.pos_x = WIDE_BOARD_WIDTH + 70.0 + fx.sounds.rng().next_range(10) as f32;
+                z.play_zombie_reanim(fx.effects, "anim_run", LoopType::Loop, 0, 0.0);
+                z.pick_random_speed(fx);
+                z.attack_rect = IRect::new(-29, 0, 70, 115);
+            }
             ZombieType::Flag => {
                 z.has_object = true;
                 z.load_plain_zombie_reanim(fx);
@@ -445,6 +460,8 @@ impl Zombie {
         let rng = fx.sounds.rng();
         if self.zombie_type == ZombieType::Flag {
             self.vel_x = 0.45;
+        } else if self.phase == ZombiePhase::PolePreVault {
+            self.vel_x = rng.range_f32(0.66, 0.68);
         } else {
             self.vel_x = rng.range_f32(0.23, 0.37);
             self.anim_ticks_per_frame = if self.vel_x < 0.3 { 12 } else { 15 };
@@ -529,7 +546,7 @@ impl Zombie {
             self.take_damage(1800, 18, env, fx);
             return;
         }
-        if self.phase != ZombiePhase::Normal {
+        if matches!(self.phase, ZombiePhase::Dying | ZombiePhase::Mowered | ZombiePhase::PoleInVault) {
             self.die_with_loot(fx);
         } else if !self.has_head {
             // Headless zombies stay standing, charred, for a few moments.
@@ -593,7 +610,7 @@ impl Zombie {
     }
 
     pub fn is_dead_or_dying(&self) -> bool {
-        self.dead || self.phase != ZombiePhase::Normal
+        self.dead || matches!(self.phase, ZombiePhase::Dying | ZombiePhase::Burned | ZombiePhase::Mowered)
     }
 
     pub fn is_winner(&self) -> bool {
@@ -633,13 +650,12 @@ impl Zombie {
                 _ => (50, 4),
             }
         };
-        DrawPos {
-            head_x,
-            head_y,
-            body_y: 0.0,
-            image_offset_x: self.pos_x - self.x as f32,
-            image_offset_y: self.pos_y - self.y as f32,
+        let (mut image_offset_x, mut image_offset_y) = (self.pos_x - self.x as f32, self.pos_y - self.y as f32);
+        if self.zombie_type == ZombieType::Polevaulter {
+            image_offset_x -= 6.0;
+            image_offset_y -= 11.0;
         }
+        DrawPos { head_x, head_y, body_y: 0.0, image_offset_x, image_offset_y }
     }
 
     /// `Zombie::GetZombieRect`.
@@ -671,6 +687,9 @@ impl Zombie {
         if self.zombie_rect().x > WIDE_BOARD_WIDTH as i32 {
             return false;
         }
+        if self.phase == ZombiePhase::PoleInVault {
+            return damage_range & damage_range::OFF_GROUND != 0;
+        }
         // Nothing's flying, submerged or underground yet.
         damage_range & damage_range::GROUND != 0
     }
@@ -700,7 +719,7 @@ impl Zombie {
             }
             ZombiePhase::Mowered => self.update_mowered(fx),
             ZombiePhase::Burned => self.update_burn(fx),
-            ZombiePhase::Normal => {
+            ZombiePhase::Normal | ZombiePhase::PolePreVault | ZombiePhase::PoleInVault => {
                 self.update_playing(plants, env, fx);
                 self.animate(plants, fx);
             }
@@ -820,6 +839,9 @@ impl Zombie {
             self.groan_counter = fx.sounds.rng().next_range(1000) as i32 + 500;
         }
 
+        if self.zombie_type == ZombieType::Polevaulter {
+            self.update_zombie_polevaulter(plants, env, fx);
+        }
         self.update_zombie_position(fx.effects, env);
         self.check_if_prey_caught(plants, env, fx);
 
@@ -827,6 +849,43 @@ impl Zombie {
         if !self.is_dead_or_dying() && !self.has_head && fx.sounds.rng().next_range(5) == 0 {
             let damage = if self.body_max_health >= 500 { 3 } else { 1 };
             self.take_damage(damage, damage::HEADLESS, env, fx);
+        }
+    }
+
+    /// `Zombie::UpdateZombiePolevaulter`: runs until a plant's in reach,
+    /// then vaults over it and walks on.
+    fn update_zombie_polevaulter(&mut self, plants: &DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
+        if self.phase == ZombiePhase::PolePreVault && self.has_head {
+            if self.find_plant_target(plants).is_some() {
+                let plant_x = self.find_plant_target(plants).and_then(|id| plants.get(id)).map_or(0, |p| p.x);
+                self.phase = ZombiePhase::PoleInVault;
+                self.attack_rect = IRect::new(-40, 0, 100, 115);
+                self.play_zombie_reanim(fx.effects, "anim_jump", LoopType::PlayOnceAndHold, 20, 24.0);
+                let duration = self
+                    .body
+                    .and_then(|b| fx.effects.get(b))
+                    .map_or(1.0, |b| b.frame_count as f32 / b.anim_rate * 100.0);
+                let distance = self.x - plant_x - 80;
+                self.vel_x = distance as f32 / duration;
+                self.has_object = false;
+            }
+        } else if self.phase == ZombiePhase::PoleInVault {
+            let Some(body) = self.body.and_then(|b| fx.effects.get(b)) else { return };
+            let ended = body.loop_count > 0;
+            if body.should_trigger_timed_event(0.2) {
+                fx.sounds.play_sample("SOUND_GRASSSTEP");
+            }
+            if body.should_trigger_timed_event(0.4) {
+                fx.sounds.play_sample("SOUND_POLEVAULT");
+            }
+            // TODO: tall-nuts stop the jump short (FOLEY_BONK).
+            if ended {
+                self.pos_x -= 150.0;
+                self.x = self.pos_x as i32;
+                self.phase = ZombiePhase::Normal;
+                self.attack_rect = IRect::new(50, 0, 20, 115);
+                self.start_walk_anim(0, env, fx);
+            }
         }
     }
 
@@ -848,6 +907,7 @@ impl Zombie {
             return;
         }
         let speed = match self.body.and_then(|b| effects.get(b)) {
+            _ if self.phase == ZombiePhase::PoleInVault => self.vel_x,
             Some(body) if body.definition.find_track("_ground").is_some() => body.track_velocity("_ground"),
             _ if self.chilled_counter > 0 => self.vel_x * 0.4,
             _ => self.vel_x,
@@ -858,7 +918,7 @@ impl Zombie {
     /// `Zombie::CheckIfPreyCaught`: every few ticks, bite whatever's in reach.
     fn check_if_prey_caught(&mut self, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
         let ticks_between_eats = if self.chilled_counter > 0 { TICKS_BETWEEN_EATS * 2 } else { TICKS_BETWEEN_EATS };
-        if !self.has_head || self.age % ticks_between_eats != 0 {
+        if !self.has_head || self.age % ticks_between_eats != 0 || self.is_vaulting() {
             return;
         }
         if let Some(id) = self.find_plant_target(plants) {
@@ -906,10 +966,11 @@ impl Zombie {
                 self.anim_counter = frame_length;
             }
             self.frame = self.anim_counter / frame_length;
+            let (left, right) = if self.zombie_type == ZombieType::Polevaulter { (0.38, 0.8) } else { (0.14, 0.68) };
             let bite = self
                 .body
                 .and_then(|b| fx.effects.get(b))
-                .is_some_and(|b| b.should_trigger_timed_event(0.14) || b.should_trigger_timed_event(0.68));
+                .is_some_and(|b| b.should_trigger_timed_event(left) || b.should_trigger_timed_event(right));
             if bite {
                 self.animate_chew_sound(plants, fx);
             }
@@ -1089,14 +1150,23 @@ impl Zombie {
             return;
         }
         self.has_arm = false;
-        self.reanim_show_prefix(fx, "Zombie_outerarm_lower", RENDER_GROUP_HIDDEN);
+        let (lower, upper, upper_image) = if self.zombie_type == ZombieType::Polevaulter {
+            (
+                "Zombie_polevaulter_outerarm_lower",
+                "Zombie_polevaulter_outerarm_upper",
+                "IMAGE_REANIM_ZOMBIE_POLEVAULTER_OUTERARM_UPPER2",
+            )
+        } else {
+            ("Zombie_outerarm_lower", "Zombie_outerarm_upper", "IMAGE_REANIM_ZOMBIE_OUTERARM_UPPER2")
+        };
+        self.reanim_show_prefix(fx, lower, RENDER_GROUP_HIDDEN);
         self.reanim_show_prefix(fx, "Zombie_outerarm_hand", RENDER_GROUP_HIDDEN);
         let pos = self.draw_pos();
         let (mut x, mut y) = (self.pos_x + pos.image_offset_x + 45.0, self.pos_y + pos.image_offset_y + pos.body_y + 78.0);
         if self.body.is_some() {
-            (x, y) = self.track_position(fx.effects, "Zombie_outerarm_lower");
+            (x, y) = self.track_position(fx.effects, lower);
             if let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b)) {
-                body.set_image_override("Zombie_outerarm_upper", Some("IMAGE_REANIM_ZOMBIE_OUTERARM_UPPER2"));
+                body.set_image_override(upper, Some(upper_image));
             }
             if self.zombie_type == ZombieType::Flag
                 && let Some(flag) = self.special_head.and_then(|f| fx.effects.get_mut(f))
@@ -1106,7 +1176,12 @@ impl Zombie {
         }
         if flags & damage::DOESNT_LEAVE_BODY == 0 {
             let rng = fx.sounds.rng();
-            fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieArm, fx.res, fx.images, rng);
+            let particle = fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieArm, fx.res, fx.images, rng);
+            if self.zombie_type == ZombieType::Polevaulter
+                && let Some(system) = particle.and_then(|p| fx.effects.particle_mut(p))
+            {
+                system.override_image(None, Some("IMAGE_REANIM_ZOMBIE_OUTERARM_HAND"));
+            }
         }
         fx.sounds.play_foley(FoleyType::LimbsPop);
     }
@@ -1125,6 +1200,11 @@ impl Zombie {
         }
         if self.zombie_type == ZombieType::Flag {
             self.drop_flag(fx);
+        } else if self.zombie_type == ZombieType::Polevaulter {
+            // DropPole.
+            for prefix in ["Zombie_polevaulter_innerarm", "Zombie_polevaulter_innerhand", "Zombie_polevaulter_pole"] {
+                self.reanim_show_prefix(fx, prefix, RENDER_GROUP_HIDDEN);
+            }
         }
         let pos = self.draw_pos();
         let (mut x, mut y) = (
@@ -1135,7 +1215,12 @@ impl Zombie {
             (x, y) = self.track_position(fx.effects, "anim_head1");
         }
         let rng = fx.sounds.rng();
-        fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieHead, fx.res, fx.images, rng);
+        let particle = fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieHead, fx.res, fx.images, rng);
+        if self.zombie_type == ZombieType::Polevaulter
+            && let Some(system) = particle.and_then(|p| fx.effects.particle_mut(p))
+        {
+            system.override_image(None, Some("IMAGE_ZOMBIEPOLEVAULTERHEAD"));
+        }
         fx.sounds.play_foley(FoleyType::LimbsPop);
     }
 
@@ -1200,7 +1285,9 @@ impl Zombie {
             self.die_no_loot(fx.effects);
             return;
         };
-        let fall_time = if body.is_anim_playing("anim_superlongdeath") {
+        let fall_time = if self.zombie_type == ZombieType::Polevaulter {
+            0.68
+        } else if body.is_anim_playing("anim_superlongdeath") {
             0.788
         } else if body.is_anim_playing("anim_death2") {
             0.71
@@ -1240,7 +1327,14 @@ impl Zombie {
 
     /// `Zombie::CheckForBoardEdge`: the zombie has got into the house.
     pub fn reached_house(&self) -> bool {
-        self.has_head && self.x <= BOARD_EDGE && !self.is_dead_or_dying()
+        let edge = if self.zombie_type == ZombieType::Polevaulter { -150 } else { BOARD_EDGE };
+        self.has_head && self.x <= edge && !self.is_dead_or_dying()
+    }
+
+    /// Running up to a plant, or in mid-jump: plants that bite or explode
+    /// under a zombie can't get it now.
+    pub fn is_vaulting(&self) -> bool {
+        matches!(self.phase, ZombiePhase::PolePreVault | ZombiePhase::PoleInVault)
     }
 
     /// `Zombie::Draw`: the body (with its flag), in the zombie's own
@@ -1261,12 +1355,13 @@ impl Zombie {
 
     /// `Zombie::DrawShadow`.
     pub fn draw_shadow(&self, g: &mut Graphics, night: bool, res: &GameResources) {
-        if self.phase == ZombiePhase::Dying {
+        if matches!(self.phase, ZombiePhase::Dying | ZombiePhase::PoleInVault) {
             return;
         }
         let pos = self.draw_pos();
-        let offset_x = pos.image_offset_x + if self.is_walking_backwards() { 11.0 } else { 23.0 };
-        let offset_y = pos.image_offset_y + pos.body_y;
+        let vaulter = self.zombie_type == ZombieType::Polevaulter;
+        let offset_x = pos.image_offset_x + if vaulter { 36.0 } else { 23.0 };
+        let offset_y = pos.image_offset_y + pos.body_y + if vaulter { 11.0 } else { 0.0 };
         let Some(shadow) = res.image(if night { "IMAGE_PLANTSHADOW2" } else { "IMAGE_PLANTSHADOW" }) else { return };
         g.push_state();
         g.translate(self.x as f32, self.y as f32);

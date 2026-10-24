@@ -116,6 +116,7 @@ impl ZombieType {
     pub fn reanim(self) -> Option<ReanimationType> {
         match self {
             Self::Normal | Self::Flag | Self::TrafficCone | Self::Pail => Some(ReanimationType::Zombie),
+            Self::Polevaulter => Some(ReanimationType::Polevaulter),
             _ => None,
         }
     }
@@ -167,6 +168,14 @@ const PAIL_LEVELS: [bool; 50] = bits(&[
     0, 1, 0, 0, 1, 0, 0, 0, 1, 1,
 ]);
 
+const POLEVAULTER_LEVELS: [bool; 50] = bits(&[
+    0, 0, 0, 0, 0, 1, 1, 0, 1, 1, //
+    0, 0, 0, 1, 1, 0, 0, 0, 0, 0, //
+    0, 0, 0, 1, 0, 0, 0, 0, 1, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
+
 const fn bits(v: &[u8; 50]) -> [bool; 50] {
     let mut out = [false; 50];
     let mut i = 0;
@@ -188,6 +197,7 @@ pub fn can_spawn_on_level(ty: ZombieType, level: i32) -> bool {
     match ty {
         ZombieType::TrafficCone => CONE_LEVELS[i],
         ZombieType::Pail => PAIL_LEVELS[i],
+        ZombieType::Polevaulter => POLEVAULTER_LEVELS[i],
         _ => true,
     }
 }
