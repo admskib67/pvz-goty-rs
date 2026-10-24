@@ -78,6 +78,8 @@ pub enum PlantingReason {
     OnlyOnGraves,
     /// Nothing else can go on a grave.
     NotOnGrave,
+    /// A doom-shroom's crater hasn't filled in yet.
+    NotOnCrater,
 }
 
 impl Board {
@@ -154,6 +156,9 @@ impl Board {
         }
         if has_grave {
             return PlantingReason::NotOnGrave;
+        }
+        if self.crater_at(grid_x, grid_y) {
+            return PlantingReason::NotOnCrater;
         }
         let square = self.grid_square_type[grid_x as usize][grid_y as usize];
         if square == GridSquareType::Dirt {
@@ -474,12 +479,18 @@ impl Board {
                 self.display_advice(res, "[ADVICE_PLANT_NOT_ON_GRAVE]", MessageStyle::HintFast, advice);
                 return;
             }
+            PlantingReason::NotOnCrater => {
+                let advice = Some(AdviceType::PlantNotOnCrater);
+                self.display_advice(res, "[ADVICE_PLANT_NOT_ON_CRATER]", MessageStyle::HintFast, advice);
+                return;
+            }
             PlantingReason::NotHere => return,
         }
         for advice in [
             AdviceType::CantPlantThere,
             AdviceType::PlantNotOnWater,
             AdviceType::PlantNotOnGrave,
+            AdviceType::PlantNotOnCrater,
             AdviceType::PlantNeedPot,
             AdviceType::PlantNotPassedLine,
             AdviceType::PlantGravebustersOnGraves,

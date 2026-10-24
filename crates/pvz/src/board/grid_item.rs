@@ -1,14 +1,15 @@
 //! Things on the lawn's squares besides plants (`GridItem`). So far the
-//! gravestones of the night levels: they rise out of the ground during the
-//! level intro, can't be planted on (except by grave busters), and on the
-//! last wave zombies climb out of them.
+//! gravestones of the night levels (they rise out of the ground during the
+//! level intro, can't be planted on except by grave busters, and on the
+//! last wave zombies climb out of them) and the craters doom-shrooms leave.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Board.cpp` (`Board::Board`'s grid
 //! cels, `GetLevelRandSeed`, `PickBackground`'s graves, `GetGraveStoneAt`,
 //! `CanAddGraveStoneAt`, `AddAGraveStone`, `AddGraveStones`,
 //! `PickSpecialGraveStone`, `UpdateGridItems`,
 //! `PickGraveRisingZombieType`, `SpawnZombiesFromGraves`) and
-//! `Lawn/GridItem.cpp` (`DrawGraveStone`, `AddGraveStoneParticles`).
+//! `Lawn/GridItem.cpp` (`DrawGraveStone`, `AddGraveStoneParticles`,
+//! `DrawCrater`), and `Board::AddACrater` and `GetCraterAt`.
 
 use sexy::data_array::Id;
 use sexy::rand::MtRand;
@@ -27,6 +28,8 @@ use super::{Board, GridSquareType, MAX_GRID_SIZE_X, MAX_GRID_SIZE_Y, make_render
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GridItemType {
     GraveStone,
+    /// A doom-shroom's hole: nothing can be planted there for a while.
+    Crater,
 }
 
 /// `GridItemState`, for what's ported so far.
@@ -116,6 +119,26 @@ impl Board {
             .map(|(id, _)| id)
     }
 
+    /// `Board::AddACrater`: the hole lasts `counter` ticks.
+    pub(super) fn add_a_crater(&mut self, grid_x: i32, grid_y: i32, counter: i32) {
+        self.grid_items.alloc(GridItem {
+            item_type: GridItemType::Crater,
+            state: GridItemState::Normal,
+            grid_x,
+            grid_y,
+            render_order: make_render_order(render_layer::GROUND, grid_y, 1),
+            counter,
+            dead: false,
+        });
+    }
+
+    /// `Board::GetCraterAt`.
+    pub fn crater_at(&self, grid_x: i32, grid_y: i32) -> bool {
+        self.grid_items
+            .iter()
+            .any(|(_, g)| g.item_type == GridItemType::Crater && g.grid_x == grid_x && g.grid_y == grid_y && !g.dead)
+    }
+
     /// `Board::CanAddGraveStoneAt`: plain grass with nothing else on it.
     fn can_add_grave_stone_at(&self, grid_x: i32, grid_y: i32) -> bool {
         self.grid_square_type[grid_x as usize][grid_y as usize] == GridSquareType::Grass
@@ -168,12 +191,20 @@ impl Board {
         }
     }
 
-    /// `Board::UpdateGridItems`: graves rise once the intro lets them.
+    /// `Board::UpdateGridItems`: graves rise once the intro lets them, and
+    /// craters fill in over time.
     pub(super) fn update_grid_items(&mut self) {
         let enabled = self.enable_grave_stones;
+        let playing = self.scene == super::GameScene::Playing;
         for (_, item) in self.grid_items.iter_mut() {
             if enabled && item.item_type == GridItemType::GraveStone && item.counter < 100 {
                 item.counter += 1;
+            }
+            if item.item_type == GridItemType::Crater && playing {
+                item.counter = (item.counter - 1).max(0);
+                if item.counter == 0 {
+                    item.dead = true;
+                }
             }
         }
     }
@@ -245,9 +276,36 @@ impl Board {
         }
     }
 
+    /// `GridItem::DrawGridItem`.
+    pub(super) fn draw_grid_item(&self, item: &GridItem, res: &GameResources, g: &mut Graphics) {
+        match item.item_type {
+            GridItemType::GraveStone => self.draw_grave_stone(item, res, g),
+            GridItemType::Crater => self.draw_crater(item, res, g),
+        }
+    }
+
+    /// `GridItem::DrawCrater`: a scorched hole that fades as it fills in.
+    /// TODO: the pool's and roof's craters.
+    fn draw_crater(&self, item: &GridItem, res: &GameResources, g: &mut Graphics) {
+        let x = self.grid_to_pixel_x(item.grid_x) as f32 - 8.0;
+        let y = self.grid_to_pixel_y(item.grid_x, item.grid_y) as f32 + 40.0;
+        let fading = item.counter < 9000;
+        let night = self.stage_is_night();
+        let id = if fading { "IMAGE_CRATER_FADING" } else { "IMAGE_CRATER" };
+        let Some(image) = res.image(id) else { return };
+        g.push_state();
+        if item.counter < 25 {
+            let alpha = animate_curve(25, 0, item.counter, 255, 0, TodCurve::Linear).clamp(0, 255) as u8;
+            g.set_colorize_images(true);
+            g.set_color(crate::graphics::SexyColor::rgba(255, 255, 255, alpha));
+        }
+        g.draw_image_cel(image, x, y, night as u32, 0);
+        g.pop_state();
+    }
+
     /// `GridItem::DrawGraveStone`: the grave and its mound of dirt, both
     /// rising out of the ground; a grave being eaten sinks from the top.
-    pub(super) fn draw_grave_stone(&self, item: &GridItem, res: &GameResources, g: &mut Graphics) {
+    fn draw_grave_stone(&self, item: &GridItem, res: &GameResources, g: &mut Graphics) {
         if item.counter <= 0 {
             return;
         }

@@ -65,22 +65,31 @@ pub enum UiSet {
 /// Command-line flag that wipes all saved app data before starting.
 const CLEAN_FLAG: &str = "--clean";
 
-/// `--lvl-8` or `--lvl 8`: start adventure on that level, without touching the saved player.
+/// `--lvl-2-1` or `--lvl 2-1`: start adventure on that level (area 2,
+/// level 1), without touching the saved player.
 pub fn level_flag() -> Option<i32> {
     static FLAG: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(parse_level_flag)
+    *FLAG.get_or_init(|| parse_level_flag(&std::env::args().skip(1).collect::<Vec<_>>()))
 }
 
-fn parse_level_flag() -> Option<i32> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+fn parse_level_flag(args: &[String]) -> Option<i32> {
     args.iter().enumerate().find_map(|(i, a)| {
         a.strip_prefix("--lvl-")
             .or_else(|| a.strip_prefix("--lvl="))
             .map(str::to_owned)
             .or_else(|| (a == "--lvl").then(|| args.get(i + 1).cloned()).flatten())
-            .and_then(|v| v.parse::<i32>().ok())
-            .map(|l| l.clamp(1, 50))
+            .and_then(|v| parse_stage(&v))
     })
+}
+
+/// "2-1" → adventure level 11 (`LawnApp::GetStageString` backwards).
+fn parse_stage(stage: &str) -> Option<i32> {
+    let (area, level) = stage.split_once('-')?;
+    let (area, level) = (area.parse::<i32>().ok()?, level.parse::<i32>().ok()?);
+    if !(1..=5).contains(&area) || !(1..=10).contains(&level) {
+        return None;
+    }
+    Some((area - 1) * 10 + level)
 }
 
 fn main() {
@@ -167,5 +176,23 @@ fn boot(game_pak: Res<GamePak>, mut status: ResMut<SetupStatus>, mut next: ResMu
             status.message = format!("Your saved install couldn't be opened. {e}");
             next.set(AppState::Setup);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn level_flag_takes_area_and_level() {
+        assert_eq!(parse_level_flag(&args(&["--lvl-2-1"])), Some(11));
+        assert_eq!(parse_level_flag(&args(&["--lvl", "1-8"])), Some(8));
+        assert_eq!(parse_level_flag(&args(&["--lvl=5-10"])), Some(50));
+        assert_eq!(parse_level_flag(&args(&["--lvl-11"])), None);
+        assert_eq!(parse_level_flag(&args(&["--lvl-6-1"])), None);
     }
 }

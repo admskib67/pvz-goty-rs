@@ -405,6 +405,15 @@ pub enum FoleyType {
     PlantGrow,
     /// A zombie climbing out of a grave.
     GravestoneRumble,
+    /// The newspaper zombie losing its paper, and getting angry about it.
+    NewspaperRip,
+    NewspaperRarrgh,
+    /// The dancing zombie's music.
+    Dancer,
+    /// A fume-shroom's fumes.
+    Fume,
+    /// A zombie biting a hypno-shroom.
+    Floop,
 }
 
 struct FoleyParams {
@@ -502,6 +511,19 @@ impl FoleyType {
             },
             Self::PlantGrow => FoleyParams { pitch_range: -2.0, sounds: &["SOUND_PLANTGROW"], flags: 0 },
             Self::GravestoneRumble => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_GRAVESTONE_RUMBLE"], flags: 0 },
+            Self::Floop => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_FLOOP"], flags: 0 },
+            Self::Fume => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_FUME"], flags: 0 },
+            Self::NewspaperRip => FoleyParams { pitch_range: -2.0, sounds: &["SOUND_NEWSPAPER_RIP"], flags: 0 },
+            Self::NewspaperRarrgh => FoleyParams {
+                pitch_range: -2.0,
+                sounds: &["SOUND_NEWSPAPER_RARRGH", "SOUND_NEWSPAPER_RARRGH2", "SOUND_NEWSPAPER_RARRGH2"],
+                flags: 0,
+            },
+            Self::Dancer => FoleyParams {
+                pitch_range: 0.0,
+                sounds: &["SOUND_DANCER"],
+                flags: foley_flags::ONE_AT_A_TIME | foley_flags::MUTE_ON_PAUSE,
+            },
             Self::Digger => FoleyParams {
                 pitch_range: 0.0,
                 sounds: &["SOUND_DIGGER_ZOMBIE"],

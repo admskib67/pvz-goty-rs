@@ -345,7 +345,7 @@ fn build_selector(
 impl GameSelector {
     /// `GameSelector::SyncProfile`. With no player, everything is locked.
     fn sync_profile(&mut self, player: Option<&PlayerInfo>, effects: &mut EffectSystem) {
-        // `--lvl-N` shows (and starts) that level without touching the player.
+        // `--lvl-2-1` shows (and starts) that level without touching the player.
         self.level = crate::level_flag().or(player.map(|p| p.level)).unwrap_or(1);
         self.show_start_button = true;
         self.minigames_locked = true;

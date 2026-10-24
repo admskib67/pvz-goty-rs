@@ -115,8 +115,12 @@ impl ZombieType {
     /// the types ported so far.
     pub fn reanim(self) -> Option<ReanimationType> {
         match self {
-            Self::Normal | Self::Flag | Self::TrafficCone | Self::Pail => Some(ReanimationType::Zombie),
+            Self::Normal | Self::Flag | Self::TrafficCone | Self::Pail | Self::Door => Some(ReanimationType::Zombie),
             Self::Polevaulter => Some(ReanimationType::Polevaulter),
+            Self::Newspaper => Some(ReanimationType::ZombieNewspaper),
+            Self::Football => Some(ReanimationType::ZombieFootball),
+            Self::Dancer => Some(ReanimationType::Dancer),
+            Self::BackupDancer => Some(ReanimationType::BackupDancer),
             _ => None,
         }
     }
@@ -176,6 +180,36 @@ const POLEVAULTER_LEVELS: [bool; 50] = bits(&[
     0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
 ]);
 
+const NEWSPAPER_LEVELS: [bool; 50] = bits(&[
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    1, 1, 0, 0, 1, 0, 0, 0, 0, 0, //
+    0, 1, 0, 1, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
+const DOOR_LEVELS: [bool; 50] = bits(&[
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 1, 1, 0, 0, 1, 0, 1, 1, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
+const FOOTBALL_LEVELS: [bool; 50] = bits(&[
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 1, 1, 0, 0, 1, //
+    0, 1, 0, 0, 1, 0, 0, 0, 0, 0, //
+    0, 1, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+]);
+/// The dancer's backup dancers come with it, on the same levels.
+const DANCER_LEVELS: [bool; 50] = bits(&[
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 1, 1, 1, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
+
 const fn bits(v: &[u8; 50]) -> [bool; 50] {
     let mut out = [false; 50];
     let mut i = 0;
@@ -198,6 +232,10 @@ pub fn can_spawn_on_level(ty: ZombieType, level: i32) -> bool {
         ZombieType::TrafficCone => CONE_LEVELS[i],
         ZombieType::Pail => PAIL_LEVELS[i],
         ZombieType::Polevaulter => POLEVAULTER_LEVELS[i],
+        ZombieType::Newspaper => NEWSPAPER_LEVELS[i],
+        ZombieType::Door => DOOR_LEVELS[i],
+        ZombieType::Football => FOOTBALL_LEVELS[i],
+        ZombieType::Dancer | ZombieType::BackupDancer => DANCER_LEVELS[i],
         _ => true,
     }
 }
@@ -214,6 +252,17 @@ mod tests {
         assert!(!can_spawn_on_level(ZombieType::Pail, 7));
         assert!(can_spawn_on_level(ZombieType::Pail, 8));
         assert!(!can_spawn_on_level(ZombieType::Flag, 1) || ZombieType::Flag.definition().pick_weight == 0);
+    }
+
+    #[test]
+    fn night_zombies_start_on_their_levels() {
+        assert!(can_spawn_on_level(ZombieType::Newspaper, 11));
+        assert!(!can_spawn_on_level(ZombieType::Door, 12));
+        assert!(can_spawn_on_level(ZombieType::Door, 13));
+        assert!(can_spawn_on_level(ZombieType::Football, 16));
+        assert!(can_spawn_on_level(ZombieType::Dancer, 18));
+        // Backup dancers only come with a dancer, never in a wave of their own.
+        assert!(!can_spawn_on_level(ZombieType::BackupDancer, 18));
     }
 
     #[test]

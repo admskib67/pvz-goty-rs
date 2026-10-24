@@ -32,7 +32,7 @@ impl Board {
 
     /// `Board::AreEnemyZombiesOnScreen`.
     fn are_enemy_zombies_on_screen(&self) -> bool {
-        self.zombies.iter().any(|(_, z)| z.has_head && !z.is_dead_or_dying())
+        self.zombies.iter().any(|(_, z)| z.has_head && !z.is_dead_or_dying() && !z.mind_controlled)
     }
 
     /// Zombies that just died ask whether they were the last one
@@ -44,6 +44,17 @@ impl Board {
         images: &mut Assets<Image>,
         sounds: &mut Sounds,
     ) {
+        // A zombie that's been hypnotized may have been the last one against you.
+        let turned: Vec<_> = self.zombies.iter().filter(|(_, z)| z.award_check).map(|(id, _)| id).collect();
+        for id in turned {
+            let Some(zombie) = self.zombies.get_mut(id) else { continue };
+            zombie.award_check = false;
+            let rect = zombie.zombie_rect();
+            let center = (rect.x + rect.w / 2, rect.y + rect.h / 2);
+            if self.try_spawn_level_award(id, center, effects, res, images, sounds) {
+                return;
+            }
+        }
         let asking: Vec<_> = self.zombies.iter().filter(|(_, z)| z.loot_pending).map(|(id, _)| id).collect();
         for id in asking {
             let Some(zombie) = self.zombies.get_mut(id) else { continue };

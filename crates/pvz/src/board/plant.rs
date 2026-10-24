@@ -1,8 +1,11 @@
 //! Plants on the lawn (`Plant`). So far a plant is planted, idles and
-//! blinks; peashooters, snow peas, repeaters and puff-shrooms shoot at
-//! zombies in their row, sunflowers and sun-shrooms make sun, wall-nuts
-//! crack as they're eaten, cherry bombs explode, potato mines arm and blow
-//! up, and grave busters eat graves. Mushrooms sleep in the day. The other
+//! blinks; peashooters, snow peas, repeaters, puff-shrooms and
+//! scaredy-shrooms (which hide from zombies close by) shoot at zombies in
+//! their row, fume-shrooms hit every zombie in reach, sunflowers and
+//! sun-shrooms make sun, wall-nuts crack as they're eaten, cherry bombs and
+//! doom-shrooms explode, potato mines arm and blow up, ice-shrooms freeze
+//! every zombie, hypno-shrooms turn the zombie that eats them, and grave
+//! busters eat graves. Mushrooms sleep in the day. The other
 //! plants' abilities come as they're needed.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Plant.cpp`: `PlantInitialize`,
@@ -12,7 +15,8 @@
 //! `UpdateShooting`, `FindTargetAndFire`, `FindTargetZombie`, `Fire`,
 //! `UpdateProductionPlant`, `GetPlantRect`, `GetPlantAttackRect`,
 //! `AnimateNuts`, `UpdatePotato`, `DoSpecial`, `PlayBodyReanim`,
-//! `PlayIdleAnim`, `SetSleeping`, `UpdateSunShroom` and `UpdateGraveBuster`.
+//! `PlayIdleAnim`, `SetSleeping`, `UpdateSunShroom`, `UpdateGraveBuster`,
+//! `UpdateScaredyShroom`, `UpdateIceShroom`, `IceZombies` and `DoRowAreaDamage`.
 
 use bevy::prelude::*;
 use sexy::data_array::DataArray;
@@ -28,7 +32,7 @@ use crate::reanim::{EffectSystem, ReanimationId, ReanimationType};
 use crate::resources::GameResources;
 
 use super::projectile::ProjectileType;
-use super::zombie::{IRect, Zombie, damage_range, rect_overlap};
+use super::zombie::{IRect, Zombie, damage, damage_range, rect_overlap};
 use super::{make_render_order, render_layer};
 
 /// Something a plant does that the board carries out (it owns the
@@ -36,7 +40,16 @@ use super::{make_render_order, render_layer};
 #[derive(Debug, Clone, Copy)]
 pub enum PlantAction {
     /// `Plant::Fire`: a projectile leaves the plant at this spot.
-    Shoot { x: i32, y: i32, row: i32, render_order: i32, projectile: ProjectileType },
+    Shoot { x: i32, y: i32, row: i32, render_order: i32, projectile: ProjectileType, short_range: bool },
+    /// `Plant::DoRowAreaDamage`: hurts every zombie in `row` touching `rect`
+    /// (the fume-shroom's fumes).
+    RowAreaDamage { row: i32, rect: IRect, damage: i32, flags: u32 },
+    /// `Plant::IceZombies`: every zombie on the lawn freezes; the frost
+    /// bursts from (x, y).
+    IceShroom { x: i32, y: i32 },
+    /// `Plant::DoSpecial` for the doom-shroom: a huge explosion at (x, y)
+    /// that leaves a crater on its square.
+    DoomShroom { x: i32, y: i32, col: i32, row: i32 },
     /// A sunflower or sun-shroom makes sun at its square; a small sun-shroom's is small.
     MakeSun { x: i32, y: i32, small: bool },
     /// `Plant::DoSpecial` for the cherry bomb: burns zombies near it.
@@ -76,6 +89,11 @@ enum PlantState {
     SunshroomBig,
     GravebusterLanding,
     GravebusterEating,
+    ScaredyshroomLowering,
+    ScaredyshroomScared,
+    ScaredyshroomRaising,
+    /// An instant plant counting down to going off.
+    DoingSpecial,
 }
 
 /// Plants that shoot straight peas.
@@ -276,7 +294,7 @@ impl Plant {
                     }
                 }
             }
-            Chomper => plant.state = PlantState::Ready,
+            Chomper | Scaredyshroom => plant.state = PlantState::Ready,
             Cherrybomb => {
                 plant.do_special_countdown = 100;
                 if let Some(body) = plant.body.and_then(|b| effects.get_mut(b)) {
@@ -470,6 +488,11 @@ impl Plant {
         }
     }
 
+    /// A mushroom asleep in the day (`mIsAsleep`).
+    pub fn is_asleep(&self) -> bool {
+        self.is_asleep
+    }
+
     /// `Plant::PlayBodyReanim`.
     fn play_body_reanim(&self, effects: &mut EffectSystem, track: &str, loop_type: LoopType, blend: i32, rate: f32) {
         if let Some(body) = self.body.and_then(|b| effects.get_mut(b)) {
@@ -593,6 +616,15 @@ impl Plant {
                 actions.push(PlantAction::PotatoMine { x: x - 20, y, row: self.row });
                 self.die(effects);
             }
+            SeedType::Doomshroom => {
+                actions.push(PlantAction::DoomShroom { x, y, col: self.col, row: self.row });
+                self.die(effects);
+            }
+            SeedType::Iceshroom => {
+                actions.push(PlantAction::Foley(FoleyType::Frozen));
+                actions.push(PlantAction::IceShroom { x, y });
+                self.die(effects);
+            }
             _ => {}
         }
     }
@@ -614,6 +646,7 @@ impl Plant {
         match self.seed {
             SeedType::Leftpeater => IRect::new(0, self.y, self.x, PLANT_SIZE),
             SeedType::Puffshroom | SeedType::Seashroom => IRect::new(self.x + 60, self.y, 230, PLANT_SIZE),
+            SeedType::Fumeshroom => IRect::new(self.x + 60, self.y, 340, PLANT_SIZE),
             _ => IRect::new(self.x + 60, self.y, super::BOARD_WIDTH, PLANT_SIZE),
         }
     }
@@ -651,6 +684,26 @@ impl Plant {
         }
         if self.seed == SeedType::Gravebuster {
             self.update_grave_buster(actions, effects);
+        }
+        if self.seed == SeedType::Scaredyshroom {
+            self.update_scaredy_shroom(zombies, effects, rng);
+        }
+        // UpdateIceShroom: it goes off as soon as it's awake.
+        if self.seed == SeedType::Iceshroom && self.state != PlantState::DoingSpecial {
+            self.state = PlantState::DoingSpecial;
+            self.do_special_countdown = 100;
+        }
+        // UpdateDoomShroom: it swells up first.
+        if self.seed == SeedType::Doomshroom && self.state != PlantState::DoingSpecial {
+            self.state = PlantState::DoingSpecial;
+            self.do_special_countdown = 100;
+            if let Some(body) = self.body.and_then(|b| effects.get_mut(b)) {
+                body.set_frames_for_layer("anim_explode");
+                body.anim_rate = 23.0;
+                body.loop_type = LoopType::PlayOnceAndHold;
+                // TODO: its heads shake (SetShakeOverride).
+            }
+            actions.push(PlantAction::Foley(FoleyType::ReverseExplosion));
         }
         if self.seed.definition().sub_class == PlantSubClass::Shooter {
             self.update_shooter(zombies, actions, effects, rng);
@@ -774,6 +827,45 @@ impl Plant {
         }
     }
 
+    /// `Plant::UpdateScaredyShroom`: it ducks while a zombie is close by
+    /// (and doesn't shoot), and comes back up once they've gone.
+    fn update_scaredy_shroom(&mut self, zombies: &DataArray<Zombie>, effects: &mut EffectSystem, rng: &mut MtRand) {
+        if self.shooting_counter > 0 {
+            return;
+        }
+        let nearby = zombies.iter().any(|(_, z)| {
+            (z.row - self.row).abs() <= 1
+                && !z.is_dead_or_dying()
+                && !z.mind_controlled
+                && super::circle_rect_overlap(self.x, self.y + 20, 120, z.zombie_rect())
+        });
+        let loops = self.body.and_then(|b| effects.get(b)).is_some_and(|b| b.loop_count > 0);
+        match self.state {
+            PlantState::Ready if nearby => {
+                self.state = PlantState::ScaredyshroomLowering;
+                self.play_body_reanim(effects, "anim_scared", LoopType::PlayOnceAndHold, 10, 10.0);
+            }
+            PlantState::ScaredyshroomLowering if loops => {
+                self.state = PlantState::ScaredyshroomScared;
+                self.play_body_reanim(effects, "anim_scaredidle", LoopType::Loop, 10, 0.0);
+            }
+            PlantState::ScaredyshroomScared if !nearby => {
+                self.state = PlantState::ScaredyshroomRaising;
+                let rate = rng.range_f32(7.0, 12.0);
+                self.play_body_reanim(effects, "anim_grow", LoopType::PlayOnceAndHold, 10, rate);
+            }
+            PlantState::ScaredyshroomRaising if loops => {
+                self.state = PlantState::Ready;
+                let rate = rng.range_f32(10.0, 15.0);
+                self.play_body_reanim(effects, "anim_idle", LoopType::Loop, 20, rate);
+            }
+            _ => {}
+        }
+        if self.state != PlantState::Ready {
+            self.launch_counter = self.launch_rate;
+        }
+    }
+
     /// `Plant::UpdateGraveBuster`: it lands on the grave, chews it for four
     /// seconds, then the grave and the grave buster are gone.
     fn update_grave_buster(&mut self, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem) {
@@ -824,7 +916,9 @@ impl Plant {
         if self.launch_counter <= 0 {
             self.launch_counter = self.launch_rate - rng.next_range(15) as i32;
             // TODO: the other shooters (threepeater, cactus, split pea, ...).
-            if is_pea_shooter(self.seed) || self.seed == SeedType::Puffshroom {
+            if is_pea_shooter(self.seed)
+                || matches!(self.seed, SeedType::Puffshroom | SeedType::Fumeshroom | SeedType::Scaredyshroom)
+            {
                 self.find_target_and_fire(zombies, actions, effects);
             }
         }
@@ -878,8 +972,12 @@ impl Plant {
         } else if self.body.and_then(|b| effects.get(b)).is_some_and(|b| b.definition.find_track("anim_shooting").is_some()) {
             // Mushrooms shoot with their whole body.
             self.play_body_reanim(effects, "anim_shooting", LoopType::PlayOnceAndHold, 20, 35.0);
-            // TODO: the other body shooters' timings (fume-shroom 50, scaredy-shroom 25, ...).
-            self.shooting_counter = 29;
+            // TODO: the other body shooters' timings (cabbage-pult 32, melon-pult 36, ...).
+            self.shooting_counter = match self.seed {
+                SeedType::Fumeshroom => 50,
+                SeedType::Scaredyshroom => 25,
+                _ => 29,
+            };
         } else {
             self.fire(actions, effects);
         }
@@ -892,6 +990,11 @@ impl Plant {
             return;
         }
         self.shooting_counter -= 1;
+        // The fumes billow out a moment before they hurt.
+        if self.seed == SeedType::Fumeshroom && self.shooting_counter == 15 {
+            let order = make_render_order(render_layer::PARTICLE, self.row, 0);
+            actions.push(PlantAction::Particle { x: self.x + 85, y: self.y + 31, render_order: order, effect: ParticleEffect::Fumecloud });
+        }
         if self.shooting_counter == 1 {
             self.fire(actions, effects);
             return;
@@ -930,13 +1033,21 @@ impl Plant {
         (t.x as i32, t.y as i32)
     }
 
-    /// `Plant::Fire`, for peashooters and puff-shrooms.
+    /// `Plant::Fire`, for peashooters and the mushrooms.
     fn fire(&mut self, actions: &mut Vec<PlantAction>, effects: &EffectSystem) {
-        let (x, y) = if self.seed == SeedType::Puffshroom {
-            (self.x + 40, self.y + 40)
-        } else {
-            let (offset_x, offset_y) = self.pea_head_offset(effects);
-            (self.x + offset_x + 24, self.y + offset_y - 33)
+        if self.seed == SeedType::Fumeshroom {
+            let rect = self.attack_rect();
+            actions.push(PlantAction::RowAreaDamage { row: self.row, rect, damage: 20, flags: damage::HITS_SHIELD_AND_BODY });
+            actions.push(PlantAction::Foley(FoleyType::Fume));
+            return;
+        }
+        let (x, y) = match self.seed {
+            SeedType::Puffshroom => (self.x + 40, self.y + 40),
+            SeedType::Scaredyshroom => (self.x + 29, self.y + 21),
+            _ => {
+                let (offset_x, offset_y) = self.pea_head_offset(effects);
+                (self.x + offset_x + 24, self.y + offset_y - 33)
+            }
         };
         // TODO: shots leave 5 pixels higher from a flower pot.
         let muzzle = make_render_order(render_layer::LAWN_MOWER, self.row, 1);
@@ -947,15 +1058,18 @@ impl Plant {
                 actions.push(PlantAction::Foley(FoleyType::SnowPeaSparkles));
                 ProjectileType::Snowpea
             }
-            SeedType::Puffshroom => {
+            SeedType::Puffshroom | SeedType::Scaredyshroom => {
                 let effect = ParticleEffect::PuffshroomMuzzle;
-                actions.push(PlantAction::Particle { x: x + 18, y: y + 13, render_order: muzzle, effect });
+                let dx = if self.seed == SeedType::Puffshroom { 18 } else { 27 };
+                actions.push(PlantAction::Particle { x: x + dx, y: y + 13, render_order: muzzle, effect });
                 actions.push(PlantAction::Foley(FoleyType::Puff));
                 ProjectileType::Puff
             }
             _ => ProjectileType::Pea,
         };
-        actions.push(PlantAction::Shoot { x, y, row: self.row, render_order: self.render_order - 1, projectile });
+        // Only the puff-shroom's puffs fade out after a short way (`MOTION_PUFF`).
+        let short_range = self.seed == SeedType::Puffshroom;
+        actions.push(PlantAction::Shoot { x, y, row: self.row, render_order: self.render_order - 1, projectile, short_range });
     }
 
     /// `Plant::UpdateReanim`.

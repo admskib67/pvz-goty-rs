@@ -50,6 +50,8 @@ pub struct Projectile {
     y: i32,
     age: i32,
     damage_range_flags: u32,
+    /// A puff-shroom's puff only goes so far (`MOTION_PUFF`).
+    pub short_range: bool,
     /// The trail that follows it (`mAttachmentID`), and its offset.
     trail: Option<(ParticleSystemId, f32, f32)>,
     pub dead: bool,
@@ -73,6 +75,7 @@ impl Projectile {
             y,
             age: 0,
             damage_range_flags: damage_range::GROUND,
+            short_range: false,
             trail: None,
             dead: false,
         }
@@ -139,7 +142,7 @@ impl Projectile {
     /// `Projectile::CheckForCollision`.
     fn check_for_collision(&mut self, zombies: &mut DataArray<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
         // Puffs only go so far.
-        if self.ty == ProjectileType::Puff && self.age >= 75 {
+        if self.short_range && self.age >= 75 {
             self.die(fx);
             return;
         }
@@ -179,7 +182,7 @@ impl Projectile {
                 fx.sounds.play_foley(FoleyType::ShieldHit);
                 splat = false;
             }
-            HelmType::TrafficCone => fx.sounds.play_foley(FoleyType::PlasticHit),
+            HelmType::TrafficCone | HelmType::Football => fx.sounds.play_foley(FoleyType::PlasticHit),
             HelmType::None => {}
         }
         if splat {

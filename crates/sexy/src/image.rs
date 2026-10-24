@@ -33,6 +33,55 @@ impl DecodedImage {
     }
 }
 
+impl DecodedImage {
+    /// Gives fully transparent pixels the colour of the visible pixels next
+    /// to them ("alpha bleeding"), a few pixels deep. The original draws
+    /// without filtering, but we sample with linear filtering, which blends
+    /// in the colour of transparent pixels at an image's edges; with a mask
+    /// over a JPEG that's often white, leaving a white fringe. Only invisible
+    /// pixels change, so the image looks the same unfiltered.
+    pub fn bleed_alpha(&mut self) {
+        const PASSES: usize = 4;
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut filled: Vec<bool> = self.rgba.as_chunks::<4>().0.iter().map(|p| p[3] != 0).collect();
+        if filled.iter().all(|&f| f) || !filled.iter().any(|&f| f) {
+            return;
+        }
+        for _ in 0..PASSES {
+            let mut newly = Vec::new();
+            for y in 0..h {
+                for x in 0..w {
+                    if filled[y * w + x] {
+                        continue;
+                    }
+                    let (mut sum, mut count) = ([0u32; 3], 0u32);
+                    for ny in y.saturating_sub(1)..(y + 2).min(h) {
+                        for nx in x.saturating_sub(1)..(x + 2).min(w) {
+                            let i = ny * w + nx;
+                            if filled[i] {
+                                for (total, &c) in sum.iter_mut().zip(&self.rgba[i * 4..i * 4 + 3]) {
+                                    *total += c as u32;
+                                }
+                                count += 1;
+                            }
+                        }
+                    }
+                    if count > 0 {
+                        newly.push((y * w + x, sum.map(|c| (c / count) as u8)));
+                    }
+                }
+            }
+            if newly.is_empty() {
+                break;
+            }
+            for (i, rgb) in newly {
+                self.rgba[i * 4..i * 4 + 3].copy_from_slice(&rgb);
+                filled[i] = true;
+            }
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ImageError {
     #[error("image {0:?} not found")]
@@ -183,6 +232,14 @@ mod tests {
         // No tga or jpg present, so png wins over the (invalid) gif.
         assert_eq!(load_image(&pak, "a", false, 0xFF_FFFF).unwrap().rgba, [1, 1, 1, 255]);
         assert!(load_image(&pak, "missing", true, 0xFF_FFFF).is_none());
+    }
+
+    #[test]
+    fn bleed_alpha_colours_invisible_edges_only() {
+        // A visible red pixel beside two invisible white ones.
+        let mut img = DecodedImage { width: 3, height: 1, rgba: vec![200, 0, 0, 255, 255, 255, 255, 0, 255, 255, 255, 0] };
+        img.bleed_alpha();
+        assert_eq!(img.rgba, [200, 0, 0, 255, 200, 0, 0, 0, 200, 0, 0, 0]);
     }
 
     #[test]

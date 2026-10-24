@@ -1,8 +1,9 @@
-//! Zombies on the lawn (`Zombie`). So far the plain family: the normal,
-//! flag, conehead and buckethead zombies. They walk in from the right, eat
-//! plants that are in their way, lose their helmet, arm and head as they're
-//! hurt, and fall over when they die. On the last wave of a night level
-//! some climb out of the graves.
+//! Zombies on the lawn (`Zombie`). So far the plain family (normal, flag,
+//! conehead, buckethead), the pole vaulter, and the night's newspaper,
+//! screen door, football and dancing zombies with their backup dancers.
+//! They walk in from the right, eat plants that are in their way, lose
+//! their shield, helmet, arm and head as they're hurt, and fall over when
+//! they die. On the last wave of a night level some climb out of the graves.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Zombie.cpp`: `ZombieInitialize`,
 //! `LoadReanim`, `LoadPlainZombieReanim`, `SetupReanimLayers`,
@@ -14,21 +15,28 @@
 //! `DropHead`/`DropArm`/`DropHelm`/`DropFlag`, `PlayDeathAnim`,
 //! `UpdateDeath`, `DieNoLoot`, `EffectedByDamage`, `DrawShadow`,
 //! `RiseFromGrave`, `UpdateZombieRiseFromGrave`, `DrawReanim`'s clipping
-//! and `HasShadow`.
+//! and `HasShadow`; the shields (`AttachShield`, `DetachShield`,
+//! `TakeShieldDamage`, `DropShield`, `ShowDoorArms`), `UpdateZombieNewspaper`,
+//! the dancers (`UpdateZombieDancer`, `UpdateZombieBackupDancer`,
+//! `SummonBackupDancer(s)`, `NeedsMoreBackupDancers`, `GetDancerFrame`,
+//! `GetDancerPhase`, `ZombieNotWalking`, `IsMovingAtChilledSpeed`,
+//! `DrawDancerReanim`) and `SetupReanimForLostArm`.
 //!
 //! Not yet: the other zombie types, the chilled/frozen/buttered/yucky
 //! states, pools and ladders, and mind control.
 
 use bevy::prelude::*;
-use sexy::data_array::DataArray;
+use sexy::data_array::{DataArray, Id};
 use sexy::reanim::{LoopType, RENDER_GROUP_HIDDEN, RENDER_GROUP_NORMAL};
-use sexy::tod::{TodCurve, animate_curve};
+use sexy::tod::{TodCurve, animate_curve, animate_curve_float};
 
 use crate::audio::{FoleyType, Sounds};
-use crate::graphics::Graphics;
+use crate::graphics::{Graphics, SexyColor};
 use crate::particle::ParticleEffect;
-use crate::reanim::{EffectSystem, ParticleSystemId, ReanimationId, ReanimationType};
-use crate::resources::GameResources;
+use crate::reanim::{
+    EffectSystem, ParticleSystemId, ReanimationId, ReanimationType, draw_render_group, draw_render_group_colored,
+};
+use crate::resources::{GameResources, ImageRes};
 use crate::zombie::ZombieType;
 
 use super::plant::Plant;
@@ -38,7 +46,7 @@ use super::{BackgroundType, make_render_order, render_layer};
 const START_RANDOM_OFFSET: u32 = 40;
 /// `TICKS_BETWEEN_EATS` and `DAMAGE_PER_EAT`.
 const TICKS_BETWEEN_EATS: i32 = 4;
-const DAMAGE_PER_EAT: i32 = 4;
+pub const DAMAGE_PER_EAT: i32 = 4;
 /// `BOARD_EDGE`: zombies whose x gets this far left have reached the house.
 const BOARD_EDGE: i32 = -100;
 const WIDE_BOARD_WIDTH: f32 = 800.0;
@@ -71,6 +79,11 @@ pub mod damage_range {
     pub const DYING: u32 = 1 << 5;
     pub const UNDERGROUND: u32 = 1 << 6;
     pub const ONLY_MINDCONTROLLED: u32 = 1 << 7;
+    /// What cherry bombs and doom-shrooms reach (`127`): everything but
+    /// hypnotized zombies.
+    pub const EXPLOSION: u32 = ONLY_MINDCONTROLLED - 1;
+    /// What a potato mine reaches (`77`).
+    pub const POTATO_MINE: u32 = 77;
 }
 
 /// `Rect` (integer), for hit boxes.
@@ -110,7 +123,25 @@ pub enum HelmType {
     None,
     TrafficCone,
     Pail,
+    Football,
 }
+
+/// `ShieldType`, for what's ported so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShieldType {
+    None,
+    Door,
+    Newspaper,
+}
+
+/// A zombie's body draws its shield (`RENDER_GROUP_SHIELD`) and the hands
+/// holding it (`RENDER_GROUP_OVER_SHIELD`) separately.
+const RENDER_GROUP_SHIELD: i32 = 1;
+const RENDER_GROUP_OVER_SHIELD: i32 = 3;
+/// `NUM_BACKUP_DANCERS`: above, below, behind and in front of the dancer.
+pub const NUM_BACKUP_DANCERS: usize = 4;
+/// `ZOMBIE_BACKUP_DANCER_RISE_HEIGHT`.
+const BACKUP_DANCER_RISE_HEIGHT: i32 = -200;
 
 /// `ZombiePhase`, for what's ported so far.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +158,27 @@ pub enum ZombiePhase {
     PoleInVault,
     /// Climbing out of a grave on the last wave of a night level.
     RisingFromGrave,
+    /// The newspaper zombie reading as it walks.
+    NewspaperReading,
+    /// Its paper's gone: it gasps...
+    NewspaperMaddening,
+    /// ...and storms on, fast.
+    NewspaperMad,
+    /// The dancer moonwalking in.
+    DancerDancingIn,
+    /// Snapping its fingers to call up backup dancers.
+    DancerSnappingFingers,
+    DancerSnappingFingersWithLight,
+    DancerSnappingFingersHold,
+    /// The dance steps every dancer takes in time (`GetDancerPhase`).
+    DancerDancingLeft,
+    DancerWalkToRaise,
+    DancerRaiseLeft1,
+    DancerRaiseRight1,
+    DancerRaiseLeft2,
+    DancerRaiseRight2,
+    /// A backup dancer coming up out of the ground.
+    DancerRising,
 }
 
 /// What the board tells its zombies each tick.
@@ -141,6 +193,8 @@ pub struct ZombieEnv {
     pub zombies_on_screen: usize,
     /// `IsWallnutBowlingLevel`: zombies don't eat, and pole vaulters jump on the spot.
     pub bowling: bool,
+    /// `mMainCounter`: dancers step in time with it (`GetDancerFrame`).
+    pub main_counter: i32,
 }
 
 /// The things a zombie touches besides itself and the plants.
@@ -186,6 +240,8 @@ pub struct Zombie {
     just_got_shot_counter: i32,
     /// Ticks left of being slowed by cold (`mChilledCounter`).
     chilled_counter: i32,
+    /// Ticks left frozen solid by an ice-shroom (`mIceTrapCounter`).
+    ice_trap_counter: i32,
     phase_counter: i32,
     /// How far above the ground it is (`mAltitude`); below it while rising from a grave.
     altitude: f32,
@@ -196,6 +252,45 @@ pub struct Zombie {
     helm_type: HelmType,
     helm_health: i32,
     helm_max_health: i32,
+    shield_type: ShieldType,
+    shield_health: i32,
+    shield_max_health: i32,
+    /// The shield flashes (`mShieldJustGotShotCounter`) and jolts back
+    /// (`mShieldRecoilCounter`) when hit.
+    shield_just_got_shot_counter: i32,
+    shield_recoil_counter: i32,
+    /// A dancer's backup dancers (`mFollowerZombieID`).
+    pub followers: [Option<Id<Zombie>>; NUM_BACKUP_DANCERS],
+    /// A backup dancer's dancer (`mRelatedZombieID`).
+    pub leader: Option<Id<Zombie>>,
+    /// Counts down to the dancer calling up more backup (`mSummonCounter`).
+    summon_counter: i32,
+    /// What the board works out about a dancer's troupe each tick: one of
+    /// them is eating, so none of them move (`ZombieNotWalking`); one is
+    /// chilled, so all move slowly (`IsMovingAtChilledSpeed`); the dancer
+    /// has room for more backup (`NeedsMoreBackupDancers`).
+    pub troupe_stalled: bool,
+    pub troupe_chilled: bool,
+    pub needs_more_backup: bool,
+    /// The dancer snapped its fingers: the board brings up its backup
+    /// dancers (`SummonBackupDancers`).
+    pub summon_requested: bool,
+    /// The "!" over a newspaper zombie that's lost its paper.
+    surprise: Option<ReanimationId>,
+    /// Hypnotized by a hypno-shroom (`mMindControlled`): it turns round,
+    /// walks back and eats the other zombies.
+    pub mind_controlled: bool,
+    /// It was hypnotized this tick: the board unhooks it from its dancer
+    /// troupe and checks whether that was the last zombie.
+    pub just_hypnotized: bool,
+    /// The zombie in front of it on the other side (`FindZombieTarget`),
+    /// worked out by the board before zombies move.
+    pub zombie_target: Option<Id<Zombie>>,
+    /// The zombie it bit this tick (`EatZombie`); the board hurts it.
+    pub bitten_zombie: Option<Id<Zombie>>,
+    /// The board should see whether this zombie leaving the fight ends the
+    /// level (`TrySpawnLevelAward`), without it dropping anything.
+    pub award_check: bool,
     pub body_health: i32,
     body_max_health: i32,
     pub phase: ZombiePhase,
@@ -257,6 +352,7 @@ impl Zombie {
             is_eating: false,
             just_got_shot_counter: 0,
             chilled_counter: 0,
+            ice_trap_counter: 0,
             phase_counter: 0,
             altitude: 0.0,
             has_head: true,
@@ -265,6 +361,24 @@ impl Zombie {
             helm_type: HelmType::None,
             helm_health: 0,
             helm_max_health: 0,
+            shield_type: ShieldType::None,
+            shield_health: 0,
+            shield_max_health: 0,
+            shield_just_got_shot_counter: 0,
+            shield_recoil_counter: 0,
+            followers: [None; NUM_BACKUP_DANCERS],
+            leader: None,
+            summon_counter: 0,
+            troupe_stalled: false,
+            troupe_chilled: false,
+            needs_more_backup: false,
+            summon_requested: false,
+            surprise: None,
+            mind_controlled: false,
+            just_hypnotized: false,
+            zombie_target: None,
+            bitten_zombie: None,
+            award_check: false,
             body_health: 270,
             body_max_health: 270,
             phase: ZombiePhase::Normal,
@@ -334,6 +448,47 @@ impl Zombie {
                 }
                 z.pos_x = WIDE_BOARD_WIDTH;
             }
+            ZombieType::Door => {
+                z.shield_type = ShieldType::Door;
+                z.shield_health = 1100;
+                z.load_plain_zombie_reanim(fx);
+                z.attach_shield(fx);
+            }
+            ZombieType::Football => {
+                z.zombie_rect = IRect::new(50, 0, 57, 115);
+                z.reanim_show_prefix(fx, "anim_hair", RENDER_GROUP_HIDDEN);
+                z.helm_type = HelmType::Football;
+                z.helm_health = 1400;
+                z.anim_ticks_per_frame = 6;
+                z.variant = false;
+            }
+            ZombieType::Newspaper => {
+                z.attack_rect = IRect::new(20, 0, 50, 115);
+                z.phase = ZombiePhase::NewspaperReading;
+                z.shield_type = ShieldType::Newspaper;
+                z.shield_health = 150;
+                z.variant = false;
+                z.attach_shield(fx);
+            }
+            ZombieType::Dancer => {
+                if z.is_on_board() {
+                    z.phase = ZombiePhase::DancerDancingIn;
+                    z.vel_x = 0.5;
+                    z.phase_counter = 300 + fx.sounds.rng().next_range(12) as i32;
+                    z.play_zombie_reanim(fx.effects, "anim_moonwalk", LoopType::Loop, 0, 24.0);
+                } else {
+                    z.play_zombie_reanim(fx.effects, "anim_moonwalk", LoopType::Loop, 0, 12.0);
+                }
+                z.body_health = 500;
+                z.variant = false;
+            }
+            ZombieType::BackupDancer => {
+                if !z.is_on_board() {
+                    z.play_zombie_reanim(fx.effects, "anim_armraise", LoopType::Loop, 0, 12.0);
+                }
+                z.phase = ZombiePhase::DancerDancingLeft;
+                z.variant = false;
+            }
             _ => {}
         }
 
@@ -343,6 +498,7 @@ impl Zombie {
         }
         z.body_max_health = z.body_health;
         z.helm_max_health = z.helm_health;
+        z.shield_max_health = z.shield_health;
         z.x = z.pos_x as i32;
         z.y = z.pos_y as i32;
         z.render_order = make_render_order(render_layer::ZOMBIE, row, 4);
@@ -450,8 +606,48 @@ impl Zombie {
                 self.reanim_show_track(fx, "Zombie_flaghand", RENDER_GROUP_NORMAL);
                 self.reanim_show_track(fx, "Zombie_innerarm_screendoor", RENDER_GROUP_NORMAL);
             }
+            ZombieType::Door => self.setup_door_arms(fx, true),
             _ => {}
         }
+    }
+
+    /// `Zombie::ShowDoorArms`: the arms holding the door, or the plain ones
+    /// while eating or once the door's gone.
+    fn show_door_arms(&self, fx: &mut Fx, show: bool) {
+        self.setup_door_arms(fx, show);
+        if !self.has_arm {
+            self.reanim_show_prefix(fx, "Zombie_outerarm_lower", RENDER_GROUP_HIDDEN);
+            self.reanim_show_prefix(fx, "Zombie_outerarm_hand", RENDER_GROUP_HIDDEN);
+        }
+    }
+
+    /// `Zombie::AttachShield`: the shield and the hands in front of it draw
+    /// apart from the body.
+    fn attach_shield(&self, fx: &mut Fx) {
+        let track = match self.shield_type {
+            ShieldType::Door => {
+                self.show_door_arms(fx, true);
+                self.reanim_show_prefix(fx, "Zombie_outerarm_screendoor", RENDER_GROUP_OVER_SHIELD);
+                "anim_screendoor"
+            }
+            ShieldType::Newspaper => {
+                self.reanim_show_prefix(fx, "Zombie_paper_hands", RENDER_GROUP_OVER_SHIELD);
+                "Zombie_paper_paper"
+            }
+            ShieldType::None => return,
+        };
+        self.reanim_show_track(fx, track, RENDER_GROUP_SHIELD);
+    }
+
+    /// `Zombie::DetachShield`.
+    fn detach_shield(&mut self, fx: &mut Fx) {
+        match self.shield_type {
+            ShieldType::Door => self.show_door_arms(fx, false),
+            ShieldType::Newspaper => self.reanim_show_prefix(fx, "Zombie_paper_hands", RENDER_GROUP_NORMAL),
+            ShieldType::None => {}
+        }
+        self.shield_type = ShieldType::None;
+        self.shield_health = 0;
     }
 
     /// `Zombie::SetupDoorArms`: the screen door zombie holds its door with
@@ -481,10 +677,12 @@ impl Zombie {
     /// `Zombie::PickRandomSpeed`, for the plain zombies.
     fn pick_random_speed(&mut self, fx: &mut Fx) {
         let rng = fx.sounds.rng();
-        if self.zombie_type == ZombieType::Flag {
+        if matches!(self.zombie_type, ZombieType::Flag | ZombieType::Dancer | ZombieType::BackupDancer) {
             self.vel_x = 0.45;
-        } else if self.phase == ZombiePhase::PolePreVault {
+        } else if self.phase == ZombiePhase::PolePreVault || self.zombie_type == ZombieType::Football {
             self.vel_x = rng.range_f32(0.66, 0.68);
+        } else if self.phase == ZombiePhase::NewspaperMad {
+            self.vel_x = rng.range_f32(0.89, 0.91);
         } else {
             self.vel_x = rng.range_f32(0.23, 0.37);
             self.anim_ticks_per_frame = if self.vel_x < 0.3 { 12 } else { 15 };
@@ -508,6 +706,10 @@ impl Zombie {
         let has_walk2 = body.definition.find_track("anim_walk2").is_some();
         let has_walk = body.definition.find_track("anim_walk").is_some();
         self.pick_random_speed(fx);
+        if self.phase == ZombiePhase::NewspaperMad {
+            self.play_zombie_reanim(fx.effects, "anim_walk_nopaper", LoopType::Loop, blend, 0.0);
+            return;
+        }
         // TODO: the dance mode's "anim_dance".
         let mut variant = fx.sounds.rng().next_range(2);
         if self.zombie_type == ZombieType::Flag {
@@ -521,12 +723,19 @@ impl Zombie {
     }
 
     /// `Zombie::StartEating`.
-    fn start_eating(&mut self, effects: &mut EffectSystem) {
+    fn start_eating(&mut self, fx: &mut Fx) {
         if self.is_eating {
             return;
         }
         self.is_eating = true;
-        self.play_zombie_reanim(effects, "anim_eat", LoopType::Loop, 20, 0.0);
+        if self.phase == ZombiePhase::NewspaperMad {
+            self.play_zombie_reanim(fx.effects, "anim_eat_nopaper", LoopType::Loop, 20, 0.0);
+            return;
+        }
+        self.play_zombie_reanim(fx.effects, "anim_eat", LoopType::Loop, 20, 0.0);
+        if self.shield_type == ShieldType::Door {
+            self.show_door_arms(fx, false);
+        }
     }
 
     /// `Zombie::StopEating`.
@@ -538,25 +747,83 @@ impl Zombie {
         if self.body.is_some() {
             self.start_walk_anim(20, env, fx);
         }
+        if self.shield_type == ShieldType::Door {
+            self.show_door_arms(fx, true);
+        }
         self.update_anim_speed(fx.effects);
     }
 
+    /// `Zombie::IsMovingAtChilledSpeed`: a dancer's troupe slows down together.
+    fn is_moving_at_chilled_speed(&self) -> bool {
+        self.chilled_counter > 0 || self.troupe_chilled
+    }
+
+    /// `Zombie::ZombieNotWalking`.
+    fn zombie_not_walking(&self) -> bool {
+        use ZombiePhase::*;
+        self.is_eating
+            || self.is_immobilized()
+            || self.troupe_stalled
+            || matches!(
+                self.phase,
+                NewspaperMaddening
+                    | DancerSnappingFingers
+                    | DancerSnappingFingersWithLight
+                    | DancerSnappingFingersHold
+                    | DancerRising
+                    | DancerWalkToRaise
+                    | DancerRaiseLeft1
+                    | DancerRaiseRight1
+                    | DancerRaiseLeft2
+                    | DancerRaiseRight2
+            )
+    }
+
     fn apply_anim_rate(&self, effects: &mut EffectSystem, rate: f32) {
-        let rate = if self.chilled_counter > 0 { rate * 0.5 } else { rate };
+        let rate = if self.is_moving_at_chilled_speed() { rate * 0.5 } else { rate };
         if let Some(body) = self.body.and_then(|b| effects.get_mut(b)) {
             body.anim_rate = rate;
         }
     }
 
-    /// `Zombie::ApplyChill`: frozen zombies move and bite at half speed.
-    fn apply_chill(&mut self, fx: &mut Fx) {
-        if self.is_dead_or_dying() {
+    /// `Zombie::CanBeChilled`.
+    fn can_be_chilled(&self) -> bool {
+        !self.is_dead_or_dying() && !matches!(self.phase, ZombiePhase::RisingFromGrave | ZombiePhase::DancerRising)
+    }
+
+    /// `Zombie::IsImmobilizied`: frozen solid (or, later, buttered).
+    pub fn is_immobilized(&self) -> bool {
+        self.ice_trap_counter > 0
+    }
+
+    /// `Zombie::ApplyChill`: frozen zombies move and bite at half speed;
+    /// an ice-shroom's cold lasts twice as long.
+    fn apply_chill(&mut self, ice_trap: bool, fx: &mut Fx) {
+        if !self.can_be_chilled() {
             return;
         }
         if self.chilled_counter == 0 {
             fx.sounds.play_foley(FoleyType::Frozen);
         }
-        self.chilled_counter = self.chilled_counter.max(1000);
+        self.chilled_counter = self.chilled_counter.max(if ice_trap { 2000 } else { 1000 });
+        self.update_anim_speed(fx.effects);
+    }
+
+    /// `Zombie::HitIceTrap`: an ice-shroom freezes the zombie in place for
+    /// a few seconds (less if it was already cold), then leaves it chilled.
+    pub fn hit_ice_trap(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        if !self.is_on_board() {
+            return;
+        }
+        let cold = self.chilled_counter > 0 || self.ice_trap_counter != 0;
+        self.apply_chill(true, fx);
+        // CanBeFrozen.
+        if !self.can_be_chilled() || self.phase == ZombiePhase::PoleInVault {
+            return;
+        }
+        let rng = fx.sounds.rng();
+        self.ice_trap_counter = if cold { rng.range_int(300, 400) } else { rng.range_int(400, 600) };
+        self.take_damage(20, damage::BYPASSES_SHIELD, env, fx);
         self.update_anim_speed(fx.effects);
     }
 
@@ -605,10 +872,14 @@ impl Zombie {
             return;
         }
         let Some(body) = self.body.and_then(|b| effects.get(b)) else { return };
-        if self.is_dead_or_dying() {
+        if self.is_immobilized() {
+            self.apply_anim_rate(effects, 0.0);
+        } else if self.is_dead_or_dying() {
             self.apply_anim_rate(effects, self.original_anim_rate);
         } else if self.is_eating {
-            self.apply_anim_rate(effects, 36.0);
+            self.apply_anim_rate(effects, if self.zombie_type == ZombieType::Polevaulter { 20.0 } else { 36.0 });
+        } else if self.zombie_not_walking() {
+            self.apply_anim_rate(effects, self.original_anim_rate);
         } else if let Some(track) = body.definition.find_track("_ground") {
             let frames = &body.definition.tracks[track].transforms;
             let last = (body.frame_start + body.frame_count).saturating_sub(1);
@@ -623,9 +894,14 @@ impl Zombie {
         }
     }
 
+    /// Slowed by cold (`mChilledCounter`).
+    pub fn is_chilled(&self) -> bool {
+        self.chilled_counter > 0
+    }
+
     /// What `TotalZombiesHealthInWave` counts for this zombie.
     pub fn total_health(&self) -> i32 {
-        self.body_health + self.helm_health
+        self.body_health + self.helm_health + self.shield_health
     }
 
     pub fn helm_type(&self) -> HelmType {
@@ -649,8 +925,22 @@ impl Zombie {
     }
 
     /// `Zombie::IsWalkingBackwards`: not for the types so far.
+    /// Hypnotized zombies walk the other way.
     fn is_walking_backwards(&self) -> bool {
-        false
+        self.mind_controlled
+    }
+
+    /// `Zombie::StartMindControlled`, from `AnimateChewSound` biting a
+    /// hypno-shroom: it slowly walks back the way it came.
+    fn start_mind_controlled(&mut self, fx: &mut Fx) {
+        fx.sounds.play_sample("SOUND_MINDCONTROLLED");
+        self.mind_controlled = true;
+        self.just_hypnotized = true;
+        let rng = fx.sounds.rng();
+        fx.effects.add_particle(self.pos_x + 60.0, self.pos_y + 40.0, self.render_order + 1, ParticleEffect::MindControl, fx.res, fx.images, rng);
+        self.vel_x = 0.17;
+        self.anim_ticks_per_frame = 18;
+        self.update_anim_speed(fx.effects);
     }
 
     /// `Zombie::GetDrawPos`.
@@ -674,15 +964,20 @@ impl Zombie {
             }
         };
         let (mut image_offset_x, mut image_offset_y) = (self.pos_x - self.x as f32, self.pos_y - self.y as f32);
-        if self.zombie_type == ZombieType::Polevaulter {
-            image_offset_x -= 6.0;
-            image_offset_y -= 11.0;
+        match self.zombie_type {
+            ZombieType::Polevaulter => {
+                image_offset_x -= 6.0;
+                image_offset_y -= 11.0;
+            }
+            ZombieType::Football => image_offset_y -= 16.0,
+            _ => {}
         }
-        let (mut body_y, mut clip_height) = (0.0, CLIP_HEIGHT_OFF);
-        if self.phase == ZombiePhase::RisingFromGrave {
-            body_y = -self.altitude;
-            clip_height = body_y + (self.phase_counter as f32).min(40.0);
-        }
+        let body_y = -self.altitude;
+        let clip_height = match self.phase {
+            ZombiePhase::RisingFromGrave => body_y + (self.phase_counter as f32).min(40.0),
+            ZombiePhase::DancerRising => body_y,
+            _ => CLIP_HEIGHT_OFF,
+        };
         DrawPos { head_x, head_y, body_y, image_offset_x, image_offset_y, clip_height }
     }
 
@@ -696,7 +991,7 @@ impl Zombie {
     }
 
     /// `Zombie::GetZombieAttackRect`.
-    fn attack_rect(&self) -> IRect {
+    pub(super) fn attack_rect(&self) -> IRect {
         let mut rect = self.attack_rect;
         if self.is_walking_backwards() {
             rect.x = self.width - rect.x - rect.w;
@@ -709,13 +1004,14 @@ impl Zombie {
         if damage_range & damage_range::DYING == 0 && self.is_dead_or_dying() {
             return false;
         }
-        if damage_range & damage_range::ONLY_MINDCONTROLLED != 0 {
+        // Plants only go for the zombies still against them.
+        if (damage_range & damage_range::ONLY_MINDCONTROLLED != 0) != self.mind_controlled {
             return false;
         }
         if self.zombie_rect().x > WIDE_BOARD_WIDTH as i32 {
             return false;
         }
-        if matches!(self.phase, ZombiePhase::PoleInVault | ZombiePhase::RisingFromGrave) {
+        if matches!(self.phase, ZombiePhase::PoleInVault | ZombiePhase::RisingFromGrave | ZombiePhase::DancerRising) {
             return damage_range & damage_range::OFF_GROUND != 0;
         }
         // Nothing's flying, submerged or underground yet.
@@ -743,12 +1039,12 @@ impl Zombie {
         match self.phase {
             ZombiePhase::Dying => {
                 self.update_death(fx);
-                self.update_zombie_walking(fx.effects);
+                self.update_zombie_walking(fx);
             }
             ZombiePhase::Mowered => self.update_mowered(fx),
             ZombiePhase::Burned => self.update_burn(fx),
-            ZombiePhase::Normal | ZombiePhase::PolePreVault | ZombiePhase::PoleInVault | ZombiePhase::RisingFromGrave => {
-                if self.phase_counter > 0 {
+            _ => {
+                if self.phase_counter > 0 && !self.is_immobilized() {
                     self.phase_counter -= 1;
                 }
                 self.update_playing(plants, env, fx);
@@ -756,6 +1052,8 @@ impl Zombie {
             }
         }
         self.just_got_shot_counter -= 1;
+        self.shield_just_got_shot_counter = (self.shield_just_got_shot_counter - 1).max(0);
+        self.shield_recoil_counter = (self.shield_recoil_counter - 1).max(0);
         if self.zombie_fade > 0 {
             self.zombie_fade -= 1;
             if self.zombie_fade == 0 {
@@ -770,6 +1068,9 @@ impl Zombie {
                 system.system_move(self.pos_x + dx, self.pos_y + dy);
             }
         }
+        if let Some(surprise) = self.surprise.and_then(|id| fx.effects.get_mut(id)) {
+            surprise.set_position(self.pos_x - 11.0, self.pos_y);
+        }
         self.update_reanim(fx.effects);
     }
 
@@ -778,7 +1079,7 @@ impl Zombie {
     pub fn update_winner(&mut self, show_walking: bool, plants: &mut DataArray<Plant>, fx: &mut Fx) {
         self.age += 1;
         if show_walking {
-            self.update_zombie_walking(fx.effects);
+            self.update_zombie_walking(fx);
         }
         self.animate(plants, fx);
         self.just_got_shot_counter -= 1;
@@ -810,7 +1111,7 @@ impl Zombie {
         if self.dead || self.phase == ZombiePhase::Mowered {
             return;
         }
-        if matches!(self.phase, ZombiePhase::Dying | ZombiePhase::RisingFromGrave) {
+        if matches!(self.phase, ZombiePhase::Dying | ZombiePhase::RisingFromGrave | ZombiePhase::DancerRising) {
             // Falling over or still in the ground: just a puff of smoke.
             if let Ok((_, puff)) = fx.effects.add_reanimation(self.pos_x - 73.0, self.pos_y - 56.0, ReanimationType::Puff, fx.res, fx.images) {
                 puff.render_order = self.render_order + 2;
@@ -855,6 +1156,14 @@ impl Zombie {
 
     /// `Zombie::UpdatePlaying`.
     fn update_playing(&mut self, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
+        if self.ice_trap_counter > 0 {
+            self.ice_trap_counter -= 1;
+            if self.ice_trap_counter == 0 {
+                // RemoveIceTrap.
+                self.update_anim_speed(fx.effects);
+                self.add_attached_particle(75.0, 106.0, ParticleEffect::IceTrapRelease, fx);
+            }
+        }
         if self.chilled_counter > 0 {
             self.chilled_counter -= 1;
             if self.chilled_counter == 0 {
@@ -874,11 +1183,18 @@ impl Zombie {
             return;
         }
 
-        if self.zombie_type == ZombieType::Polevaulter {
-            self.update_zombie_polevaulter(plants, env, fx);
+        if !self.is_immobilized() {
+            // UpdateActions.
+            match self.zombie_type {
+                ZombieType::Polevaulter => self.update_zombie_polevaulter(plants, env, fx),
+                ZombieType::Newspaper => self.update_zombie_newspaper(env, fx),
+                ZombieType::Dancer => self.update_zombie_dancer(env, fx),
+                ZombieType::BackupDancer => self.update_zombie_backup_dancer(env, fx),
+                _ => {}
+            }
+            self.update_zombie_position(fx, env);
+            self.check_if_prey_caught(plants, env, fx);
         }
-        self.update_zombie_position(fx.effects, env);
-        self.check_if_prey_caught(plants, env, fx);
 
         // A zombie that's lost its head dies slowly.
         if !self.is_dead_or_dying() && !self.has_head && fx.sounds.rng().next_range(5) == 0 {
@@ -950,9 +1266,161 @@ impl Zombie {
         }
     }
 
+    /// `Zombie::UpdateZombieNewspaper`: once it's got over losing its paper,
+    /// it storms on.
+    fn update_zombie_newspaper(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        if self.phase != ZombiePhase::NewspaperMaddening {
+            return;
+        }
+        if !self.body.and_then(|b| fx.effects.get(b)).is_some_and(|b| b.loop_count > 0) {
+            return;
+        }
+        self.phase = ZombiePhase::NewspaperMad;
+        if env.zombies_on_screen <= 10 && self.has_head {
+            fx.sounds.play_foley(FoleyType::NewspaperRarrgh);
+        }
+        self.start_walk_anim(20, env, fx);
+        if let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b)) {
+            body.set_image_override("anim_head1", Some("IMAGE_REANIM_ZOMBIE_PAPER_MADHEAD"));
+        }
+    }
+
+    /// `Zombie::GetDancerFrame`: every dancer on the lawn steps in time.
+    /// Counted from the board's clock (the original's fixed version).
+    fn dancer_frame(&self, env: &ZombieEnv) -> i32 {
+        if self.is_immobilized() {
+            return 0;
+        }
+        let (frame_length, frames) = if self.phase == ZombiePhase::DancerDancingIn { (10, 11) } else { (20, 23) };
+        env.main_counter.rem_euclid(frame_length * frames) / frame_length
+    }
+
+    /// `Zombie::GetDancerPhase`.
+    fn dancer_phase(&self, env: &ZombieEnv) -> ZombiePhase {
+        match self.dancer_frame(env) {
+            0..=11 => ZombiePhase::DancerDancingLeft,
+            12 => ZombiePhase::DancerWalkToRaise,
+            13..=15 => ZombiePhase::DancerRaiseRight1,
+            16..=18 => ZombiePhase::DancerRaiseLeft1,
+            19..=21 => ZombiePhase::DancerRaiseRight2,
+            _ => ZombiePhase::DancerRaiseLeft2,
+        }
+    }
+
+    /// The dance steps every dancer follows (part of `UpdateZombieDancer`
+    /// and `UpdateZombieBackupDancer`).
+    fn follow_dance(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        let phase = self.dancer_phase(env);
+        if phase == self.phase {
+            return;
+        }
+        self.phase = phase;
+        match phase {
+            ZombiePhase::DancerDancingLeft => self.play_zombie_reanim(fx.effects, "anim_walk", LoopType::Loop, 10, 0.0),
+            ZombiePhase::DancerWalkToRaise => {
+                self.play_zombie_reanim(fx.effects, "anim_armraise", LoopType::Loop, 10, 18.0);
+                if let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b)) {
+                    body.anim_time = 0.6;
+                }
+            }
+            _ => self.play_zombie_reanim(fx.effects, "anim_armraise", LoopType::Loop, 10, 18.0),
+        }
+    }
+
+    /// `Zombie::UpdateZombieDancer`: moonwalks in, snaps its fingers for
+    /// backup dancers, then dances on with them, calling up more as they fall.
+    fn update_zombie_dancer(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        if self.is_eating {
+            return;
+        }
+        if self.summon_counter > 0 {
+            self.summon_counter -= 1;
+            if self.summon_counter == 0 {
+                if self.dancer_frame(env) == 12 && self.has_head && self.pos_x < 700.0 {
+                    self.phase = ZombiePhase::DancerSnappingFingersWithLight;
+                    self.play_zombie_reanim(fx.effects, "anim_point", LoopType::PlayOnceAndHold, 20, 24.0);
+                } else {
+                    self.summon_counter = 1;
+                }
+            }
+        }
+        match self.phase {
+            ZombiePhase::DancerDancingIn => {
+                if self.has_head && self.phase_counter == 0 {
+                    self.phase = ZombiePhase::DancerSnappingFingers;
+                    self.play_zombie_reanim(fx.effects, "anim_point", LoopType::PlayOnceAndHold, 20, 24.0);
+                    self.pick_random_speed(fx);
+                }
+            }
+            ZombiePhase::DancerSnappingFingers | ZombiePhase::DancerSnappingFingersWithLight => {
+                if self.body.and_then(|b| fx.effects.get(b)).is_some_and(|b| b.loop_count > 0) {
+                    if self.phase == ZombiePhase::DancerSnappingFingers && env.zombies_on_screen <= 15 {
+                        fx.sounds.play_foley(FoleyType::Dancer);
+                    }
+                    if self.has_head {
+                        self.summon_requested = true;
+                    }
+                    self.phase = ZombiePhase::DancerSnappingFingersHold;
+                    self.phase_counter = 200;
+                }
+            }
+            _ => {
+                if self.phase == ZombiePhase::DancerSnappingFingersHold {
+                    if self.phase_counter != 0 {
+                        return;
+                    }
+                    self.phase = ZombiePhase::DancerDancingLeft;
+                    self.play_zombie_reanim(fx.effects, "anim_walk", LoopType::Loop, 20, 0.0);
+                }
+                self.follow_dance(env, fx);
+                if self.has_head && self.summon_counter == 0 && self.needs_more_backup {
+                    self.summon_counter = 100;
+                }
+            }
+        }
+    }
+
+    /// `Zombie::UpdateZombieBackupDancer`: rises out of the ground, then
+    /// dances in step.
+    fn update_zombie_backup_dancer(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        if self.is_eating {
+            return;
+        }
+        if self.phase == ZombiePhase::DancerRising {
+            self.altitude = animate_curve(150, 0, self.phase_counter, BACKUP_DANCER_RISE_HEIGHT, 0, TodCurve::Linear) as f32;
+            if self.phase_counter != 0 {
+                return;
+            }
+        }
+        self.follow_dance(env, fx);
+    }
+
+    /// `Zombie::SummonBackupDancer`, for the zombie just made to be one:
+    /// it comes up out of the ground at `x` in `row`.
+    pub fn rise_as_backup_dancer(&mut self, row: i32, x: f32, leader: Id<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
+        self.pos_x = x;
+        self.row = row;
+        self.pos_y = self.pos_y_based_on_row(row, env);
+        self.render_order = make_render_order(render_layer::ZOMBIE, row, 4);
+        self.x = self.pos_x as i32;
+        self.y = self.pos_y as i32;
+        self.altitude = BACKUP_DANCER_RISE_HEIGHT as f32;
+        self.phase = ZombiePhase::DancerRising;
+        self.phase_counter = 150;
+        self.leader = Some(leader);
+        // SetAnimRate(0): it stands still while it rises.
+        self.original_anim_rate = 0.0;
+        self.apply_anim_rate(fx.effects, 0.0);
+        let order = make_render_order(render_layer::PARTICLE, row, 0);
+        let rng = fx.sounds.rng();
+        fx.effects.add_particle(self.pos_x + 60.0, self.pos_y + 110.0, order, ParticleEffect::DancerRise, fx.res, fx.images, rng);
+        fx.sounds.play_foley(FoleyType::GravestoneRumble);
+        self.update_reanim(fx.effects);
+    }
+
     /// `Zombie::UpdateZombiePosition`.
-    fn update_zombie_position(&mut self, effects: &mut EffectSystem, env: &ZombieEnv) {
-        self.update_zombie_walking(effects);
+    fn update_zombie_position(&mut self, fx: &mut Fx, env: &ZombieEnv) {
+        self.update_zombie_walking(fx);
         let desired = self.pos_y_based_on_row(self.row, env);
         if self.pos_y < desired {
             self.pos_y += (desired - self.pos_y).min(1.0);
@@ -963,27 +1431,63 @@ impl Zombie {
 
     /// `Zombie::UpdateZombieWalking`: the walk animation's `_ground` track
     /// says how far to move each tick.
-    fn update_zombie_walking(&mut self, effects: &EffectSystem) {
-        if self.is_eating {
+    fn update_zombie_walking(&mut self, fx: &mut Fx) {
+        if self.zombie_not_walking() {
             return;
         }
-        let speed = match self.body.and_then(|b| effects.get(b)) {
+        let body = self.body.and_then(|b| fx.effects.get(b));
+        let speed = match body {
             _ if self.phase == ZombiePhase::PoleInVault => self.vel_x,
             Some(body) if body.definition.find_track("_ground").is_some() => body.track_velocity("_ground"),
-            _ if self.chilled_counter > 0 => self.vel_x * 0.4,
+            _ if self.is_moving_at_chilled_speed() => self.vel_x * 0.4,
             _ => self.vel_x,
         };
-        self.pos_x -= speed;
+        // The dancer moonwalks in backwards.
+        if self.is_walking_backwards() || self.phase == ZombiePhase::DancerDancingIn {
+            self.pos_x += speed;
+        } else {
+            self.pos_x -= speed;
+        }
+        // The football zombie's feet kick up dust.
+        if self.zombie_type == ZombieType::Football
+            && !self.is_winner()
+            && let Some(body) = body
+        {
+            let steps = [(0.03, 81.0, 106.0), (0.61, 87.0, 110.0)];
+            let dust: Vec<_> = steps.iter().filter(|(t, _, _)| body.should_trigger_timed_event(*t)).collect();
+            for &&(_, dx, dy) in &dust {
+                let rng = fx.sounds.rng();
+                let (x, y) = (self.x as f32 + dx, self.y as f32 + dy);
+                fx.effects.add_particle(x, y, self.render_order - 1, ParticleEffect::DustFoot, fx.res, fx.images, rng);
+            }
+        }
     }
 
     /// `Zombie::CheckIfPreyCaught`: every few ticks, bite whatever's in reach.
     fn check_if_prey_caught(&mut self, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
         let ticks_between_eats = if self.chilled_counter > 0 { TICKS_BETWEEN_EATS * 2 } else { TICKS_BETWEEN_EATS };
-        if !self.has_head || self.age % ticks_between_eats != 0 || self.is_vaulting() {
+        use ZombiePhase::*;
+        let busy = matches!(
+            self.phase,
+            NewspaperMaddening
+                | RisingFromGrave
+                | DancerRising
+                | DancerSnappingFingers
+                | DancerSnappingFingersWithLight
+                | DancerSnappingFingersHold
+        );
+        if !self.has_head || self.age % ticks_between_eats != 0 || self.is_vaulting() || busy {
             return;
         }
-        // Zombies ignore the rolling nuts on the bowling level (CanTargetPlant).
-        let target = if env.bowling { None } else { self.find_plant_target(plants) };
+        // Zombies on opposite sides eat each other first (EatZombie).
+        if let Some(target) = self.zombie_target {
+            self.start_eating(fx);
+            self.bitten_zombie = Some(target);
+            return;
+        }
+        // Zombies ignore the rolling nuts on the bowling level (CanTargetPlant),
+        // and hypnotized zombies leave plants alone.
+        let target = if env.bowling || self.mind_controlled { None } else { self.find_plant_target(plants) };
         if let Some(id) = target {
             self.eat_plant(plants, id, fx);
         } else if self.is_eating {
@@ -1004,7 +1508,7 @@ impl Zombie {
 
     /// `Zombie::EatPlant`.
     fn eat_plant(&mut self, plants: &mut DataArray<Plant>, id: sexy::data_array::Id<Plant>, fx: &mut Fx) {
-        self.start_eating(fx.effects);
+        self.start_eating(fx);
         if self.chilled_counter > 0 && self.age % 2 == 1 {
             return;
         }
@@ -1029,7 +1533,11 @@ impl Zombie {
                 self.anim_counter = frame_length;
             }
             self.frame = self.anim_counter / frame_length;
-            let (left, right) = if self.zombie_type == ZombieType::Polevaulter { (0.38, 0.8) } else { (0.14, 0.68) };
+            let (left, right) = match self.zombie_type {
+                ZombieType::Polevaulter => (0.38, 0.8),
+                ZombieType::Newspaper => (0.42, 0.42),
+                _ => (0.14, 0.68),
+            };
             let bite = self
                 .body
                 .and_then(|b| fx.effects.get(b))
@@ -1047,8 +1555,18 @@ impl Zombie {
 
     /// `Zombie::AnimateChewSound` and `AnimateChewEffect`: the bite's sound,
     /// the plant flashing, and nuts spitting crumbs.
-    fn animate_chew(&self, plants: &mut DataArray<Plant>, fx: &mut Fx) {
-        let target = self.find_plant_target(plants);
+    fn animate_chew(&mut self, plants: &mut DataArray<Plant>, fx: &mut Fx) {
+        let target = self.find_plant_target(plants).filter(|_| !self.mind_controlled);
+        // A hypno-shroom that's awake turns the zombie that bites it.
+        if let Some(plant) = target.and_then(|id| plants.get_mut(id))
+            && plant.seed == crate::plant::SeedType::Hypnoshroom
+            && !plant.is_asleep()
+        {
+            fx.sounds.play_foley(FoleyType::Floop);
+            plant.die(fx.effects);
+            self.start_mind_controlled(fx);
+            return;
+        }
         let nut = target
             .and_then(|id| plants.get(id))
             .is_some_and(|p| matches!(p.seed, crate::plant::SeedType::Wallnut | crate::plant::SeedType::Tallnut));
@@ -1067,14 +1585,27 @@ impl Zombie {
     fn update_reanim(&self, effects: &mut EffectSystem) {
         let Some(body_id) = self.body else { return };
         let pos = self.draw_pos();
-        let offset_x = pos.image_offset_x + 15.0;
+        // The body faces the way it walks: hypnotized zombies turn round,
+        // and dancers turn to face right for some of their steps.
+        let mut facing_right = self.is_walking_backwards();
+        if matches!(self.zombie_type, ZombieType::Dancer | ZombieType::BackupDancer) {
+            use ZombiePhase::*;
+            facing_right = !self.is_eating && matches!(self.phase, DancerDancingIn | DancerRaiseRight1 | DancerRaiseRight2);
+            facing_right ^= self.mind_controlled;
+        }
+        let mut offset_x = pos.image_offset_x + 15.0;
+        if facing_right {
+            offset_x += 90.0;
+        }
         let offset_y = pos.image_offset_y + pos.body_y - 28.0 + 20.0;
         let fade = if self.zombie_fade >= 0 { (255 * self.zombie_fade / 10).clamp(0, 255) as u8 } else { 255 };
         // DrawReanim's colors: chilled zombies are blue, burned ones black,
         // and a zombie that was just hit flashes white.
         let (tint, mut extra): ([u8; 3], Option<[u8; 3]>) = if self.phase == ZombiePhase::Burned {
             ([0, 0, 0], None)
-        } else if self.chilled_counter > 0 {
+        } else if self.mind_controlled {
+            ([128, 0, 192], Some([128, 0, 192]))
+        } else if self.chilled_counter > 0 || self.ice_trap_counter > 0 {
             ([75, 75, 255], Some([75, 75, 255]))
         } else {
             ([255, 255, 255], None)
@@ -1089,6 +1620,9 @@ impl Zombie {
             body.overlay.m10 = 0.0;
             body.override_scale(1.0, 1.0);
             body.set_position(offset_x, offset_y);
+            if facing_right {
+                body.overlay.m00 = -1.0;
+            }
             body.color_override = [tint[0], tint[1], tint[2], fade];
             body.extra_additive = extra.map(|c| [c[0], c[1], c[2], 255]);
         }
@@ -1111,7 +1645,12 @@ impl Zombie {
             return;
         }
         let mut remaining = damage;
-        // TODO: shields (screen door, newspaper, ladder).
+        if self.shield_type != ShieldType::None && flags & damage::BYPASSES_SHIELD == 0 {
+            remaining = self.take_shield_damage(remaining, flags, env, fx);
+            if flags & damage::HITS_SHIELD_AND_BODY != 0 {
+                remaining = damage;
+            }
+        }
         if remaining > 0 && self.helm_type != HelmType::None {
             remaining = self.take_helm_damage(remaining, flags, fx);
         }
@@ -1128,7 +1667,7 @@ impl Zombie {
                 fx.sounds.play_foley(FoleyType::ShieldHit);
                 self.take_helm_damage(900, 0, fx);
             }
-            HelmType::TrafficCone => {
+            HelmType::TrafficCone | HelmType::Football => {
                 fx.sounds.play_foley(FoleyType::PlasticHit);
                 self.take_helm_damage(900, 0, fx);
             }
@@ -1145,6 +1684,88 @@ impl Zombie {
         } else {
             0
         }
+    }
+
+    /// `Zombie::GetShieldDamageIndex`.
+    fn shield_damage_index(&self) -> i32 {
+        if self.shield_health < self.shield_max_health / 3 {
+            2
+        } else if self.shield_health < self.shield_max_health * 2 / 3 {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// `Zombie::TakeShieldDamage`: returns the damage the shield didn't absorb.
+    fn take_shield_damage(&mut self, damage: i32, flags: u32, env: &ZombieEnv, fx: &mut Fx) -> i32 {
+        if flags & damage::DOESNT_CAUSE_FLASH == 0 {
+            self.shield_just_got_shot_counter = 25;
+            self.just_got_shot_counter = self.just_got_shot_counter.max(0);
+            if flags & damage::HITS_SHIELD_AND_BODY == 0 {
+                self.shield_recoil_counter = 12;
+                if self.shield_type == ShieldType::Door {
+                    fx.sounds.play_foley(FoleyType::ShieldHit);
+                }
+            }
+        }
+        let index_before = self.shield_damage_index();
+        let absorbed = self.shield_health.min(damage);
+        self.shield_health -= absorbed;
+        if self.shield_health == 0 {
+            self.drop_shield(flags, env, fx);
+            return damage - absorbed;
+        }
+        let index_after = self.shield_damage_index();
+        if index_before != index_after && index_after >= 1 {
+            let (track, images) = match self.shield_type {
+                ShieldType::Door => ("anim_screendoor", ["IMAGE_REANIM_ZOMBIE_SCREENDOOR2", "IMAGE_REANIM_ZOMBIE_SCREENDOOR3"]),
+                ShieldType::Newspaper => ("Zombie_paper_paper", ["IMAGE_REANIM_ZOMBIE_PAPER_PAPER2", "IMAGE_REANIM_ZOMBIE_PAPER_PAPER3"]),
+                ShieldType::None => return damage - absorbed,
+            };
+            if let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b)) {
+                body.set_image_override(track, Some(images[index_after as usize - 1]));
+            }
+        }
+        damage - absorbed
+    }
+
+    /// `Zombie::DropShield`: the door falls away; the newspaper zombie
+    /// loses its paper and gets angry.
+    fn drop_shield(&mut self, flags: u32, env: &ZombieEnv, fx: &mut Fx) {
+        let leaves_body = flags & damage::DOESNT_LEAVE_BODY == 0;
+        match self.shield_type {
+            ShieldType::Door => {
+                self.detach_shield(fx);
+                if leaves_body {
+                    let (x, y) = self.track_position(fx.effects, "anim_screendoor");
+                    let rng = fx.sounds.rng();
+                    fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieDoor, fx.res, fx.images, rng);
+                }
+            }
+            ShieldType::Newspaper => {
+                self.stop_eating(env, fx);
+                self.phase = ZombiePhase::NewspaperMaddening;
+                self.play_zombie_reanim(fx.effects, "anim_gasp", LoopType::PlayOnceAndHold, 10, 8.0);
+                self.detach_shield(fx);
+                if leaves_body {
+                    let (x, y) = self.track_position(fx.effects, "Zombie_paper_paper");
+                    let rng = fx.sounds.rng();
+                    fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieNewspaper, fx.res, fx.images, rng);
+                }
+                if leaves_body && flags & damage::BYPASSES_SHIELD == 0 {
+                    fx.sounds.play_foley(FoleyType::NewspaperRip);
+                    // AddAttachedReanim: the "!" follows the zombie.
+                    let (x, y) = (self.pos_x - 11.0, self.pos_y);
+                    if let Ok((id, surprise)) = fx.effects.add_reanimation(x, y, ReanimationType::ZombieSurprise, fx.res, fx.images) {
+                        surprise.render_order = self.render_order + 1;
+                        self.surprise = Some(id);
+                    }
+                }
+            }
+            ShieldType::None => {}
+        }
+        self.shield_type = ShieldType::None;
     }
 
     /// `Zombie::GetBodyDamageIndex`.
@@ -1169,7 +1790,7 @@ impl Zombie {
         let remaining = damage - absorbed;
         self.helm_health -= absorbed;
         if flags & damage::FREEZE != 0 {
-            self.apply_chill(fx);
+            self.apply_chill(false, fx);
         }
         if self.helm_health == 0 {
             self.drop_helm(flags, fx);
@@ -1182,6 +1803,10 @@ impl Zombie {
             let (track, images) = match self.helm_type {
                 HelmType::TrafficCone => ("anim_cone", ["IMAGE_REANIM_ZOMBIE_CONE2", "IMAGE_REANIM_ZOMBIE_CONE3"]),
                 HelmType::Pail => ("anim_bucket", ["IMAGE_REANIM_ZOMBIE_BUCKET2", "IMAGE_REANIM_ZOMBIE_BUCKET3"]),
+                HelmType::Football => (
+                    "zombie_football_helmet",
+                    ["IMAGE_REANIM_ZOMBIE_FOOTBALL_HELMET2", "IMAGE_REANIM_ZOMBIE_FOOTBALL_HELMET3"],
+                ),
                 HelmType::None => return remaining,
             };
             if index_after >= 1 {
@@ -1196,6 +1821,7 @@ impl Zombie {
         let (track, effect) = match self.helm_type {
             HelmType::TrafficCone => ("anim_cone", ParticleEffect::ZombieTrafficCone),
             HelmType::Pail => ("anim_bucket", ParticleEffect::ZombiePail),
+            HelmType::Football => ("zombie_football_helmet", ParticleEffect::ZombieHelmet),
             HelmType::None => return,
         };
         let (x, y) = self.track_position(fx.effects, track);
@@ -1214,7 +1840,7 @@ impl Zombie {
             self.just_got_shot_counter = 25;
         }
         if flags & damage::FREEZE != 0 {
-            self.apply_chill(fx);
+            self.apply_chill(false, fx);
         }
         self.body_health -= damage;
         self.update_damage_states(flags, fx);
@@ -1237,29 +1863,70 @@ impl Zombie {
         }
     }
 
-    /// `Zombie::DropArm`.
+    /// `Zombie::DropArm` + `SetupReanimForLostArm`.
     fn drop_arm(&mut self, flags: u32, fx: &mut Fx) {
-        if !self.has_arm {
+        // Zombies holding a shield (or reading) keep both arms.
+        if !self.has_arm || self.shield_type != ShieldType::None || self.phase == ZombiePhase::NewspaperReading {
             return;
         }
         self.has_arm = false;
-        let (lower, upper, upper_image) = if self.zombie_type == ZombieType::Polevaulter {
-            (
+        // Tracks to hide, the track the arm flies from, the upper arm track
+        // and its bare image, and what flies off.
+        type LostArm<'a> = (&'a [&'a str], &'a str, Option<(&'a str, &'a str)>, Option<&'a str>);
+        let (hide, from, upper, flying): LostArm = match self.zombie_type {
+            ZombieType::Football => (
+                &["Zombie_football_leftarm_lower", "Zombie_football_leftarm_hand"],
+                "Zombie_football_leftarm_hand",
+                Some(("Zombie_football_leftarm_upper", "IMAGE_REANIM_ZOMBIE_FOOTBALL_LEFTARM_UPPER2")),
+                Some("IMAGE_REANIM_ZOMBIE_FOOTBALL_LEFTARM_HAND"),
+            ),
+            ZombieType::Newspaper => (
+                &["Zombie_paper_hands", "Zombie_paper_leftarm_lower"],
+                "Zombie_paper_leftarm_lower",
+                Some(("Zombie_paper_leftarm_upper", "IMAGE_REANIM_ZOMBIE_PAPER_LEFTARM_UPPER2")),
+                Some("IMAGE_REANIM_ZOMBIE_PAPER_LEFTARM_LOWER"),
+            ),
+            ZombieType::Polevaulter => (
+                &["Zombie_polevaulter_outerarm_lower", "Zombie_outerarm_hand"],
                 "Zombie_polevaulter_outerarm_lower",
-                "Zombie_polevaulter_outerarm_upper",
-                "IMAGE_REANIM_ZOMBIE_POLEVAULTER_OUTERARM_UPPER2",
-            )
-        } else {
-            ("Zombie_outerarm_lower", "Zombie_outerarm_upper", "IMAGE_REANIM_ZOMBIE_OUTERARM_UPPER2")
+                Some(("Zombie_polevaulter_outerarm_upper", "IMAGE_REANIM_ZOMBIE_POLEVAULTER_OUTERARM_UPPER2")),
+                Some("IMAGE_REANIM_ZOMBIE_OUTERARM_HAND"),
+            ),
+            ZombieType::Dancer => (
+                &["Zombie_outerarm_lower", "Zombie_outerarm_hand"],
+                "Zombie_outerarm_lower",
+                Some(("Zombie_Jackson_outerarm_upper", "IMAGE_REANIM_ZOMBIE_JACKSON_OUTERARM_UPPER2")),
+                Some("IMAGE_REANIM_ZOMBIE_JACKSON_OUTERARM_HAND"),
+            ),
+            ZombieType::BackupDancer => (
+                &["Zombie_outerarm_lower", "Zombie_outerarm_hand"],
+                "Zombie_outerarm_lower",
+                None,
+                Some("IMAGE_REANIM_ZOMBIE_DANCER_INNERARM_HAND"),
+            ),
+            _ => (
+                &["Zombie_outerarm_lower", "Zombie_outerarm_hand"],
+                "Zombie_outerarm_lower",
+                Some(("Zombie_outerarm_upper", "IMAGE_REANIM_ZOMBIE_OUTERARM_UPPER2")),
+                None,
+            ),
         };
-        self.reanim_show_prefix(fx, lower, RENDER_GROUP_HIDDEN);
-        self.reanim_show_prefix(fx, "Zombie_outerarm_hand", RENDER_GROUP_HIDDEN);
+        // The polevaulter's tracks are hidden one by one, the others by prefix.
+        for track in hide {
+            if self.zombie_type == ZombieType::Polevaulter || self.zombie_type == ZombieType::Newspaper {
+                self.reanim_show_track(fx, track, RENDER_GROUP_HIDDEN);
+            } else {
+                self.reanim_show_prefix(fx, track, RENDER_GROUP_HIDDEN);
+            }
+        }
         let pos = self.draw_pos();
         let (mut x, mut y) = (self.pos_x + pos.image_offset_x + 45.0, self.pos_y + pos.image_offset_y + pos.body_y + 78.0);
         if self.body.is_some() {
-            (x, y) = self.track_position(fx.effects, lower);
-            if let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b)) {
-                body.set_image_override(upper, Some(upper_image));
+            (x, y) = self.track_position(fx.effects, from);
+            if let Some((track, image)) = upper
+                && let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b))
+            {
+                body.set_image_override(track, Some(image));
             }
             if self.zombie_type == ZombieType::Flag
                 && let Some(flag) = self.special_head.and_then(|f| fx.effects.get_mut(f))
@@ -1270,10 +1937,10 @@ impl Zombie {
         if flags & damage::DOESNT_LEAVE_BODY == 0 {
             let rng = fx.sounds.rng();
             let particle = fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieArm, fx.res, fx.images, rng);
-            if self.zombie_type == ZombieType::Polevaulter
+            if let Some(image) = flying
                 && let Some(system) = particle.and_then(|p| fx.effects.particle_mut(p))
             {
-                system.override_image(None, Some("IMAGE_REANIM_ZOMBIE_OUTERARM_HAND"));
+                system.override_image(None, Some(image));
             }
         }
         fx.sounds.play_foley(FoleyType::LimbsPop);
@@ -1307,12 +1974,27 @@ impl Zombie {
         if self.body.is_some() {
             (x, y) = self.track_position(fx.effects, "anim_head1");
         }
+        let (effect, order) = match self.zombie_type {
+            ZombieType::Newspaper => (ParticleEffect::ZombieNewspaperHead, self.render_order + 1),
+            ZombieType::Dancer => (ParticleEffect::ZombieHead, self.render_order - 1),
+            _ => (ParticleEffect::ZombieHead, self.render_order + 1),
+        };
+        let image = match self.zombie_type {
+            ZombieType::Polevaulter => Some("IMAGE_ZOMBIEPOLEVAULTERHEAD"),
+            ZombieType::Football => Some("IMAGE_ZOMBIEFOOTBALLHEAD"),
+            ZombieType::Dancer => Some("IMAGE_ZOMBIEDANCERHEAD"),
+            ZombieType::BackupDancer => {
+                self.reanim_show_prefix(fx, "anim_earing", RENDER_GROUP_HIDDEN);
+                Some("IMAGE_ZOMBIEBACKUPDANCERHEAD")
+            }
+            _ => None,
+        };
         let rng = fx.sounds.rng();
-        let particle = fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieHead, fx.res, fx.images, rng);
-        if self.zombie_type == ZombieType::Polevaulter
+        let particle = fx.effects.add_particle(x, y, order, effect, fx.res, fx.images, rng);
+        if let Some(image) = image
             && let Some(system) = particle.and_then(|p| fx.effects.particle_mut(p))
         {
-            system.override_image(None, Some("IMAGE_ZOMBIEPOLEVAULTERHEAD"));
+            system.override_image(None, Some(image));
         }
         fx.sounds.play_foley(FoleyType::LimbsPop);
     }
@@ -1351,12 +2033,22 @@ impl Zombie {
             self.die_no_loot(fx.effects);
             return;
         }
+        if self.ice_trap_counter > 0 {
+            self.add_attached_particle(75.0, 106.0, ParticleEffect::IceTrapRelease, fx);
+            self.ice_trap_counter = 0;
+        }
+        if let Some(surprise) = self.surprise.take() {
+            fx.effects.kill(surprise);
+        }
         self.stop_eating(env, fx);
+        if self.shield_type != ShieldType::None {
+            self.drop_shield(damage::BYPASSES_SHIELD, env, fx);
+        }
         self.vel_x = 0.0;
         self.phase = ZombiePhase::Dying;
 
         let rng = fx.sounds.rng();
-        let mut rate = rng.range_f32(24.0, 30.0);
+        let mut rate = if self.zombie_type == ZombieType::Football { 24.0 } else { rng.range_f32(24.0, 30.0) };
         let hit = rng.next_range(100);
         let can_super_long = env.finished_adventure || env.level > 5;
         let body = self.body.and_then(|b| fx.effects.get(b));
@@ -1380,6 +2072,12 @@ impl Zombie {
         };
         let fall_time = if self.zombie_type == ZombieType::Polevaulter {
             0.68
+        } else if self.zombie_type == ZombieType::Football {
+            0.52
+        } else if self.zombie_type == ZombieType::Newspaper {
+            0.63
+        } else if matches!(self.zombie_type, ZombieType::Dancer | ZombieType::BackupDancer) {
+            0.83
         } else if body.is_anim_playing("anim_superlongdeath") {
             0.788
         } else if body.is_anim_playing("anim_death2") {
@@ -1397,7 +2095,7 @@ impl Zombie {
 
     /// `Zombie::DieNoLoot`.
     pub fn die_no_loot(&mut self, effects: &mut EffectSystem) {
-        for id in [self.body.take(), self.special_head.take(), self.mowered_reanim.take()].into_iter().flatten() {
+        for id in [self.body.take(), self.special_head.take(), self.mowered_reanim.take(), self.surprise.take()].into_iter().flatten() {
             effects.kill(id);
         }
         for &(id, _, _) in &self.attached {
@@ -1420,8 +2118,31 @@ impl Zombie {
 
     /// `Zombie::CheckForBoardEdge`: the zombie has got into the house.
     pub fn reached_house(&self) -> bool {
-        let edge = if self.zombie_type == ZombieType::Polevaulter { -150 } else { BOARD_EDGE };
-        self.has_head && self.x <= edge && !self.is_dead_or_dying()
+        let edge = match self.zombie_type {
+            ZombieType::Polevaulter => -150,
+            ZombieType::Football => -175,
+            ZombieType::Dancer | ZombieType::BackupDancer => -130,
+            _ => BOARD_EDGE,
+        };
+        self.has_head && self.x <= edge && !self.is_dead_or_dying() && !self.mind_controlled
+    }
+
+    /// `CheckForBoardEdge`: a hypnotized zombie that walks off the right
+    /// of the lawn is gone.
+    pub fn walked_off_lawn(&self) -> bool {
+        self.is_walking_backwards() && self.pos_x > 850.0
+    }
+
+    /// `FindZombieTarget`'s test: whether this zombie is on the other side
+    /// from `other` and close enough to bite it.
+    pub fn can_bite_zombie(&self, other: &Zombie) -> bool {
+        self.mind_controlled != other.mind_controlled
+            && !other.is_dead_or_dying()
+            && other.row == self.row
+            && {
+                let overlap = rect_overlap(self.attack_rect(), other.zombie_rect());
+                overlap >= 20 || (overlap >= 0 && other.is_eating)
+            }
     }
 
     /// Running up to a plant, or in mid-jump: plants that bite or explode
@@ -1445,28 +2166,114 @@ impl Zombie {
             let height = 120.0 - pos.clip_height + 71.0;
             g.clip_rect(pos.image_offset_x - 200.0, pos.image_offset_y + pos.body_y - 78.0, 520.0, height);
         }
+        // DrawIceTrap: the zombie stands in a block of ice.
+        let ice_y = self.draw_pos().body_y + 92.0;
+        if self.ice_trap_counter > 0
+            && let Some(back) = res.image("IMAGE_ICETRAP2")
+        {
+            g.draw_image(back, 46.0, ice_y);
+        }
+        let spotlight = self.dancer_spotlight();
+        if let Some(color) = spotlight
+            && let Some(light) = res.image("IMAGE_SPOTLIGHT2")
+        {
+            draw_spotlight(g, light, -30.0, 60.0, color);
+        }
         if let Some(body) = self.body {
             effects.draw(g, body, res);
         }
+        if let Some(color) = spotlight
+            && let Some(light) = res.image("IMAGE_SPOTLIGHT")
+        {
+            draw_spotlight(g, light, -30.0, -480.0, color);
+        }
+        if let Some(body) = self.body.and_then(|b| effects.get(b))
+            && self.shield_type != ShieldType::None
+        {
+            // DrawReanim: the shield flashes and jolts on its own when hit.
+            let fade = body.color_override[3];
+            let (color, extra) = if self.phase == ZombiePhase::Burned {
+                ([0, 0, 0, fade], None)
+            } else if self.shield_just_got_shot_counter > 0 {
+                let gray = (self.shield_just_got_shot_counter * 10).clamp(0, 255) as u8;
+                ([gray, gray, gray, fade], Some([255, 255, 255, 255]))
+            } else {
+                ([255, 255, 255, fade], None)
+            };
+            let recoil = if self.shield_recoil_counter > 0 {
+                animate_curve_float(12, 0, self.shield_recoil_counter, 3.0, 0.0, TodCurve::Linear)
+            } else {
+                0.0
+            };
+            g.translate(recoil, 0.0);
+            draw_render_group_colored(g, body, RENDER_GROUP_SHIELD, res, color, extra);
+            g.translate(-recoil, 0.0);
+            draw_render_group(g, body, RENDER_GROUP_OVER_SHIELD, res);
+        }
+        if self.ice_trap_counter > 0
+            && let Some(front) = res.image("IMAGE_ICETRAP")
+        {
+            g.draw_image(front, 46.0, ice_y);
+        }
         g.pop_state();
+    }
+
+    /// `DrawDancerReanim`'s spotlight: dancers dance under a colored light
+    /// that changes every so often.
+    fn dancer_spotlight(&self) -> Option<SexyColor> {
+        use ZombiePhase::*;
+        if self.zombie_type != ZombieType::Dancer
+            || matches!(self.phase, DancerDancingIn | DancerSnappingFingers | Normal | Dying)
+            || self.is_winner()
+        {
+            return None;
+        }
+        let pick = if self.age >= 700 { self.age / 100 * 7 % 5 } else { 0 };
+        Some(match pick {
+            0 => SexyColor::rgba(250, 250, 160, 255),
+            1 => SexyColor::rgba(114, 234, 170, 255),
+            2 => SexyColor::rgba(216, 126, 202, 255),
+            3 => SexyColor::rgba(90, 110, 140, 255),
+            _ => SexyColor::rgba(240, 90, 130, 255),
+        })
     }
 
     /// `Zombie::DrawShadow`.
     pub fn draw_shadow(&self, g: &mut Graphics, night: bool, res: &GameResources) {
         // `Zombie::HasShadow`.
-        if matches!(self.phase, ZombiePhase::Dying | ZombiePhase::PoleInVault | ZombiePhase::RisingFromGrave) {
+        if matches!(
+            self.phase,
+            ZombiePhase::Dying | ZombiePhase::PoleInVault | ZombiePhase::RisingFromGrave | ZombiePhase::DancerRising
+        ) {
             return;
         }
         let pos = self.draw_pos();
-        let vaulter = self.zombie_type == ZombieType::Polevaulter;
-        let offset_x = pos.image_offset_x + if vaulter { 36.0 } else { 23.0 };
-        let offset_y = pos.image_offset_y + pos.body_y + if vaulter { 11.0 } else { 0.0 };
+        let (dx, dy) = match self.zombie_type {
+            ZombieType::Polevaulter => (36.0, 11.0),
+            ZombieType::Football => (41.0, 16.0),
+            ZombieType::Newspaper => (29.0, 4.0),
+            _ => (23.0, 0.0),
+        };
+        let (offset_x, offset_y) = (pos.image_offset_x + dx, pos.image_offset_y + pos.body_y + dy);
         let Some(shadow) = res.image(if night { "IMAGE_PLANTSHADOW2" } else { "IMAGE_PLANTSHADOW" }) else { return };
         g.push_state();
         g.translate(self.x as f32, self.y as f32);
         g.draw_image_cel_center_scaled(shadow, offset_x, offset_y + 92.0, 0, 1.0, 1.0);
         g.pop_state();
     }
+}
+
+/// `TodDrawImageScaledF` at 4x, tinted: the dancer's spotlight, with its
+/// top-left at (x, y).
+fn draw_spotlight(g: &mut Graphics, image: &ImageRes, x: f32, y: f32, color: SexyColor) {
+    let (w, h) = (image.width as f32, image.height as f32);
+    let scale = 4.0;
+    g.push_state();
+    g.set_colorize_images(true);
+    g.set_color(color);
+    let transform = bevy::math::Affine2::from_cols_array(&[scale, 0.0, 0.0, scale, x + w * scale * 0.5, y + h * scale * 0.5]);
+    g.draw_image_matrix(image, transform);
+    g.pop_state();
 }
 
 /// `Zombie::CanTargetPlant`, for chewing: spiky plants and the like aren't

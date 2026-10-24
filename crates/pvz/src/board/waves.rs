@@ -26,7 +26,7 @@ use crate::zombie::{NUM_ZOMBIE_TYPES, ZombieType, can_spawn_on_level, waves_for_
 
 use super::message::MessageStyle;
 use super::tutorial::{AdviceType, TutorialState};
-use super::zombie::{Fx, Zombie, ZombieEnv};
+use super::zombie::{Fx, NUM_BACKUP_DANCERS, Zombie, ZombieEnv};
 use crate::graphics::{Graphics, SexyRect};
 
 use super::{Board, MAX_GRID_SIZE_Y, PlantRowType};
@@ -295,9 +295,9 @@ impl Board {
     }
 
     /// `Board::AddZombie`.
-    pub(super) fn add_zombie(&mut self, ty: ZombieType, from_wave: i32, fx: &mut Fx) {
+    pub(super) fn add_zombie(&mut self, ty: ZombieType, from_wave: i32, fx: &mut Fx) -> Id<Zombie> {
         let row = self.pick_row_for_new_zombie(fx.sounds.rng());
-        self.add_zombie_in_row(ty, row, from_wave, fx);
+        self.add_zombie_in_row(ty, row, from_wave, fx)
     }
 
     /// `Board::AddZombieInRow`.
@@ -327,6 +327,156 @@ impl Board {
         }
     }
 
+    /// What a dancer's troupe needs to know about each other before they
+    /// move (`ZombieNotWalking`, `IsMovingAtChilledSpeed`,
+    /// `NeedsMoreBackupDancers`): the board works it out, since a zombie
+    /// only sees itself.
+    pub(super) fn update_dancer_troupes(&mut self) {
+        fn alive(board: &Board, id: Option<Id<Zombie>>) -> Option<&Zombie> {
+            id.and_then(|id| board.zombies.get(id)).filter(|z| !z.dead)
+        }
+        let ids: Vec<_> = self.zombies.iter().map(|(id, _)| id).collect();
+        for id in ids {
+            let Some(zombie) = self.zombies.get(id) else { continue };
+            let leader_id = match zombie.zombie_type {
+                ZombieType::Dancer => Some(id),
+                ZombieType::BackupDancer => zombie.leader,
+                _ => continue,
+            };
+            let (mut stalled, mut chilled, mut needs_more) = (false, false, false);
+            if let Some(leader) = alive(self, leader_id) {
+                let members = std::iter::once(leader).chain(leader.followers.iter().filter_map(|&f| alive(self, f)));
+                for member in members {
+                    stalled |= member.is_eating || member.is_immobilized();
+                    chilled |= member.is_chilled();
+                }
+                if zombie.zombie_type == ZombieType::Dancer {
+                    needs_more = (0..NUM_BACKUP_DANCERS).any(|i| {
+                        alive(self, leader.followers[i]).is_none() && self.backup_dancer_spot(leader, i).is_some()
+                    });
+                }
+            }
+            if let Some(zombie) = self.zombies.get_mut(id) {
+                zombie.troupe_stalled = stalled;
+                zombie.troupe_chilled = chilled;
+                zombie.needs_more_backup = needs_more;
+            }
+        }
+    }
+
+    /// Before zombies move: who each zombie could bite on the other side
+    /// (`FindZombieTarget`), since a zombie only sees itself.
+    pub(super) fn find_zombie_targets(&mut self) {
+        let ids: Vec<_> = self.zombies.iter().map(|(id, _)| id).collect();
+        let any_hypnotized = self.zombies.iter().any(|(_, z)| z.mind_controlled && !z.dead);
+        for &id in &ids {
+            let target = any_hypnotized
+                .then(|| {
+                    let zombie = self.zombies.get(id)?;
+                    self.zombies.iter().find(|&(other, o)| other != id && zombie.can_bite_zombie(o)).map(|(other, _)| other)
+                })
+                .flatten();
+            if let Some(zombie) = self.zombies.get_mut(id) {
+                zombie.zombie_target = target;
+            }
+        }
+    }
+
+    /// After zombies move: bites between zombies (`EatZombie`), newly
+    /// hypnotized zombies leaving their troupe (`StartMindControlled`), and
+    /// hypnotized zombies walking off the lawn (`CheckForBoardEdge`).
+    pub(super) fn update_hypnotized_zombies(&mut self, fx: &mut Fx) {
+        let env = self.zombie_env();
+        let ids: Vec<_> = self.zombies.iter().map(|(id, _)| id).collect();
+        for id in ids {
+            let Some(zombie) = self.zombies.get_mut(id) else { continue };
+            let bitten = zombie.bitten_zombie.take();
+            let hypnotized = std::mem::take(&mut zombie.just_hypnotized);
+            if zombie.walked_off_lawn() {
+                zombie.die_no_loot(fx.effects);
+            }
+            if hypnotized {
+                let (followers, leader) = (std::mem::take(&mut zombie.followers), zombie.leader.take());
+                for follower in followers.into_iter().flatten() {
+                    if let Some(f) = self.zombies.get_mut(follower) {
+                        f.leader = None;
+                    }
+                }
+                if let Some(leader) = leader.and_then(|l| self.zombies.get_mut(l)) {
+                    for slot in leader.followers.iter_mut().filter(|f| **f == Some(id)) {
+                        *slot = None;
+                    }
+                }
+                // TrySpawnLevelAward: it may have been the last one.
+                if let Some(zombie) = self.zombies.get_mut(id) {
+                    zombie.award_check = true;
+                }
+            }
+            if let Some(target) = bitten.and_then(|t| self.zombies.get_mut(t)) {
+                target.take_damage(super::zombie::DAMAGE_PER_EAT, super::zombie::damage::HEADLESS, &env, fx);
+                if target.body_health <= 0 {
+                    fx.sounds.play_sample("SOUND_GULP");
+                }
+            }
+        }
+    }
+
+    /// Where backup dancer `i` goes: above, below, behind or in front of
+    /// its dancer (`SummonBackupDancers`), if that row can have one.
+    fn backup_dancer_spot(&self, dancer: &Zombie, i: usize) -> Option<(i32, f32)> {
+        let (row, x) = match i {
+            0 => (dancer.row - 1, dancer.pos_x),
+            1 => (dancer.row + 1, dancer.pos_x),
+            2 => (dancer.row, dancer.pos_x - 100.0),
+            _ => (dancer.row, dancer.pos_x + 100.0),
+        };
+        // RowCanHaveZombieType: backup dancers can't swim.
+        let ok = self.row_can_have_zombies(row) && self.plant_row[row as usize] != PlantRowType::Pool;
+        ok.then_some((row, x))
+    }
+
+    /// `Zombie::SummonBackupDancers`, for the dancers that snapped their
+    /// fingers this tick: the missing backup dancers rise around them.
+    pub(super) fn summon_backup_dancers(&mut self, fx: &mut Fx) {
+        let leaders: Vec<_> = self.zombies.iter().filter(|(_, z)| z.summon_requested).map(|(id, _)| id).collect();
+        for leader_id in leaders {
+            let Some(leader) = self.zombies.get_mut(leader_id) else { continue };
+            leader.summon_requested = false;
+            for i in 0..NUM_BACKUP_DANCERS {
+                let Some(leader) = self.zombies.get(leader_id) else { break };
+                if leader.followers[i].and_then(|f| self.zombies.get(f)).is_some_and(|z| !z.dead) {
+                    continue;
+                }
+                let (from_wave, hypnotized) = (leader.from_wave, leader.mind_controlled);
+                let Some((row, x)) = self.backup_dancer_spot(leader, i) else {
+                    if let Some(leader) = self.zombies.get_mut(leader_id) {
+                        leader.followers[i] = None;
+                    }
+                    continue;
+                };
+                let id = self.add_zombie(ZombieType::BackupDancer, from_wave, fx);
+                let env = self.zombie_env();
+                if let Some(dancer) = self.zombies.get_mut(id) {
+                    dancer.rise_as_backup_dancer(row, x, leader_id, &env, fx);
+                    dancer.mind_controlled = hypnotized;
+                }
+                if let Some(leader) = self.zombies.get_mut(leader_id) {
+                    leader.followers[i] = Some(id);
+                }
+            }
+        }
+        // StopZombieSound: the music stops with the last dancer.
+        let dancing = self.zombies.iter().any(|(_, z)| {
+            matches!(z.zombie_type, ZombieType::Dancer | ZombieType::BackupDancer)
+                && z.has_head
+                && !z.is_dead_or_dying()
+                && z.is_on_board()
+        });
+        if !dancing {
+            fx.sounds.stop_foley(crate::audio::FoleyType::Dancer);
+        }
+    }
+
     /// What zombies need to know about the board.
     pub(super) fn zombie_env(&self) -> ZombieEnv {
         ZombieEnv {
@@ -335,7 +485,12 @@ impl Board {
             finished_adventure: !self.first_time_adventure,
             zombie_count: self.zombies.len(),
             bowling: self.is_wallnut_bowling_level(),
-            zombies_on_screen: self.zombies.iter().filter(|(_, z)| !z.is_dead_or_dying() && z.x < super::BOARD_WIDTH).count(),
+            main_counter: self.main_counter,
+            zombies_on_screen: self
+                .zombies
+                .iter()
+                .filter(|(_, z)| z.has_head && !z.is_dead_or_dying() && !z.mind_controlled && z.is_on_board())
+                .count(),
         }
     }
 
@@ -343,7 +498,7 @@ impl Board {
     fn total_zombies_health_in_wave(&self, wave: i32) -> i32 {
         self.zombies
             .iter()
-            .filter(|(_, z)| z.from_wave == wave && !z.is_dead_or_dying())
+            .filter(|(_, z)| z.from_wave == wave && !z.is_dead_or_dying() && !z.mind_controlled)
             .map(|(_, z)| z.total_health())
             .sum()
     }

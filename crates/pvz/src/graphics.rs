@@ -134,7 +134,16 @@ enum DrawCmd {
     Image { image: Handle<Image>, dest: SexyRect, src: SexyRect, color: SexyColor },
     /// The `src` part of an image, centered on the origin of `transform`
     /// (y-down screen space).
-    Matrix { image: Handle<Image>, image_size: Vec2, transform: Affine2, src: SexyRect, color: SexyColor, additive: bool },
+    Matrix {
+        image: Handle<Image>,
+        image_size: Vec2,
+        transform: Affine2,
+        src: SexyRect,
+        color: SexyColor,
+        additive: bool,
+        /// The clip rectangle, when it's narrower than the screen.
+        clip: Option<SexyRect>,
+    },
 }
 
 /// This frame's draw calls. Cleared at the start of every frame.
@@ -406,7 +415,6 @@ impl Graphics {
     }
 
     /// Draws `image` centered on `transform`'s origin, like `TodBltMatrix`.
-    /// Clipping isn't applied to transformed images.
     pub fn draw_image_matrix(&mut self, image: &ImageRes, transform: Affine2) {
         let src = SexyRect::new(0.0, 0.0, image.width as f32, image.height as f32);
         self.draw_image_matrix_src(image, transform, src);
@@ -420,7 +428,12 @@ impl Graphics {
         let image_size = Vec2::new(image.width as f32, image.height as f32);
         let color = self.image_color();
         let additive = self.state.additive;
-        self.cmds.push(DrawCmd::Matrix { image: image.handle.clone(), image_size, transform, src, color, additive });
+        let clip = self.state.clip;
+        if clip.is_empty() {
+            return;
+        }
+        let clip = (clip != SCREEN).then_some(clip);
+        self.cmds.push(DrawCmd::Matrix { image: image.handle.clone(), image_size, transform, src, color, additive, clip });
     }
 
     pub fn color(&self) -> SexyColor {
@@ -557,26 +570,61 @@ fn to_world(x: f32, y: f32) -> Vec2 {
 const Z_STEP: f32 = 0.001;
 
 /// A quad showing `src` of an image, centered on `transform`'s origin.
-fn quad_mesh(image_size: Vec2, transform: Affine2, src: SexyRect, color: SexyColor) -> Mesh {
+/// The corners of a transformed quad in game coordinates with their
+/// texture coordinates, cut down to `clip` if there is one (the original
+/// clips transformed images too). Empty when nothing's left.
+fn quad_polygon(image_size: Vec2, transform: Affine2, src: SexyRect, clip: Option<SexyRect>) -> Vec<(Vec2, Vec2)> {
     let (hw, hh) = (src.w / 2.0, src.h / 2.0);
-    let corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)];
-    let positions: Vec<[f32; 3]> = corners
-        .iter()
-        .map(|&(x, y)| {
-            let p = transform.transform_point2(Vec2::new(x, y));
-            to_world(p.x, p.y).extend(0.0).to_array()
-        })
-        .collect();
     let (u0, v0) = (src.x / image_size.x, src.y / image_size.y);
     let (u1, v1) = ((src.x + src.w) / image_size.x, (src.y + src.h) / image_size.y);
-    let uvs = vec![[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
-    let color = color.to_bevy().to_linear().to_f32_array();
+    let corners = [((-hw, -hh), (u0, v0)), ((hw, -hh), (u1, v0)), ((hw, hh), (u1, v1)), ((-hw, hh), (u0, v1))];
+    let mut polygon: Vec<(Vec2, Vec2)> = corners
+        .iter()
+        .map(|&((x, y), (u, v))| (transform.transform_point2(Vec2::new(x, y)), Vec2::new(u, v)))
+        .collect();
+    let Some(clip) = clip else { return polygon };
+    // Sutherland-Hodgman against each edge of the clip rectangle.
+    // Each edge keeps the points where `sign * p[axis] >= limit`.
+    let edges = [(0, 1.0, clip.x), (0, -1.0, -(clip.x + clip.w)), (1, 1.0, clip.y), (1, -1.0, -(clip.y + clip.h))];
+    for (axis, sign, limit) in edges {
+        let side = |p: Vec2| sign * p[axis];
+        let inside = |p: Vec2| side(p) >= limit;
+        let mut out = Vec::with_capacity(polygon.len() + 1);
+        for i in 0..polygon.len() {
+            let (a, b) = (polygon[i], polygon[(i + 1) % polygon.len()]);
+            if inside(a.0) {
+                out.push(a);
+            }
+            if inside(a.0) != inside(b.0) {
+                let t = (limit - side(a.0)) / (side(b.0) - side(a.0));
+                out.push((a.0.lerp(b.0, t), a.1.lerp(b.1, t)));
+            }
+        }
+        polygon = out;
+        if polygon.len() < 3 {
+            return Vec::new();
+        }
+    }
+    polygon
+}
 
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![color; 4])
-        .with_inserted_indices(Indices::U16(vec![0, 1, 2, 0, 2, 3]))
+fn quad_mesh(image_size: Vec2, transform: Affine2, src: SexyRect, color: SexyColor, clip: Option<SexyRect>) -> Option<Mesh> {
+    let polygon = quad_polygon(image_size, transform, src, clip);
+    if polygon.is_empty() {
+        return None;
+    }
+    let positions: Vec<[f32; 3]> = polygon.iter().map(|(p, _)| to_world(p.x, p.y).extend(0.0).to_array()).collect();
+    let uvs: Vec<[f32; 2]> = polygon.iter().map(|(_, uv)| uv.to_array()).collect();
+    let color = color.to_bevy().to_linear().to_f32_array();
+    let indices = (1..polygon.len() as u16 - 1).flat_map(|i| [0, i, i + 1]).collect();
+
+    Some(
+        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![color; polygon.len()])
+            .with_inserted_indices(Indices::U16(indices)),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -599,14 +647,14 @@ fn sync_draw_calls(
     for (i, cmd) in g.cmds.iter().enumerate() {
         let z = i as f32 * Z_STEP;
 
-        if let DrawCmd::Matrix { image, image_size, transform, src, color, additive } = cmd {
+        if let DrawCmd::Matrix { image, image_size, transform, src, color, additive, clip } = cmd {
+            let Some(mesh) = quad_mesh(*image_size, *transform, *src, *color, *clip) else { continue };
             let pool = pools.quads.entry((image.id(), *additive)).or_insert_with(|| QuadPool {
                 material: materials.add(QuadMaterial { texture: image.clone() }),
                 additive_material: additive.then(|| additive_materials.add(AdditiveQuadMaterial { texture: image.clone() })),
                 entities: Vec::new(),
                 used: 0,
             });
-            let mesh = quad_mesh(*image_size, *transform, *src, *color);
             let transform = Transform::from_xyz(0.0, 0.0, z);
 
             match pool.entities.get(pool.used) {
@@ -704,6 +752,20 @@ mod tests {
         let DrawCmd::Image { dest, src, .. } = &g.cmds[0] else { panic!() };
         assert_eq!(*dest, SexyRect::new(240.0, 10.0, 30.0, 20.0));
         assert_eq!(*src, SexyRect::new(10.0, 0.0, 30.0, 20.0));
+    }
+
+    #[test]
+    fn clipping_cuts_transformed_quads() {
+        // A 10x10 quad centered on (5, 5), clipped to its top half.
+        let transform = Affine2::from_translation(Vec2::new(5.0, 5.0));
+        let src = SexyRect::new(0.0, 0.0, 10.0, 10.0);
+        let size = Vec2::new(10.0, 10.0);
+        let half = quad_polygon(size, transform, src, Some(SexyRect::new(0.0, 0.0, 10.0, 5.0)));
+        assert_eq!(half.len(), 4);
+        let max_y = half.iter().map(|(p, _)| p.y).fold(f32::MIN, f32::max);
+        let max_v = half.iter().map(|(_, uv)| uv.y).fold(f32::MIN, f32::max);
+        assert!((max_y - 5.0).abs() < 1e-5 && (max_v - 0.5).abs() < 1e-5);
+        assert!(quad_polygon(size, transform, src, Some(SexyRect::new(20.0, 0.0, 5.0, 5.0))).is_empty());
     }
 
     #[test]

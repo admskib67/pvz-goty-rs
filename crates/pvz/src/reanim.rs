@@ -550,18 +550,43 @@ pub fn draw_reanimation(g: &mut Graphics, reanim: &Reanimation, resources: &Game
 
 /// `Reanimation::DrawRenderGroup`.
 pub fn draw_render_group(g: &mut Graphics, reanim: &Reanimation, group: i32, resources: &GameResources) {
+    draw_render_group_colored(g, reanim, group, resources, reanim.color_override, reanim.extra_additive);
+}
+
+/// `Reanimation::DrawRenderGroup` with other colors than the reanimation's
+/// own (`mColorOverride`, `mExtraAdditiveColor`), as a zombie's shield
+/// flashes on its own when hit.
+pub fn draw_render_group_colored(
+    g: &mut Graphics,
+    reanim: &Reanimation,
+    group: i32,
+    resources: &GameResources,
+    color_override: [u8; 4],
+    extra_additive: Option<[u8; 4]>,
+) {
     if reanim.dead {
         return;
     }
     for (i, inst) in reanim.tracks.iter().enumerate() {
         if inst.render_group == group {
-            draw_track(g, reanim, i, resources);
+            draw_track_colored(g, reanim, i, resources, color_override, extra_additive);
         }
     }
 }
 
 /// `Reanimation::DrawTrack` for image tracks.
 fn draw_track(g: &mut Graphics, reanim: &Reanimation, track: usize, resources: &GameResources) {
+    draw_track_colored(g, reanim, track, resources, reanim.color_override, reanim.extra_additive);
+}
+
+fn draw_track_colored(
+    g: &mut Graphics,
+    reanim: &Reanimation,
+    track: usize,
+    resources: &GameResources,
+    color_override: [u8; 4],
+    extra_additive: Option<[u8; 4]>,
+) {
     let transform = reanim.current_transform(track);
     let mut frame = transform.frame();
     if frame < 0 {
@@ -572,7 +597,7 @@ fn draw_track(g: &mut Graphics, reanim: &Reanimation, track: usize, resources: &
     let [r, gr, b, a] = inst.track_color;
     let mut color = SexyColor::rgba(r, gr, b, a);
     if !inst.ignore_color_override {
-        let [r, gr, b, a] = reanim.color_override;
+        let [r, gr, b, a] = color_override;
         color = color.multiply(SexyColor::rgba(r, gr, b, a));
     }
     if g.colorize_images() {
@@ -611,7 +636,7 @@ fn draw_track(g: &mut Graphics, reanim: &Reanimation, track: usize, resources: &
     g.set_colorize_images(true);
     g.set_color(color);
     g.draw_image_matrix_src(image, to_affine(matrix), src);
-    if let Some([r, gr, b, extra_alpha]) = reanim.extra_additive {
+    if let Some([r, gr, b, extra_alpha]) = extra_additive {
         g.set_additive(true);
         let alpha = (extra_alpha as u32 * color.a as u32 / 255) as u8;
         g.set_color(SexyColor::rgba(r, gr, b, alpha));

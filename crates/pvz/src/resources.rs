@@ -227,7 +227,8 @@ fn upload(image: DecodedImage, rows: u32, cols: u32, assets: &mut Assets<Image>)
     ImageRes { handle: assets.add(to_bevy_image(image)), width, height, rows, cols }
 }
 
-fn to_bevy_image(image: DecodedImage) -> Image {
+fn to_bevy_image(mut image: DecodedImage) -> Image {
+    image.bleed_alpha();
     Image::new(
         Extent3d { width: image.width, height: image.height, depth_or_array_layers: 1 },
         TextureDimension::D2,

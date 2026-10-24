@@ -257,7 +257,7 @@ pub struct Board {
     dave: crazy_dave::CrazyDave,
     /// The player's name, for Dave's messages.
     player_name: String,
-    /// Started with `--lvl-N`: finishing it leaves the saved player alone.
+    /// Started with `--lvl-2-1`: finishing it leaves the saved player alone.
     level_overridden: bool,
     /// `GetSeedsAvailable`.
     seeds_available: usize,
@@ -345,7 +345,7 @@ enum ParticleRequest {
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct PlayIntro(pub bool);
 
-/// The level given on the command line (`--lvl-N`), if any.
+/// The level given on the command line (`--lvl-2-1`), if any.
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct LevelOverride(pub Option<i32>);
 
@@ -705,7 +705,7 @@ fn new_game(
             error!("{e}");
         }
     }
-    // `--lvl-N` plays a level as a copy of the player who has reached it.
+    // `--lvl-2-1` plays a level as a copy of the player who has reached it.
     let player_copy = level_override.0.and_then(|level| profiles.player().map(|p| PlayerInfo { level, ..p.clone() }));
     let player = player_copy.as_ref().or(profiles.player());
     let mode = if std::mem::take(&mut play_intro.0) { GameMode::Intro } else { GameMode::Adventure };
@@ -914,6 +914,10 @@ impl Board {
                 plant.update(&self.zombies, &mut self.plant_actions, effects, res, images, &row_y, sounds.rng());
             }
         }
+        if playing {
+            self.update_dancer_troupes();
+            self.find_zombie_targets();
+        }
         let env = self.zombie_env();
         let show_walking = self.cut_scene.show_zombie_walking();
         {
@@ -949,6 +953,9 @@ impl Board {
             }
         }
         if playing {
+            let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+            self.summon_backup_dancers(&mut fx);
+            self.update_hypnotized_zombies(&mut fx);
             for action in std::mem::take(&mut self.plant_actions) {
                 self.do_plant_action(action, effects, res, images, sounds);
             }
@@ -1000,7 +1007,8 @@ impl Board {
     }
 
     /// `Board::KillAllZombiesInRadius`: with `burn`, the zombies are
-    /// charred, otherwise blown to bits.
+    /// charred, otherwise blown to bits. `damage_range` is what the plant
+    /// can reach (`GetDamageRangeFlags`).
     #[allow(clippy::too_many_arguments)]
     fn kill_all_zombies_in_radius(
         &mut self,
@@ -1010,11 +1018,12 @@ impl Board {
         radius: i32,
         row_range: i32,
         burn: bool,
+        damage_range: u32,
         env: &zombie::ZombieEnv,
         fx: &mut Fx,
     ) {
         for (_, zombie) in self.zombies.iter_mut() {
-            if !zombie.effected_by_damage(zombie::damage_range::GROUND) {
+            if !zombie.effected_by_damage(damage_range) {
                 continue;
             }
             let row_dist = zombie.row - row;
@@ -1038,12 +1047,13 @@ impl Board {
         sounds: &mut Sounds,
     ) {
         match action {
-            PlantAction::Shoot { x, y, row, render_order, projectile } => {
+            PlantAction::Shoot { x, y, row, render_order, projectile, short_range } => {
                 sounds.play_foley(FoleyType::Throw);
                 let grid_x = self.pixel_to_grid_x(x).max(0);
                 let shadow_y = self.grid_to_pixel_y(grid_x, row) as f32 + 67.0;
                 // TODO: shadows sit 12 pixels higher on the roof's left side.
                 let mut shot = Projectile::new(x, y, render_order, row, shadow_y, projectile);
+                shot.short_range = short_range;
                 if let Some((effect, dx, dy)) = Projectile::trail_effect(projectile)
                     && let Some(trail) = effects.add_particle(x as f32 + dx, y as f32 + dy, 400000, effect, res, images, sounds.rng())
                 {
@@ -1055,6 +1065,42 @@ impl Board {
                 self.add_particle(x as f32, y as f32, render_order, effect);
             }
             PlantAction::Foley(foley) => sounds.play_foley(foley),
+            PlantAction::RowAreaDamage { row, rect, damage, flags } => {
+                let env = self.zombie_env();
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                for (_, zombie) in self.zombies.iter_mut() {
+                    if zombie.row == row
+                        && zombie.effected_by_damage(zombie::damage_range::GROUND)
+                        && zombie::rect_overlap(rect, zombie.zombie_rect()) > 0
+                    {
+                        zombie.take_damage(damage, flags, &env, &mut fx);
+                        fx.sounds.play_foley(FoleyType::Splat);
+                    }
+                }
+            }
+            PlantAction::DoomShroom { x, y, col, row } => {
+                sounds.play_sample("SOUND_DOOMSHROOM");
+                let env = self.zombie_env();
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                self.kill_all_zombies_in_radius(row, x, y, 250, 3, true, zombie::damage_range::EXPLOSION, &env, &mut fx);
+                // KillAllPlantsNearDoom: whatever else is on its square goes too.
+                for (_, plant) in self.plants.iter_mut() {
+                    if plant.col == col && plant.row == row && !plant.dead {
+                        plant.die(effects);
+                    }
+                }
+                self.add_particle(x as f32, y as f32, render_layer::TOP, ParticleEffect::Doom);
+                self.add_a_crater(col, row, 18000);
+                self.shake_board(3, -4);
+            }
+            PlantAction::IceShroom { x, y } => {
+                let env = self.zombie_env();
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                for (_, zombie) in self.zombies.iter_mut() {
+                    zombie.hit_ice_trap(&env, &mut fx);
+                }
+                self.add_particle(x as f32, y as f32, render_layer::TOP, ParticleEffect::IceTrap);
+            }
             PlantAction::GraveBusterDone { x, y, col, row, render_order } => {
                 if let Some(grave) = self.grave_stone_at(col, row) {
                     self.remove_grave_stone(grave);
@@ -1072,7 +1118,7 @@ impl Board {
             PlantAction::CherryBomb { x, y, row } => {
                 let env = self.zombie_env();
                 let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
-                self.kill_all_zombies_in_radius(row, x, y, 115, 1, true, &env, &mut fx);
+                self.kill_all_zombies_in_radius(row, x, y, 115, 1, true, zombie::damage_range::EXPLOSION, &env, &mut fx);
                 self.add_particle(x as f32, y as f32, render_layer::TOP, ParticleEffect::Powie);
                 self.shake_board(3, -4);
             }
@@ -1080,7 +1126,7 @@ impl Board {
                 sounds.play_sample("SOUND_POTATO_MINE");
                 let env = self.zombie_env();
                 let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
-                self.kill_all_zombies_in_radius(row, x, y, 60, 0, false, &env, &mut fx);
+                self.kill_all_zombies_in_radius(row, x, y, 60, 0, false, zombie::damage_range::POTATO_MINE, &env, &mut fx);
                 let order = make_render_order(render_layer::PARTICLE, row, 0);
                 self.add_particle((x + 20) as f32, y as f32, order, ParticleEffect::PotatoMine);
                 self.shake_board(3, -4);
@@ -1099,7 +1145,7 @@ impl Board {
                 sounds.play_sample("SOUND_BOWLINGIMPACT2");
                 let env = self.zombie_env();
                 let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
-                self.kill_all_zombies_in_radius(row, x, y, 90, 1, true, &env, &mut fx);
+                self.kill_all_zombies_in_radius(row, x, y, 90, 1, true, zombie::damage_range::EXPLOSION, &env, &mut fx);
                 self.add_particle(x as f32, y as f32, render_layer::TOP, ParticleEffect::Powie);
                 self.shake_board(3, -4);
             }
@@ -1382,7 +1428,7 @@ fn draw_board(
             RenderItem::LawnMower(i) => board.lawn_mowers[i].draw(board, &effects, &resources, &mut g),
             RenderItem::GridItem(id) => {
                 if let Some(item) = board.grid_items.get(id) {
-                    board.draw_grave_stone(item, &resources, &mut g);
+                    board.draw_grid_item(item, &resources, &mut g);
                 }
             }
             RenderItem::Reanimation(id) => effects.draw(&mut g, id, &resources),

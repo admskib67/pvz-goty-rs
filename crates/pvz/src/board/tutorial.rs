@@ -79,6 +79,7 @@ pub enum AdviceType {
     PlantNotPassedLine,
     PlantGravebustersOnGraves,
     PlantNotOnGrave,
+    PlantNotOnCrater,
     HugeWave,
 }
 
