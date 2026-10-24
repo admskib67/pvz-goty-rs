@@ -164,6 +164,8 @@ impl Board {
         self.pick_zombie_waves(rng);
         self.waves.zombie_count_down = if self.is_wallnut_bowling_level() {
             200
+        } else if self.is_mini_boss_level() {
+            100
         } else if self.first_time_adventure && self.level == 2 {
             ZOMBIE_COUNTDOWN * 2
         } else {
@@ -210,6 +212,8 @@ impl Board {
             }
             if self.is_wallnut_bowling_level() {
                 picker.zombie_points *= 4;
+            } else if self.is_mini_boss_level() {
+                picker.zombie_points *= 3;
             }
 
             if let Some(intro) = intro

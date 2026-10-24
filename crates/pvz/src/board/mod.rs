@@ -16,6 +16,7 @@
 //! `DoConfirmBackToMain` and `DoBackToMain`.
 
 mod coin;
+mod conveyor;
 mod cursor;
 mod cutscene;
 mod lawn_mower;
@@ -431,6 +432,8 @@ impl Board {
             board.seed_bank.add_seed(SeedType::Wallnut);
             board.conveyor_belt_counter = 400;
             board.show_bowling_line = true;
+        } else if board.is_mini_boss_level() {
+            board.conveyor_belt_counter = 200;
         }
         board
     }
@@ -517,7 +520,7 @@ impl Board {
 
     /// `ChooseSeedsOnCurrentLevel`: early adventure levels hand out the plants.
     pub fn choose_seeds_on_current_level(&self) -> bool {
-        !self.first_time_adventure || self.level > 7
+        !self.has_conveyor_belt_seed_bank() && (!self.first_time_adventure || self.level > 7)
     }
 
     /// `GetNumSeedsInBank`.
@@ -538,7 +541,12 @@ impl Board {
 
     /// `Board::HasConveyorBeltSeedBank`.
     pub fn has_conveyor_belt_seed_bank(&self) -> bool {
-        self.is_wallnut_bowling_level()
+        self.is_wallnut_bowling_level() || self.is_mini_boss_level()
+    }
+
+    /// `LawnApp::IsMiniBossLevel`: the conveyor belt levels at the end of each area.
+    pub fn is_mini_boss_level(&self) -> bool {
+        self.mode == GameMode::Adventure && matches!(self.level, 10 | 20 | 30)
     }
 
     /// `GridToPixelY` for the grid's left column.
@@ -656,6 +664,14 @@ fn new_game(
             && let Err(e) = resources.reanim_definition(seed.definition().reanim.file(), &mut images)
         {
             error!("{e}");
+        }
+    }
+    // Conveyor belt levels hand out plants that must be drawable when they ride in.
+    if board.is_mini_boss_level() {
+        for seed in conveyor::mini_boss_seeds(board.level).iter().map(|&(seed, _)| seed) {
+            if let Err(e) = resources.reanim_definition(seed.definition().reanim.file(), &mut images) {
+                error!("{e}");
+            }
         }
     }
     // The seed chooser shows every plant the player has.

@@ -224,6 +224,11 @@ impl SeedBank {
         self.packets[..self.num_packets].iter().position(|p| p.packet_type.is_none()).unwrap_or(self.num_packets)
     }
 
+    /// `SeedBank::CountOfTypeOnConveyorBelt`.
+    pub fn count_of_type_on_conveyor_belt(&self, seed: SeedType) -> usize {
+        self.packets[..self.num_packets].iter().filter(|p| p.packet_type == Some(seed)).count()
+    }
+
     /// `SeedBank::AddSeed`: a new packet rides in from the right.
     pub fn add_seed(&mut self, seed: SeedType) {
         let n = self.num_seeds_on_conveyor_belt();
@@ -274,36 +279,6 @@ impl SeedBank {
                 packet.offset_x = (packet.offset_x - 1).max(0);
             }
         }
-    }
-}
-
-impl Board {
-    /// `Challenge::UpdateConveyorBelt`, for wall-nut bowling: every so often
-    /// a new packet rides in (wall-nuts mostly, sometimes an explode-o-nut).
-    pub(super) fn update_conveyor_belt(&mut self, rng: &mut sexy::rand::MtRand) {
-        if self.has_level_award_dropped() {
-            return;
-        }
-        self.seed_bank.update_conveyor_belt();
-        self.conveyor_belt_counter -= 1;
-        if self.conveyor_belt_counter > 0 {
-            return;
-        }
-        let on_belt = self.seed_bank.num_seeds_on_conveyor_belt();
-        self.conveyor_belt_counter = if on_belt > 8 {
-            1000
-        } else if on_belt > 6 {
-            500
-        } else if on_belt > 4 {
-            425
-        } else {
-            400
-        };
-        // TodWeightedArray: wall-nut 85, explode-o-nut 15. With only two
-        // choices the in-bank weight tweaks don't apply.
-        let seed = if rng.next_range(100) < 85 { SeedType::Wallnut } else { SeedType::ExplodeONut };
-        self.seed_bank.add_seed(seed);
-        self.last_conveyor_seed = Some(seed);
     }
 }
 
