@@ -394,6 +394,9 @@ pub struct Reanimation<D = std::sync::Arc<ReanimDefinition>> {
     /// Position and scale applied on top of every track.
     pub overlay: Matrix3,
     pub color_override: Rgba,
+    /// A color added on top when drawing (the hit flash, the chill glow;
+    /// `mExtraAdditiveColor`), if any.
+    pub extra_additive: Option<Rgba>,
     /// Frame whose pose attachments are measured from; -1 means `frame_start`.
     pub frame_base_pose: i32,
     pub tracks: Vec<TrackInstance>,
@@ -419,6 +422,7 @@ impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
             loop_count: 0,
             overlay: Matrix3::translation(x, y),
             color_override: WHITE,
+            extra_additive: None,
             frame_base_pose: -1,
             tracks,
             render_order: 0,

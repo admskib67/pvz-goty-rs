@@ -14,10 +14,11 @@ use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
 use bevy::math::Affine2;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use bevy::render::render_resource::AsBindGroup;
+use bevy::mesh::MeshVertexBufferLayoutRef;
+use bevy::render::render_resource::{AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, RenderPipelineDescriptor, SpecializedMeshPipelineError};
 use bevy::shader::ShaderRef;
 use bevy::sprite::Anchor;
-use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dPlugin};
+use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dKey, Material2dPipeline, Material2dPlugin};
 use bevy::transform::TransformSystems;
 
 use crate::resources::{FontRes, ImageRes};
@@ -29,6 +30,7 @@ impl Plugin for GraphicsPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "quad_material.wesl");
         app.add_plugins(Material2dPlugin::<QuadMaterial>::default())
+            .add_plugins(Material2dPlugin::<AdditiveQuadMaterial>::default())
             .init_resource::<Graphics>()
             .init_resource::<DrawPools>()
             .add_systems(First, clear_graphics)
@@ -105,11 +107,14 @@ struct GraphicsState {
     /// Offset added to every draw (`mTransX`/`mTransY`), so widgets can draw
     /// in their own coordinates.
     trans: Vec2,
+    /// `DRAWMODE_ADDITIVE`: transformed images add their color to what's
+    /// behind them instead of covering it.
+    additive: bool,
 }
 
 impl Default for GraphicsState {
     fn default() -> Self {
-        Self { color: SexyColor::WHITE, colorize_images: false, clip: SCREEN, trans: Vec2::ZERO }
+        Self { color: SexyColor::WHITE, colorize_images: false, clip: SCREEN, trans: Vec2::ZERO, additive: false }
     }
 }
 
@@ -118,7 +123,7 @@ enum DrawCmd {
     Image { image: Handle<Image>, dest: SexyRect, src: SexyRect, color: SexyColor },
     /// The `src` part of an image, centered on the origin of `transform`
     /// (y-down screen space).
-    Matrix { image: Handle<Image>, image_size: Vec2, transform: Affine2, src: SexyRect, color: SexyColor },
+    Matrix { image: Handle<Image>, image_size: Vec2, transform: Affine2, src: SexyRect, color: SexyColor, additive: bool },
 }
 
 /// This frame's draw calls. Cleared at the start of every frame.
@@ -135,6 +140,12 @@ impl Graphics {
     }
 
     /// When on, images are tinted by the current color (the original's colorize mode).
+    /// Switches additive drawing on or off. Only transformed images
+    /// (`draw_image_matrix*`, so reanimations and particles) honour it.
+    pub fn set_additive(&mut self, on: bool) {
+        self.state.additive = on;
+    }
+
     pub fn set_colorize_images(&mut self, on: bool) {
         self.state.colorize_images = on;
     }
@@ -381,7 +392,8 @@ impl Graphics {
         let transform = Affine2::from_translation(self.state.trans) * transform;
         let image_size = Vec2::new(image.width as f32, image.height as f32);
         let color = self.image_color();
-        self.cmds.push(DrawCmd::Matrix { image: image.handle.clone(), image_size, transform, src, color });
+        let additive = self.state.additive;
+        self.cmds.push(DrawCmd::Matrix { image: image.handle.clone(), image_size, transform, src, color, additive });
     }
 
     pub fn color(&self) -> SexyColor {
@@ -456,6 +468,41 @@ impl Material2d for QuadMaterial {
     }
 }
 
+/// [`QuadMaterial`] that adds to the background (`DRAWMODE_ADDITIVE`).
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct AdditiveQuadMaterial {
+    #[texture(0)]
+    #[sampler(1)]
+    texture: Handle<Image>,
+}
+
+impl Material2d for AdditiveQuadMaterial {
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::Path(AssetPath::from_path_buf(embedded_path!("quad_material.wesl")).with_source("embedded"))
+    }
+
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
+    }
+
+    fn specialize(
+        _pipeline: &Material2dPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: Material2dKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            for target in fragment.targets.iter_mut().flatten() {
+                target.blend = Some(BlendState {
+                    color: BlendComponent { src_factor: BlendFactor::SrcAlpha, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
+                    alpha: BlendComponent { src_factor: BlendFactor::Zero, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Entities reused across frames: sprites for axis-aligned draws, and quad
 /// meshes for transformed ones, pooled per texture so an entity's material
 /// never changes.
@@ -464,11 +511,12 @@ struct DrawPools {
     sprites: Vec<Entity>,
     /// How many sprites were visible last frame.
     sprites_shown: usize,
-    quads: HashMap<AssetId<Image>, QuadPool>,
+    quads: HashMap<(AssetId<Image>, bool), QuadPool>,
 }
 
 struct QuadPool {
     material: Handle<QuadMaterial>,
+    additive_material: Option<Handle<AdditiveQuadMaterial>>,
     entities: Vec<(Entity, Handle<Mesh>)>,
     used: usize,
 }
@@ -511,6 +559,7 @@ fn sync_draw_calls(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<QuadMaterial>>,
+    mut additive_materials: ResMut<Assets<AdditiveQuadMaterial>>,
     mut sprites: Query<(&mut Sprite, &mut Transform, &mut Visibility), Without<Mesh2d>>,
     mut quads: Query<(&mut Transform, &mut Visibility), With<Mesh2d>>,
 ) {
@@ -523,9 +572,10 @@ fn sync_draw_calls(
     for (i, cmd) in g.cmds.iter().enumerate() {
         let z = i as f32 * Z_STEP;
 
-        if let DrawCmd::Matrix { image, image_size, transform, src, color } = cmd {
-            let pool = pools.quads.entry(image.id()).or_insert_with(|| QuadPool {
+        if let DrawCmd::Matrix { image, image_size, transform, src, color, additive } = cmd {
+            let pool = pools.quads.entry((image.id(), *additive)).or_insert_with(|| QuadPool {
                 material: materials.add(QuadMaterial { texture: image.clone() }),
+                additive_material: additive.then(|| additive_materials.add(AdditiveQuadMaterial { texture: image.clone() })),
                 entities: Vec::new(),
                 used: 0,
             });
@@ -548,15 +598,12 @@ fn sync_draw_calls(
                 }
                 None => {
                     let handle = meshes.add(mesh);
-                    let entity = commands
-                        .spawn((
-                            Mesh2d(handle.clone()),
-                            MeshMaterial2d(pool.material.clone()),
-                            transform,
-                            Visibility::Visible,
-                        ))
-                        .id();
-                    pool.entities.push((entity, handle));
+                    let mut entity = commands.spawn((Mesh2d(handle.clone()), transform, Visibility::Visible));
+                    match &pool.additive_material {
+                        Some(material) => entity.insert(MeshMaterial2d(material.clone())),
+                        None => entity.insert(MeshMaterial2d(pool.material.clone())),
+                    };
+                    pool.entities.push((entity.id(), handle));
                 }
             }
             pool.used += 1;

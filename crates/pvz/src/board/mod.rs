@@ -739,7 +739,7 @@ impl Board {
                         self.zombies_won_trigger.get_or_insert(id);
                     }
                 } else if zombies_won && zombie.is_winner() {
-                    zombie.update_winner(show_walking, &self.plants, &mut fx);
+                    zombie.update_winner(show_walking, &mut self.plants, &mut fx);
                 }
                 if !zombie.is_on_board() {
                     zombie.update_street(fx.effects);

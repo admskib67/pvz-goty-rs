@@ -14,8 +14,7 @@
 //! `UpdateDeath`, `DieNoLoot`, `EffectedByDamage`, `DrawShadow`.
 //!
 //! Not yet: the other zombie types, the chilled/frozen/buttered/yucky
-//! states, pools and ladders, mind control and the hit flash (it needs
-//! additive drawing).
+//! states, pools and ladders, and mind control.
 
 use bevy::prelude::*;
 use sexy::data_array::DataArray;
@@ -744,7 +743,7 @@ impl Zombie {
 
     /// `Zombie::Update` for the zombie that's walking into the house after
     /// the level was lost: the others stand still.
-    pub fn update_winner(&mut self, show_walking: bool, plants: &DataArray<Plant>, fx: &mut Fx) {
+    pub fn update_winner(&mut self, show_walking: bool, plants: &mut DataArray<Plant>, fx: &mut Fx) {
         self.age += 1;
         if show_walking {
             self.update_zombie_walking(fx.effects);
@@ -958,7 +957,7 @@ impl Zombie {
     }
 
     /// `Zombie::Animate`.
-    fn animate(&mut self, plants: &DataArray<Plant>, fx: &mut Fx) {
+    fn animate(&mut self, plants: &mut DataArray<Plant>, fx: &mut Fx) {
         self.anim_counter += 1;
         if self.is_eating && self.has_head {
             let frame_length = 6;
@@ -972,7 +971,7 @@ impl Zombie {
                 .and_then(|b| fx.effects.get(b))
                 .is_some_and(|b| b.should_trigger_timed_event(left) || b.should_trigger_timed_event(right));
             if bite {
-                self.animate_chew_sound(plants, fx);
+                self.animate_chew(plants, fx);
             }
         } else {
             if self.anim_counter >= self.anim_frames * self.anim_ticks_per_frame {
@@ -982,15 +981,22 @@ impl Zombie {
         }
     }
 
-    /// `Zombie::AnimateChewSound`.
-    fn animate_chew_sound(&self, plants: &DataArray<Plant>, fx: &mut Fx) {
-        let soft = self
-            .find_plant_target(plants)
+    /// `Zombie::AnimateChewSound` and `AnimateChewEffect`: the bite's sound,
+    /// the plant flashing, and nuts spitting crumbs.
+    fn animate_chew(&self, plants: &mut DataArray<Plant>, fx: &mut Fx) {
+        let target = self.find_plant_target(plants);
+        let nut = target
             .and_then(|id| plants.get(id))
             .is_some_and(|p| matches!(p.seed, crate::plant::SeedType::Wallnut | crate::plant::SeedType::Tallnut));
-        fx.sounds.play_foley(if soft { FoleyType::ChompSoft } else { FoleyType::Chomp });
-        // TODO: the plant flashes when it's chewed (mEatenFlashCountdown), and
-        // nuts spit crumbs (AnimateChewEffect).
+        fx.sounds.play_foley(if nut { FoleyType::ChompSoft } else { FoleyType::Chomp });
+        if let Some(plant) = target.and_then(|id| plants.get_mut(id)) {
+            plant.eaten_flash_countdown = plant.eaten_flash_countdown.max(25);
+        }
+        if nut {
+            let order = make_render_order(render_layer::PROJECTILE, self.row, 0);
+            let rng = fx.sounds.rng();
+            fx.effects.add_particle(self.pos_x + 37.0, self.pos_y + 40.0, order, ParticleEffect::WallnutEatSmall, fx.res, fx.images, rng);
+        }
     }
 
     /// `Zombie::UpdateReanim`: puts the body where the zombie is.
@@ -1000,20 +1006,27 @@ impl Zombie {
         let offset_x = pos.image_offset_x + 15.0;
         let offset_y = pos.image_offset_y + pos.body_y - 28.0 + 20.0;
         let fade = if self.zombie_fade >= 0 { (255 * self.zombie_fade / 10).clamp(0, 255) as u8 } else { 255 };
-        let tint = if self.phase == ZombiePhase::Burned {
-            [0, 0, 0]
+        // DrawReanim's colors: chilled zombies are blue, burned ones black,
+        // and a zombie that was just hit flashes white.
+        let (tint, mut extra): ([u8; 3], Option<[u8; 3]>) = if self.phase == ZombiePhase::Burned {
+            ([0, 0, 0], None)
         } else if self.chilled_counter > 0 {
-            // TODO: the original adds the same blue on top (additive drawing).
-            [150, 175, 255]
+            ([75, 75, 255], Some([75, 75, 255]))
         } else {
-            [255, 255, 255]
+            ([255, 255, 255], None)
         };
+        if self.just_got_shot_counter > 0 {
+            let flash = (self.just_got_shot_counter * 10).clamp(0, 255) as u8;
+            let base = extra.unwrap_or([0, 0, 0]);
+            extra = Some([base[0].saturating_add(flash), base[1].saturating_add(flash), base[2].saturating_add(flash)]);
+        }
         if let Some(body) = effects.get_mut(body_id) {
             body.overlay.m01 = 0.0;
             body.overlay.m10 = 0.0;
             body.override_scale(1.0, 1.0);
             body.set_position(offset_x, offset_y);
             body.color_override = [tint[0], tint[1], tint[2], fade];
+            body.extra_additive = extra.map(|c| [c[0], c[1], c[2], 255]);
         }
         // The mower's animation carries the zombie along.
         if let Some(mowered) = self.mowered_reanim {
@@ -1350,7 +1363,6 @@ impl Zombie {
             effects.draw(g, body, res);
         }
         g.pop_state();
-        // TODO: the hit flash (additive highlight while mJustGotShotCounter > 0).
     }
 
     /// `Zombie::DrawShadow`.

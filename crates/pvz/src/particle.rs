@@ -236,8 +236,8 @@ impl ParticleEffect {
     }
 }
 
-/// `TodParticleSystem::Draw`: every particle as a transformed quad.
-/// TODO: additive particles (`PARTICLE_ADDITIVE`) draw normally for now.
+/// `TodParticleSystem::Draw`: every particle as a transformed quad;
+/// additive ones add to what's behind them.
 pub fn draw_particle_system(g: &mut Graphics, system: &ParticleSystem, resources: &GameResources) {
     if system.dead {
         return;
@@ -274,7 +274,12 @@ pub fn draw_particle_system(g: &mut Graphics, system: &ParticleSystem, resources
         g.push_state();
         g.set_colorize_images(true);
         g.set_color(color);
+        g.set_additive(p.additive);
         g.draw_image_matrix_src(image, transform, src);
+        if p.extra_additive && !p.additive {
+            g.set_additive(true);
+            g.draw_image_matrix_src(image, transform, src);
+        }
         g.pop_state();
     }
 }

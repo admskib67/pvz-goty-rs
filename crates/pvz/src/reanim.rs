@@ -385,8 +385,12 @@ impl EffectSystem {
         for (track, child) in attached {
             self.update_reanimation(child);
             let Some(matrix) = self.reanimations.get(id).map(|r| r.attachment_overlay_matrix(track)) else { break };
+            let (color, extra) = self.reanimations.get(id).map_or((sexy::reanim::WHITE, None), |r| (r.color_override, r.extra_additive));
             if let Some(c) = self.reanimations.get_mut(child) {
                 c.overlay = matrix;
+                // PropogateColorToAttachments.
+                c.color_override = color;
+                c.extra_additive = extra;
             }
         }
     }
@@ -607,5 +611,11 @@ fn draw_track(g: &mut Graphics, reanim: &Reanimation, track: usize, resources: &
     g.set_colorize_images(true);
     g.set_color(color);
     g.draw_image_matrix_src(image, to_affine(matrix), src);
+    if let Some([r, gr, b, extra_alpha]) = reanim.extra_additive {
+        g.set_additive(true);
+        let alpha = (extra_alpha as u32 * color.a as u32 / 255) as u8;
+        g.set_color(SexyColor::rgba(r, gr, b, alpha));
+        g.draw_image_matrix_src(image, to_affine(matrix), src);
+    }
     g.pop_state();
 }

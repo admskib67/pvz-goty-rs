@@ -104,6 +104,8 @@ pub struct Plant {
     pub shooting_counter: i32,
     /// Counts down after a zombie bites it (`mRecentlyEatenCountdown`).
     pub recently_eaten_countdown: i32,
+    /// Flashes white for this many ticks after a bite (`mEatenFlashCountdown`).
+    pub eaten_flash_countdown: i32,
     body: Option<ReanimationId>,
     head: Option<ReanimationId>,
     blink: Option<ReanimationId>,
@@ -165,6 +167,7 @@ impl Plant {
             launch_counter: 0,
             shooting_counter: 0,
             recently_eaten_countdown: 0,
+            eaten_flash_countdown: 0,
             body: None,
             head: None,
             blink: None,
@@ -290,6 +293,9 @@ impl Plant {
     ) {
         if self.recently_eaten_countdown > 0 {
             self.recently_eaten_countdown -= 1;
+        }
+        if self.eaten_flash_countdown > 0 {
+            self.eaten_flash_countdown -= 1;
         }
         if matches!(self.seed, SeedType::Wallnut | SeedType::Tallnut) {
             self.animate_nuts(actions, effects, rng);
@@ -670,6 +676,11 @@ impl Plant {
         if let Some(body) = effects.get_mut(body) {
             body.set_position(offset_x, offset_y);
             body.override_scale(scale_x, scale_y);
+            // UpdateReanimColor: a bitten plant flashes.
+            body.extra_additive = (self.eaten_flash_countdown > 0).then(|| {
+                let gray = (self.eaten_flash_countdown * 3).clamp(0, 255) as u8;
+                [gray, gray, gray, 255]
+            });
         }
     }
 
