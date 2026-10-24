@@ -111,6 +111,8 @@ fn main() {
         .init_resource::<SetupStatus>()
         .init_resource::<player::GameRng>()
         .insert_resource(board::LevelOverride(level_flag()))
+        // `--intro` plays the first-ever adventure's cinematic at the next adventure start.
+        .insert_resource(board::PlayIntro(std::env::args().skip(1).any(|a| a == "--intro")))
         .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND))
         .insert_resource(ClearColor(Color::BLACK))
         .configure_sets(

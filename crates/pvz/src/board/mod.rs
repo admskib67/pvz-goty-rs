@@ -91,6 +91,8 @@ const FINAL_LEVEL: i32 = 50;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameMode {
     Adventure,
+    /// The first-ever adventure's opening cinematic (`GAMEMODE_INTRO`).
+    Intro,
 }
 
 /// `GameScenes`, for the parts of the game that are on the board.
@@ -324,6 +326,11 @@ enum ParticleRequest {
 }
 
 /// The next adventure level of `player` (`PlayerInfo::GetLevel`).
+/// Set by the main menu when the first-ever adventure should open with the
+/// intro cinematic (`PreNewGame(GAMEMODE_INTRO)`).
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct PlayIntro(pub bool);
+
 /// The level given on the command line (`--lvl-N`), if any.
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct LevelOverride(pub Option<i32>);
@@ -343,8 +350,9 @@ impl Board {
     ) -> Self {
         let level = match mode {
             GameMode::Adventure => adventure_level(player),
+            GameMode::Intro => 1,
         };
-            let first_time_adventure = mode == GameMode::Adventure && !player.is_some_and(PlayerInfo::has_finished_adventure);
+            let first_time_adventure = mode != GameMode::Intro && !player.is_some_and(PlayerInfo::has_finished_adventure);
         let mut board = Self {
             mode,
             scene: GameScene::LevelIntro,
@@ -449,7 +457,11 @@ impl Board {
     /// `Board::PickBackground` (adventure mode) and `LoadBackgroundImages`.
     fn pick_background(&mut self, resources: &mut GameResources, images: &mut Assets<Image>) {
         let level = self.level;
-        self.background = match level {
+        self.background = if self.mode == GameMode::Intro {
+            // The cinematic's lawn is the pool's.
+            BackgroundType::Pool
+        } else {
+            match level {
             l if l <= LEVELS_PER_AREA => BackgroundType::Day,
             l if l <= 2 * LEVELS_PER_AREA => BackgroundType::Night,
             l if l <= 3 * LEVELS_PER_AREA => BackgroundType::Pool,
@@ -458,6 +470,7 @@ impl Board {
             l if l < FINAL_LEVEL => BackgroundType::Roof,
             FINAL_LEVEL => BackgroundType::Boss,
             _ => BackgroundType::Day,
+            }
         };
 
         let mut groups = vec![match self.background {
@@ -659,6 +672,7 @@ fn new_game(
     mut sounds: Sounds,
     profiles: Res<ProfileMgr>,
     level_override: Res<LevelOverride>,
+    mut play_intro: ResMut<PlayIntro>,
 ) {
     // TODO: the first adventure ever starts with the intro (GAMEMODE_INTRO);
     // saved games aren't loaded yet either.
@@ -673,7 +687,8 @@ fn new_game(
     // `--lvl-N` plays a level as a copy of the player who has reached it.
     let player_copy = level_override.0.and_then(|level| profiles.player().map(|p| PlayerInfo { level, ..p.clone() }));
     let player = player_copy.as_ref().or(profiles.player());
-    let mut board = Board::new(GameMode::Adventure, player, &mut resources, &mut images, sounds.rng());
+    let mode = if std::mem::take(&mut play_intro.0) { GameMode::Intro } else { GameMode::Adventure };
+    let mut board = Board::new(mode, player, &mut resources, &mut images, sounds.rng());
     board.level_overridden = level_override.0.is_some();
     for packet in &board.seed_bank.packets[..board.seed_bank.num_packets] {
         if let Some(seed) = packet.packet_type
@@ -697,6 +712,11 @@ fn new_game(
         {
             error!("{e}");
         }
+    }
+    if mode == GameMode::Intro {
+        cutscene::start_intro(&mut board, &mut music);
+        commands.insert_resource(board);
+        return;
     }
     let player_name = player.map_or("", |p| p.name.as_str());
     cutscene::start_level_intro(&mut board, &resources, &mut music, player_name);
@@ -740,6 +760,17 @@ fn update_board(
     // LawnApp::NeedPauseGame: an open dialog pauses the game.
     board.paused = dialogs.is_modal();
 
+    if board.mode == GameMode::Intro {
+        let done = cutscene::update_intro(board, &mut effects, &mut resources, &mut images, &mut music, &mut sounds);
+        if !board.paused {
+            effects.update(sounds.rng());
+        }
+        board.flush_particle_requests(&mut effects, &mut resources, &mut images, sounds.rng());
+        if done {
+            next_state.set(AppState::Board);
+        }
+        return;
+    }
     cutscene::update(board, &mut effects, &mut resources, &mut images, &mut music, &mut sounds);
     board.update_seed_chooser();
     if board.paused {
@@ -1132,6 +1163,9 @@ fn board_input(
     mut sounds: Sounds,
 ) {
     let board = &mut *board;
+    if board.mode == GameMode::Intro {
+        return;
+    }
     // Space and Enter move Crazy Dave's talk along, like a click.
     if !dialogs.is_modal()
         && board.scene == GameScene::LevelIntro
@@ -1210,6 +1244,7 @@ fn do_confirm_back_to_main(dialogs: &mut Dialogs, res: &GameResources) {
 enum RenderItem {
     Backdrop,
     BottomUi,
+    IntroOverlay,
     SeedChooser,
     CrazyDave,
     TopUi,
@@ -1272,13 +1307,19 @@ fn draw_board(
         make_render_order(render_layer::ABOVE_UI, 0, 0)
     };
     items.push((make_render_order(render_layer::UI_BOTTOM, 0, 0), RenderItem::Backdrop));
-    items.push((bottom_ui, RenderItem::BottomUi));
+    if board.mode == GameMode::Intro {
+        items.push((make_render_order(render_layer::SCREEN_FADE, 0, 5), RenderItem::IntroOverlay));
+    } else {
+        items.push((bottom_ui, RenderItem::BottomUi));
+    }
     // The chooser sits in front of the seed bank its seeds fly into.
     items.push((make_render_order(render_layer::ABOVE_UI, 0, 2), RenderItem::SeedChooser));
     if board.scene == GameScene::LevelIntro {
         items.push((make_render_order(render_layer::ABOVE_UI, 0, 3), RenderItem::CrazyDave));
     }
-    items.push((make_render_order(render_layer::UI_TOP, 0, 0), RenderItem::TopUi));
+    if board.mode != GameMode::Intro {
+        items.push((make_render_order(render_layer::UI_TOP, 0, 0), RenderItem::TopUi));
+    }
     // TODO: the coin bank, screen fade and cursor preview.
     items.sort_by_key(|(z, _)| *z);
 
@@ -1289,6 +1330,7 @@ fn draw_board(
             RenderItem::Backdrop => draw_backdrop(board, &resources, &mut g),
             RenderItem::BottomUi => draw_ui_bottom(board, &resources, &mut g),
             RenderItem::TopUi => draw_ui_top(board, &resources, &mut g),
+            RenderItem::IntroOverlay => cutscene::draw_intro(board, &resources, &mut g),
             RenderItem::SeedChooser => board.draw_seed_chooser(&resources, &mut g),
             RenderItem::CrazyDave => {
                 g.push_state();
@@ -1388,6 +1430,12 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
                 g.draw_image(bg, offset, 0.0);
             }
         }
+    }
+    // PoolEffectDraw's fallback: a picture of the water (the animated caustics aren't ported).
+    if board.background == BackgroundType::Pool
+        && let Some(pool) = image(if board.stage_is_night() { "IMAGE_POOL_NIGHT" } else { "IMAGE_POOL" })
+    {
+        g.draw_image(pool, 34.0, 278.0);
     }
     // Challenge::DrawBackground: the line wall-nuts start behind.
     if board.is_wallnut_bowling_level()

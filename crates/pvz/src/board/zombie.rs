@@ -371,6 +371,12 @@ impl Zombie {
         }
     }
 
+    /// Moves the zombie to `x` along its row (the intro's lineup).
+    pub fn place_x(&mut self, x: f32) {
+        self.pos_x = x;
+        self.x = x as i32;
+    }
+
     /// Puts the zombie somewhere (for the street zombies).
     pub fn place(&mut self, x: f32, y: f32) {
         self.pos_x = x;

@@ -513,3 +513,142 @@ fn animate_board(
         music.fade_out(200);
     }
 }
+
+const TIME_INTRO_PRESENTS_FADE_IN: i32 = 1000;
+const TIME_INTRO_LOGO_START: i32 = 5500;
+const TIME_INTRO_LOGO_END: i32 = 5900;
+const TIME_INTRO_PAN_RIGHT_START: i32 = 5890;
+const TIME_INTRO_PAN_RIGHT_END: i32 = 11890;
+const TIME_INTRO_FADE_OUT: i32 = 10890;
+const TIME_INTRO_FADE_OUT_END: i32 = 11890;
+const TIME_INTRO_CINEMATIC_END: i32 = 13890;
+
+/// The first-ever adventure's cinematic: `CutScene::StartLevelIntro` for
+/// `GAMEMODE_INTRO`.
+pub fn start_intro(board: &mut Board, music: &mut Music) {
+    board.cut_scene = CutScene { crazy_dave_dialog_start: -1, scrolled_left: false, ..CutScene::default() };
+    board.menu_button.no_draw = true;
+    board.show_shovel = false;
+    board.x = 0;
+    music.make_sure_music_is_playing(MusicTune::PoolWaterygraves);
+}
+
+/// `CutScene::LoadIntroBoard`: the lawn the logo is shown over. The zombies
+/// the pool levels bring (football, snorkel, catapult) aren't ported, so
+/// cone and bucket heads and plain zombies stand in for them.
+fn load_intro_board(
+    board: &mut Board,
+    effects: &mut EffectSystem,
+    res: &mut GameResources,
+    images: &mut Assets<Image>,
+    sounds: &mut Sounds,
+) {
+    use crate::plant::SeedType::*;
+    use crate::zombie::ZombieType;
+    #[rustfmt::skip]
+    let plants = [
+        (0, 1, Threepeater), (0, 2, Lilypad), (0, 2, Peashooter), (0, 3, Lilypad), (0, 3, Peashooter), (0, 4, Sunflower),
+        (1, 0, Threepeater), (1, 1, Sunflower), (1, 2, Lilypad), (1, 2, Sunflower), (1, 4, Threepeater), (1, 5, Threepeater),
+        (2, 0, Sunflower), (2, 1, Peashooter), (2, 3, Lilypad), (2, 3, Peashooter), (2, 4, Sunflower), (2, 5, Sunflower),
+        (3, 0, Torchwood), (3, 4, Threepeater), (4, 2, Lilypad), (4, 2, Torchwood), (5, 1, Torchwood), (5, 4, Torchwood),
+        (5, 5, Torchwood), (6, 0, Spikeweed), (6, 4, Spikeweed), (7, 1, Spikeweed),
+    ];
+    for (col, row, seed) in plants {
+        let (x, y) = (board.grid_to_pixel_x(col), board.grid_to_pixel_y(col, row));
+        let plant = super::plant::Plant::new(col, row, x, y, seed, false, effects, res, images, sounds.rng());
+        board.plants.alloc(plant);
+    }
+    use ZombieType::{Normal as N, Pail as P, TrafficCone as C};
+    #[rustfmt::skip]
+    let zombies = [
+        (N, 460.0, 0), (P, 680.0, 0), (C, 730.0, 0), (N, 810.0, 0), (C, 670.0, 1), (N, 740.0, 1), (N, 880.0, 1),
+        (N, 500.0, 2), (C, 680.0, 2), (P, 604.0, 3), (N, 880.0, 3), (N, 600.0, 4), (P, 690.0, 4), (N, 780.0, 4),
+        (C, 730.0, 5), (N, 590.0, 5),
+    ];
+    let mut fx = super::zombie::Fx { effects, res, images, sounds };
+    for (ty, x, row) in zombies {
+        board.add_zombie_in_row(ty, row, 0, &mut fx);
+        if let Some((_, zombie)) = board.zombies.iter_mut().last() {
+            zombie.place_x(x);
+        }
+    }
+}
+
+/// `CutScene::UpdateIntro`, every tick. Returns true when the cinematic is
+/// over and the adventure's first level should start.
+pub fn update_intro(
+    board: &mut Board,
+    effects: &mut EffectSystem,
+    res: &mut GameResources,
+    images: &mut Assets<Image>,
+    music: &mut Music,
+    sounds: &mut Sounds,
+) -> bool {
+    if board.paused || board.draw_count == 0 {
+        return false;
+    }
+    board.cut_scene.cutscene_time += 10;
+    let time = board.cut_scene.cutscene_time;
+    board.x = animate_curve(TIME_INTRO_PAN_RIGHT_START, TIME_INTRO_PAN_RIGHT_END, time, -100, 100, TodCurve::Linear);
+
+    if time == 10 {
+        load_intro_board(board, effects, res, images, sounds);
+    }
+    if time == TIME_INTRO_FADE_OUT {
+        music.fade_out(250);
+    }
+    if time == TIME_INTRO_LOGO_END {
+        let order = make_render_order(render_layer::TOP, 0, 0);
+        effects.add_particle(400.0, 300.0, order, ParticleEffect::ScreenFlash, res, images, sounds.rng());
+        sounds.play_sample("SOUND_HUGE_WAVE");
+    }
+    if time == TIME_INTRO_FADE_OUT - 200 {
+        sounds.play_sample("SOUND_SIREN");
+    }
+    time >= TIME_INTRO_CINEMATIC_END
+}
+
+/// `CutScene::DrawIntro`, in screen coordinates: the black screen, "PopCap
+/// Games Presents", the logo and the fade out.
+pub fn draw_intro(board: &Board, res: &GameResources, g: &mut crate::graphics::Graphics) {
+    use crate::graphics::{Justify, SexyColor};
+    let time = board.cut_scene.cutscene_time;
+    g.push_state();
+    g.translate(-board.x as f32, -board.y as f32);
+    if time <= TIME_INTRO_PAN_RIGHT_START || time > TIME_INTRO_FADE_OUT_END {
+        g.set_color(SexyColor::BLACK);
+        g.fill_rect(0.0, 0.0, BOARD_WIDTH as f32, super::BOARD_HEIGHT as f32);
+    }
+    let presents_end = TIME_INTRO_PAN_RIGHT_START - TIME_INTRO_PRESENTS_FADE_IN;
+    if time > TIME_INTRO_PRESENTS_FADE_IN
+        && time <= presents_end
+        && let Some(font) = res.font("FONT_BRIANNETOD16")
+    {
+        let alpha = if time < presents_end - 600 {
+            animate_curve(TIME_INTRO_PRESENTS_FADE_IN, TIME_INTRO_PRESENTS_FADE_IN + 300, time, 0, 255, TodCurve::Linear)
+        } else {
+            animate_curve(presents_end - 600, presents_end - 300, time, 255, 0, TodCurve::Linear)
+        };
+        let text = res.translate("[INTRO_PRESENTS]");
+        g.tod_draw_string(font, 400, 310, &text, SexyColor::rgba(255, 255, 255, alpha.clamp(0, 255) as u8), Justify::Center);
+    }
+    if time > TIME_INTRO_LOGO_START
+        && time <= TIME_INTRO_PAN_RIGHT_END
+        && let Some(logo) = res.image("IMAGE_PVZ_LOGO")
+    {
+        let scale = sexy::tod::animate_curve_float(TIME_INTRO_LOGO_START, TIME_INTRO_LOGO_END, time, 5.0, 1.0, TodCurve::EaseOut);
+        let (w, h) = (BOARD_WIDTH as f32, 150.0);
+        g.set_color(SexyColor::rgba(0, 0, 0, 128));
+        g.fill_rect(400.0 - w * scale * 0.5, 300.0 - h * 0.5 * scale, w * scale, h * scale);
+        g.draw_image_matrix(
+            logo,
+            bevy::math::Affine2::from_cols_array(&[scale, 0.0, 0.0, scale, 400.0, 300.0]),
+        );
+    }
+    if time > TIME_INTRO_FADE_OUT && time <= TIME_INTRO_FADE_OUT_END {
+        let alpha = animate_curve(TIME_INTRO_FADE_OUT, TIME_INTRO_FADE_OUT_END, time, 0, 255, TodCurve::Linear);
+        g.set_color(SexyColor::rgba(0, 0, 0, alpha.clamp(0, 255) as u8));
+        g.fill_rect(0.0, 0.0, BOARD_WIDTH as f32, super::BOARD_HEIGHT as f32);
+    }
+    g.pop_state();
+}

@@ -550,6 +550,7 @@ fn update_selector(
     mut dialogs: ResMut<Dialogs>,
     resources: Res<GameResources>,
     profiles: Res<ProfileMgr>,
+    mut play_intro: ResMut<crate::board::PlayIntro>,
     mut sounds: Sounds,
 ) {
     let gs = &mut *selector;
@@ -560,6 +561,9 @@ fn update_selector(
             // KillGameSelector + PreNewGame(GAMEMODE_ADVENTURE). TODO: the
             // first-ever adventure's intro, Dave's taco level, and the zen
             // garden tutorial before 5-5.
+            // The very first adventure opens with the intro cinematic.
+            let first_time = profiles.player().is_some_and(|p| !p.has_finished_adventure() && p.level == 1);
+            play_intro.0 = first_time && crate::level_flag().is_none();
             next_state.set(AppState::Board);
             return;
         }

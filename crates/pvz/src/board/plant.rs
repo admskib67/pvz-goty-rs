@@ -242,6 +242,24 @@ impl Plant {
                     }
                 }
             }
+            Threepeater => {
+                // Three heads, each its own animation riding on the body.
+                if let Some(body_id) = plant.body {
+                    let rate = rng.range_f32(15.0, 20.0);
+                    if let Some(body) = effects.get_mut(body_id) {
+                        body.anim_rate = rate;
+                    }
+                    for i in 1..=3 {
+                        if let Ok((head_id, head)) = effects.add_reanimation(0.0, 0.0, def.reanim, res, images) {
+                            head.render_order = plant.render_order + 2;
+                            head.loop_type = LoopType::Loop;
+                            head.anim_rate = rate;
+                            head.set_frames_for_layer(&format!("anim_head_idle{i}"));
+                            effects.attach_to_another(head_id, body_id, &format!("anim_head{i}"));
+                        }
+                    }
+                }
+            }
             Chomper => plant.state = PlantState::Ready,
             Cherrybomb => {
                 plant.do_special_countdown = 100;
