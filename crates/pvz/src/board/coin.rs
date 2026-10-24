@@ -30,6 +30,8 @@ pub enum CoinType {
     LargeSun,
     /// The new plant a level ends with (`COIN_FINAL_SEED_PACKET`).
     FinalSeedPacket,
+    /// Level 1-4's award (`COIN_SHOVEL`).
+    Shovel,
 }
 
 /// `CoinMotion`: where the coin comes from.
@@ -116,10 +118,11 @@ impl Coin {
             collect_y: 0.0,
             arrow: None,
         };
-        if ty == CoinType::FinalSeedPacket {
-            if let Some(seeds) = res.image("IMAGE_SEEDS") {
-                coin.width = seeds.cel_width() as f32;
-                coin.height = seeds.cel_height() as f32;
+        if matches!(ty, CoinType::FinalSeedPacket | CoinType::Shovel) {
+            let image = if ty == CoinType::Shovel { "IMAGE_SHOVEL" } else { "IMAGE_SEEDS" };
+            if let Some(image) = res.image(image) {
+                coin.width = image.cel_width() as f32;
+                coin.height = image.cel_height() as f32;
             }
             coin.render_order = make_render_order(render_layer::ABOVE_UI, 0, 0);
         } else {
@@ -170,13 +173,13 @@ impl Coin {
         match self.ty {
             CoinType::SmallSun => 0.5,
             CoinType::LargeSun => 2.0,
-            CoinType::Sun | CoinType::FinalSeedPacket => 1.0,
+            CoinType::Sun | CoinType::FinalSeedPacket | CoinType::Shovel => 1.0,
         }
     }
 
     /// `IsLevelAward`.
     pub fn is_level_award(&self) -> bool {
-        self.ty == CoinType::FinalSeedPacket
+        matches!(self.ty, CoinType::FinalSeedPacket | CoinType::Shovel)
     }
 
     /// `GetSunValue`.
@@ -185,7 +188,7 @@ impl Coin {
             CoinType::Sun => 25,
             CoinType::SmallSun => 15,
             CoinType::LargeSun => 50,
-            CoinType::FinalSeedPacket => 0,
+            CoinType::FinalSeedPacket | CoinType::Shovel => 0,
         }
     }
 
@@ -355,10 +358,30 @@ impl Coin {
         None
     }
 
+    /// What the award makes when it's picked up.
+    pub fn pickup_sound(&self) -> &'static [&'static str] {
+        match self.ty {
+            CoinType::Shovel => &["SOUND_SHOVEL"],
+            _ => &["SOUND_SEEDLIFT", "SOUND_TAP2"],
+        }
+    }
+
     /// `Coin::Draw`: the sun is just its animation.
     pub fn draw(&self, g: &mut crate::graphics::Graphics, effects: &EffectSystem, res: &GameResources) {
         if let Some(id) = self.reanim {
             effects.draw(g, id, res);
+        }
+        if self.ty == CoinType::Shovel
+            && let Some(shovel) = res.image("IMAGE_SHOVEL")
+        {
+            g.push_state();
+            if !self.is_being_collected {
+                let v = super::seed_bank::flashing_gray(self.coin_age, 75) as u8;
+                g.set_colorize_images(true);
+                g.set_color(crate::graphics::SexyColor::rgba(v, v, v, 255));
+            }
+            g.draw_image(shovel, self.pos_x, self.pos_y);
+            g.pop_state();
         }
         if self.ty == CoinType::FinalSeedPacket
             && let Some(seed) = self.award_seed

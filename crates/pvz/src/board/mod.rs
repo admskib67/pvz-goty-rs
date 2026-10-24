@@ -280,6 +280,7 @@ pub struct Board {
     cursor_preview: CursorPreview,
     tutorial_state: TutorialState,
     tutorial_timer: i32,
+    shown_more_sun_tutorial: bool,
     num_suns_fallen: i32,
     /// The mouse in board coordinates, if it's over the window.
     mouse: Option<Vec2>,
@@ -357,6 +358,7 @@ impl Board {
             cursor_preview: CursorPreview::default(),
             tutorial_state: TutorialState::Off,
             tutorial_timer: -1,
+            shown_more_sun_tutorial: false,
             num_suns_fallen: 0,
             mouse: None,
             tutorial_arrow: None,
@@ -654,6 +656,10 @@ fn update_board(
         board.update_zombie_spawning(&mut effects, &mut resources, &mut images, &mut sounds);
         if board.main_counter == 1 && board.first_time_adventure && board.level == 1 {
             board.set_tutorial_state(&resources, TutorialState::Level1PickUpPeashooter);
+        } else if board.main_counter == 1 && board.first_time_adventure && board.level == 2 {
+            board.set_tutorial_state(&resources, TutorialState::Level2PickUpSunflower);
+            board.display_advice(&resources, "[ADVICE_PLANT_SUNFLOWER1]", MessageStyle::TutorialLevel2, None);
+            board.tutorial_timer = 500;
         }
         board.update_progress_meter();
     }
@@ -852,6 +858,12 @@ impl Board {
                 self.add_particle(x as f32, y as f32, render_order, effect);
             }
             PlantAction::Foley(foley) => sounds.play_foley(foley),
+            PlantAction::EatZombie(id) => {
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                if let Some(zombie) = self.zombies.get_mut(id) {
+                    zombie.die_with_loot(&mut fx);
+                }
+            }
             PlantAction::CherryBomb { x, y, row } => {
                 let env = self.zombie_env();
                 let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
@@ -1195,7 +1207,18 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
 /// `Board::DrawUIBottom`: the seed bank and the menu button.
 fn draw_ui_bottom(board: &Board, res: &GameResources, g: &mut Graphics) {
     board.seed_bank.draw(board, res, g);
-    // TODO: the shovel (DrawShovel) once there's something to dig up.
+    // `Board::DrawShovel`.
+    if board.show_shovel
+        && let Some(bank) = res.image("IMAGE_SHOVELBANK")
+    {
+        let (x, y, _, _) = board.shovel_button_rect(res);
+        g.draw_image(bank, x as f32, y as f32);
+        if board.cursor.cursor_type != cursor::CursorType::Shovel
+            && let Some(shovel) = res.image("IMAGE_SHOVEL")
+        {
+            g.draw_image(shovel, (x - 7) as f32, (y - 3) as f32);
+        }
+    }
     if !board.stage_has_fog() {
         draw_top_right_ui(board, res, g);
     }

@@ -35,6 +35,7 @@ pub const LAWN_XMIN: i32 = 40;
 pub enum CursorType {
     Normal,
     PlantFromBank,
+    Shovel,
 }
 
 /// What the mouse is carrying (`CursorObject`).
@@ -214,6 +215,8 @@ impl Board {
         self.cursor = CursorObject::default();
         if self.tutorial_state == TutorialState::Level1PlantPeashooter {
             self.set_tutorial_state(res, TutorialState::Level1PickUpPeashooter);
+        } else {
+            self.tutorial_sunflower_done_carrying(res, None);
         }
     }
 
@@ -223,6 +226,29 @@ impl Board {
             self.seed_bank.packets[i].active = true;
         }
         self.clear_cursor(res);
+    }
+
+    /// `Board::GetShovelButtonRect`: (x, y, width, height).
+    pub(super) fn shovel_button_rect(&self, res: &GameResources) -> (i32, i32, i32, i32) {
+        let width = res.image("IMAGE_SHOVELBANK").map_or(70, |i| i.width as i32);
+        let height = res.image("IMAGE_SEEDBANK").map_or(87, |i| i.height as i32);
+        (self.seed_bank.extra_width() + 456, 0, width, height)
+    }
+
+    /// `Board::MouseDownWithTool`, for the shovel.
+    fn mouse_down_with_shovel(&mut self, p: IVec2, right: bool, effects: &mut EffectSystem, sounds: &mut Sounds) {
+        self.cursor = CursorObject::default();
+        sounds.play_foley(FoleyType::Drop);
+        if right {
+            return;
+        }
+        let (grid_x, grid_y) = (self.pixel_to_grid_x(p.x), self.pixel_to_grid_y(p.x, p.y));
+        // ToolHitTest: the plant on the square under the mouse.
+        let target = self.plants.iter().find(|(_, plant)| plant.col == grid_x && plant.row == grid_y && !plant.dead).map(|(id, _)| id);
+        if let Some(plant) = target.and_then(|id| self.plants.get_mut(id)) {
+            sounds.play_foley(FoleyType::UseShovel);
+            plant.die(effects);
+        }
     }
 
     /// `Board::MouseDown`, at a point in board coordinates. `right` is the
@@ -238,6 +264,20 @@ impl Board {
         sounds: &mut Sounds,
     ) {
         let ip = p.floor().as_ivec2();
+        if self.cursor.cursor_type == CursorType::Shovel {
+            self.mouse_down_with_shovel(ip, right, effects, sounds);
+            return;
+        }
+        if !right && self.cursor.cursor_type == CursorType::Normal && self.show_shovel && self.can_interact_with_board_buttons() {
+            let (x, y, w, h) = self.shovel_button_rect(res);
+            if ip.x >= x && ip.x < x + w && ip.y >= y && ip.y < y + h {
+                if !self.paused && self.scene == GameScene::Playing {
+                    self.cursor.cursor_type = CursorType::Shovel;
+                    sounds.play_foley(FoleyType::Shovel);
+                }
+                return;
+            }
+        }
         // MouseHitTest: the seed bank and sun only count with an empty hand.
         if !right
             && !self.is_plant_in_cursor()
@@ -265,8 +305,9 @@ impl Board {
         if coin.is_level_award() {
             // The level's award: it flies to the middle of the screen and the
             // level fades out (the board does that on its next tick).
-            sounds.play_sample("SOUND_SEEDLIFT");
-            sounds.play_sample("SOUND_TAP2");
+            for sound in coin.pickup_sound() {
+                sounds.play_sample(sound);
+            }
             coin.collect();
             self.pending_fade_out = true;
             // TODO: the starburst and pickup particles around the packet.
@@ -320,6 +361,8 @@ impl Board {
         sounds.play_sample("SOUND_SEEDLIFT");
         if self.tutorial_state == TutorialState::Level1PickUpPeashooter {
             self.set_tutorial_state(res, TutorialState::Level1PlantPeashooter);
+        } else {
+            self.tutorial_sunflower_picked_up(res, seed);
         }
         // Deactivate.
         let packet = &mut self.seed_bank.packets[index];
@@ -389,8 +432,10 @@ impl Board {
                 TutorialState::Level1RefreshPeashooter
             };
             self.set_tutorial_state(res, next);
+        } else {
+            self.tutorial_sunflower_done_carrying(res, Some(seed));
         }
-        self.clear_cursor(res);
+        self.cursor = CursorObject::default();
     }
 
     /// `Board::AddPlant` + `DoPlantingEffects`.
@@ -454,6 +499,13 @@ impl Board {
 
     /// `CursorObject::Draw`: the plant held by the mouse.
     pub(super) fn draw_cursor_object(&self, res: &GameResources, g: &mut Graphics) {
+        if self.scene == GameScene::Playing
+            && self.cursor.cursor_type == CursorType::Shovel
+            && let (Some(p), Some(shovel)) = (self.mouse, res.image("IMAGE_SHOVEL"))
+        {
+            g.draw_image(shovel, p.x.floor() - 15.0, p.y.floor() - 65.0);
+            return;
+        }
         if self.scene != GameScene::Playing || !self.is_plant_in_cursor() {
             return;
         }

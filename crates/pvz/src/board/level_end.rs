@@ -86,11 +86,12 @@ impl Board {
             z.set_dropped_loot();
         }
         if self.first_time_adventure {
-            // TODO: levels 4, 9, 14, ... and 50 award a shovel, a note and so
+            // TODO: levels 9, 14, ... and 50 award a note, an almanac and so
             // on instead; finishing adventure gives a money bag.
             sounds.play_foley(FoleyType::SpawnSun);
             let (x, y) = (center.0 as f32, center.1 as f32);
-            self.add_coin(x, y, CoinType::FinalSeedPacket, CoinMotion::Coin, effects, res, images, sounds);
+            let ty = if self.level == 4 { CoinType::Shovel } else { CoinType::FinalSeedPacket };
+            self.add_coin(x, y, ty, CoinMotion::Coin, effects, res, images, sounds);
             let seed = SeedType::from_index(crate::plant::award_seed_for_level(self.level));
             if let Some(seed) = seed
                 && let Err(e) = res.reanim_definition(seed.definition().reanim.file(), images)

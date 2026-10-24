@@ -39,6 +39,8 @@ pub enum PlantAction {
     CherryBomb { x: i32, y: i32, row: i32 },
     /// `Plant::DoSpecial` for the potato mine: kills zombies on top of it.
     PotatoMine { x: i32, y: i32, row: i32 },
+    /// A chomper swallows this zombie whole (`DieWithLoot`).
+    EatZombie(sexy::data_array::Id<Zombie>),
     /// A particle effect at a spot on the board.
     Particle { x: i32, y: i32, render_order: i32, effect: ParticleEffect },
     /// A sound.
@@ -49,8 +51,14 @@ pub enum PlantAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlantState {
     NotReady,
+    Ready,
     PotatoRising,
     PotatoArmed,
+    ChomperBiting,
+    ChomperBitingGotOne,
+    ChomperBitingMissed,
+    ChomperDigesting,
+    ChomperSwallowing,
 }
 
 /// Plants that shoot straight peas.
@@ -210,6 +218,7 @@ impl Plant {
                     }
                 }
             }
+            Chomper => plant.state = PlantState::Ready,
             Cherrybomb => {
                 plant.do_special_countdown = 100;
                 if let Some(body) = plant.body.and_then(|b| effects.get_mut(b)) {
@@ -352,11 +361,69 @@ impl Plant {
                     self.blink_countdown = 400 + rng.next_range(4000) as i32;
                 }
             }
-            PlantState::PotatoArmed => {
-                if self.find_potato_target(zombies) {
-                    self.do_special(actions, effects);
+            PlantState::PotatoArmed if self.find_potato_target(zombies) => self.do_special(actions, effects),
+            _ => {}
+        }
+    }
+
+    /// `Plant::FindTargetZombie` for the chomper: a zombie with a head right
+    /// in front of it (further if it's busy biting something).
+    fn find_chomper_target(&self, zombies: &DataArray<Zombie>) -> Option<sexy::data_array::Id<Zombie>> {
+        let attack = IRect::new(self.x + 80, self.y, 40, PLANT_SIZE);
+        let mut best: Option<(i32, sexy::data_array::Id<Zombie>)> = None;
+        for (id, zombie) in zombies.iter() {
+            if zombie.row != self.row || !zombie.effected_by_damage(9) || !zombie.has_head {
+                continue;
+            }
+            let extra = if zombie.is_eating || self.state == PlantState::ChomperBiting { 60 } else { 0 };
+            let rect = zombie.zombie_rect();
+            if rect_overlap(attack, rect) < -extra {
+                continue;
+            }
+            if best.is_none_or(|(w, _)| -rect.x > w) {
+                best = Some((-rect.x, id));
+            }
+        }
+        best.map(|(_, id)| id)
+    }
+
+    /// `Plant::UpdateChomper`.
+    fn update_chomper(&mut self, zombies: &DataArray<Zombie>, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem) {
+        let loops = self.body.and_then(|b| effects.get(b)).is_some_and(|b| b.loop_count > 0);
+        match self.state {
+            PlantState::Ready => {
+                if self.find_chomper_target(zombies).is_some() {
+                    self.play_body_reanim(effects, "anim_bite", LoopType::PlayOnceAndHold, 20, 24.0);
+                    self.state = PlantState::ChomperBiting;
+                    self.state_countdown = 70;
                 }
             }
+            PlantState::ChomperBiting if self.state_countdown == 0 => {
+                actions.push(PlantAction::Foley(FoleyType::BigChomp));
+                // TODO: gargantuars and bosses are only hurt, pole vaulters mid-jump are missed.
+                match self.find_chomper_target(zombies) {
+                    Some(id) => {
+                        actions.push(PlantAction::EatZombie(id));
+                        self.state = PlantState::ChomperBitingGotOne;
+                    }
+                    None => self.state = PlantState::ChomperBitingMissed,
+                }
+            }
+            PlantState::ChomperBitingGotOne if loops => {
+                self.play_body_reanim(effects, "anim_chew", LoopType::Loop, 0, 15.0);
+                self.state = PlantState::ChomperDigesting;
+                self.state_countdown = 4000;
+            }
+            PlantState::ChomperDigesting if self.state_countdown == 0 => {
+                self.play_body_reanim(effects, "anim_swallow", LoopType::PlayOnceAndHold, 20, 12.0);
+                self.state = PlantState::ChomperSwallowing;
+            }
+            PlantState::ChomperSwallowing | PlantState::ChomperBitingMissed if loops => {
+                let fps = self.body.and_then(|b| effects.get(b)).map_or(12.0, |b| b.definition.fps);
+                self.play_body_reanim(effects, "anim_idle", LoopType::Loop, 20, fps);
+                self.state = PlantState::Ready;
+            }
+            _ => {}
         }
     }
 
@@ -425,6 +492,9 @@ impl Plant {
         }
         if self.seed == SeedType::Potatomine {
             self.update_potato(zombies, actions, effects, rng);
+        }
+        if self.seed == SeedType::Chomper {
+            self.update_chomper(zombies, actions, effects);
         }
         if self.seed.makes_sun() {
             self.update_production_plant(actions, rng);

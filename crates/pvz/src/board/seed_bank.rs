@@ -96,9 +96,10 @@ impl SeedPacket {
         if board.scene != GameScene::Playing {
             grayness = board.seed_bank.cut_scene_darken;
             percent_dark = 0.0;
-        } else if board.tutorial_state == super::TutorialState::Level1PickUpPeashooter
+        } else if (board.tutorial_state == super::TutorialState::Level1PickUpPeashooter
             && board.tutorial_timer == -1
-            && seed == SeedType::Peashooter
+            && seed == SeedType::Peashooter)
+            || (board.tutorial_state.is_sunflower_pick_up() && seed == SeedType::Sunflower)
         {
             grayness = flashing_gray(board.main_counter, 75);
         } else if !board.can_take_sun_money(cost) || percent_dark > 1.0 {
@@ -135,7 +136,7 @@ impl SeedBank {
     }
 
     /// `Board::GetSeedBankExtraWidth`: banks with more than six packets are wider.
-    fn extra_width(&self) -> i32 {
+    pub fn extra_width(&self) -> i32 {
         match self.num_packets {
             0..=6 => 0,
             7 => 60,

@@ -30,6 +30,9 @@ pub enum MessageStyle {
     BigMiddle,
     BigMiddleFast,
     HouseName,
+    /// "A huge wave of zombies is approaching!". TODO: the original lays
+    /// the letters out as separate animations (REANIM_TEXT_FADE_ON).
+    HugeWave,
     SlotMachine,
     ZenGardenLong,
 }
@@ -60,6 +63,7 @@ impl MessageWidget {
             HintFast | HintTallFast | BigMiddleFast | TutorialLevel1 | TutorialLevel2 | TutorialLater => 500,
             HintStay | TutorialLevel1Stay | TutorialLaterStay => 10000,
             HouseName => 250,
+            HugeWave => 750,
             SlotMachine => 750,
             Off => 0,
         };
@@ -98,6 +102,7 @@ impl MessageWidget {
             HintLong | HintFast | HintStay => (400, 527, 55, -4, hint, 192, false),
             BigMiddle | BigMiddleFast => (400, 300, 110, 0, hint, 192, false),
             HouseName => (400, 550, 0, 0, SexyColor::WHITE, 255, true),
+            HugeWave => (400, 330, 0, 0, SexyColor::rgba(255, 0, 0, 255), 255, false),
             SlotMachine => (340, 93, 0, 0, SexyColor::rgba(250, 250, 0, 255), 64, false),
             ZenGardenLong => (400, 514, 55, -4, hint, 192, false),
             Off => return,

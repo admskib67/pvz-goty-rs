@@ -798,7 +798,7 @@ impl Zombie {
     }
 
     /// `Zombie::DieWithLoot`.
-    fn die_with_loot(&mut self, fx: &mut Fx) {
+    pub fn die_with_loot(&mut self, fx: &mut Fx) {
         self.die_no_loot(fx.effects);
         self.drop_loot();
     }

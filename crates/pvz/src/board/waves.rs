@@ -12,8 +12,8 @@
 //! `Lawn/TodCommon.cpp` (`TodPickFromSmoothArray`).
 //!
 //! Only the zombies ported so far (see [`ZombieType::is_implemented`]) are
-//! picked. Not yet: the huge wave banner and its siren, the final wave
-//! banner and zombies rising from graves.
+//! picked. Not yet: the huge wave banner's animated letters, the music's
+//! drum burst and zombies rising from graves.
 
 use bevy::prelude::*;
 use sexy::rand::MtRand;
@@ -23,7 +23,8 @@ use crate::reanim::EffectSystem;
 use crate::resources::GameResources;
 use crate::zombie::{NUM_ZOMBIE_TYPES, ZombieType, can_spawn_on_level, waves_for_level};
 
-use super::tutorial::TutorialState;
+use super::message::MessageStyle;
+use super::tutorial::{AdviceType, TutorialState};
 use super::zombie::{Fx, Zombie, ZombieEnv};
 use crate::graphics::{Graphics, SexyRect};
 
@@ -111,6 +112,10 @@ pub struct WaveState {
     pub progress_meter_width: i32,
     /// Counts down from 100 after a flag wave starts, raising the meter's flag.
     pub flag_raise_counter: i32,
+    /// Counts down from the "huge wave" warning to the wave itself.
+    pub huge_wave_count_down: i32,
+    /// Counts down from the "final wave" banner to its sound.
+    pub final_wave_sound_counter: i32,
 }
 
 impl Default for WaveState {
@@ -129,6 +134,8 @@ impl Default for WaveState {
             wave_row_got_lawn_mowered: [-100; MAX_GRID_SIZE_Y],
             progress_meter_width: 0,
             flag_raise_counter: 0,
+            huge_wave_count_down: 0,
+            final_wave_sound_counter: 0,
         }
     }
 }
@@ -346,8 +353,15 @@ impl Board {
     }
 
     /// `Board::NextWaveComing`.
-    fn next_wave_coming(&self, sounds: &mut Sounds) {
-        // TODO: the final wave's banner.
+    fn next_wave_coming(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, sounds: &mut Sounds) {
+        if self.waves.current_wave + 1 == self.waves.num_waves {
+            let order = super::make_render_order(super::render_layer::ABOVE_UI, 0, 0);
+            match effects.add_reanimation(0.0, 30.0, crate::reanim::ReanimationType::FinalWave, res, images) {
+                Ok((_, banner)) => banner.render_order = order,
+                Err(e) => error!("{e}"),
+            }
+            self.waves.final_wave_sound_counter = 60;
+        }
         if self.waves.current_wave == 0 {
             sounds.play_sample("SOUND_AWOOGA");
         } else if self.is_flag_wave(self.waves.current_wave) {
@@ -369,7 +383,29 @@ impl Board {
         ) {
             return;
         }
-        // TODO: HasLevelAwardDropped, the huge wave countdown.
+        if self.waves.final_wave_sound_counter > 0 {
+            self.waves.final_wave_sound_counter -= 1;
+            if self.waves.final_wave_sound_counter == 0 {
+                sounds.play_sample("SOUND_FINALWAVE");
+            }
+        }
+        if self.has_level_award_dropped() {
+            return;
+        }
+        if self.waves.huge_wave_count_down > 0 {
+            self.waves.huge_wave_count_down -= 1;
+            if self.waves.huge_wave_count_down == 0 {
+                self.clear_advice(Some(AdviceType::HugeWave));
+                self.next_wave_coming(effects, res, images, sounds);
+                self.waves.zombie_count_down = 1;
+            } else {
+                if self.waves.huge_wave_count_down == 725 {
+                    sounds.play_sample("SOUND_HUGE_WAVE");
+                }
+                // TODO: the music's drum burst before the wave.
+                return;
+            }
+        }
         if self.waves.current_wave == self.waves.num_waves {
             return;
         }
@@ -381,8 +417,13 @@ impl Board {
             self.waves.zombie_count_down = 200;
         }
         if self.waves.zombie_count_down == 5 {
-            // TODO: flag waves show the huge wave banner first.
-            self.next_wave_coming(sounds);
+            if self.is_flag_wave(self.waves.current_wave) {
+                self.clear_advice(None);
+                self.display_advice_again(res, "[ADVICE_HUGE_WAVE]", MessageStyle::HugeWave, AdviceType::HugeWave);
+                self.waves.huge_wave_count_down = 750;
+                return;
+            }
+            self.next_wave_coming(effects, res, images, sounds);
         }
         if self.waves.zombie_count_down == 0 {
             let mut fx = Fx { effects, res, images, sounds: &mut *sounds };
