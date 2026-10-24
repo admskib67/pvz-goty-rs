@@ -133,6 +133,8 @@ pub struct ZombieEnv {
     pub zombie_count: usize,
     /// `CountZombiesOnScreen`.
     pub zombies_on_screen: usize,
+    /// `IsWallnutBowlingLevel`: zombies don't eat, and pole vaulters jump on the spot.
+    pub bowling: bool,
 }
 
 /// The things a zombie touches besides itself and the plants.
@@ -299,7 +301,7 @@ impl Zombie {
                 z.pos_x = WIDE_BOARD_WIDTH + 70.0 + fx.sounds.rng().next_range(10) as f32;
                 z.play_zombie_reanim(fx.effects, "anim_run", LoopType::Loop, 0, 0.0);
                 z.pick_random_speed(fx);
-                z.attack_rect = IRect::new(-29, 0, 70, 115);
+                z.attack_rect = if env.bowling { IRect::new(-229, 0, 270, 115) } else { IRect::new(-29, 0, 70, 115) };
             }
             ZombieType::Flag => {
                 z.has_object = true;
@@ -864,7 +866,7 @@ impl Zombie {
                     .body
                     .and_then(|b| fx.effects.get(b))
                     .map_or(1.0, |b| b.frame_count as f32 / b.anim_rate * 100.0);
-                let distance = self.x - plant_x - 80;
+                let distance = if env.bowling { 0 } else { self.x - plant_x - 80 };
                 self.vel_x = distance as f32 / duration;
                 self.has_object = false;
             }
@@ -920,7 +922,9 @@ impl Zombie {
         if !self.has_head || self.age % ticks_between_eats != 0 || self.is_vaulting() {
             return;
         }
-        if let Some(id) = self.find_plant_target(plants) {
+        // Zombies ignore the rolling nuts on the bowling level (CanTargetPlant).
+        let target = if env.bowling { None } else { self.find_plant_target(plants) };
+        if let Some(id) = target {
             self.eat_plant(plants, id, fx);
         } else if self.is_eating {
             self.stop_eating(env, fx);
@@ -1053,6 +1057,22 @@ impl Zombie {
         }
         if remaining > 0 {
             self.take_body_damage(remaining, flags, env, fx);
+        }
+    }
+
+    /// A rolling wall-nut's hit (`Plant::UpdateBowling`): a helmet takes the
+    /// blow, otherwise the zombie is flattened.
+    pub fn bowling_damage(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        match self.helm_type {
+            HelmType::Pail => {
+                fx.sounds.play_foley(FoleyType::ShieldHit);
+                self.take_helm_damage(900, 0, fx);
+            }
+            HelmType::TrafficCone => {
+                fx.sounds.play_foley(FoleyType::PlasticHit);
+                self.take_helm_damage(900, 0, fx);
+            }
+            HelmType::None => self.take_damage(1800, 0, env, fx),
         }
     }
 

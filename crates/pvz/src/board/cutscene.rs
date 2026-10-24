@@ -110,6 +110,7 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
 
     let level = board.level;
     let first_time = board.first_time_adventure;
+    let bowling = board.is_wallnut_bowling_level();
     let cs = &mut board.cut_scene;
     *cs = CutScene::default();
     if first_time && matches!(level, 1 | 2 | 4) {
@@ -121,8 +122,11 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
     }
     // TODO: grave stones (TimeGraveStoneEnd - TimeGraveStoneStart on night levels).
     cs.grave_stone_time = 0;
-    cs.ready_set_plant_time =
-        if first_time && level <= 2 { 0 } else { TIME_READY_SET_PLANT_END - TIME_READY_SET_PLANT_START };
+    cs.ready_set_plant_time = if (first_time && level <= 2) || bowling {
+        0
+    } else {
+        TIME_READY_SET_PLANT_END - TIME_READY_SET_PLANT_START
+    };
     cs.lawn_mower_time = 550;
     // TODO: Crazy Dave's talks (mCrazyDaveDialogStart), fog and the boss.
     cs.crazy_dave_time = 0;
@@ -131,6 +135,12 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
 
     if cs.is_scrolled_left_at_start() {
         board.x = BOARD_OFFSET;
+    }
+    if bowling {
+        // IsNonScrollingCutscene with no Crazy Dave: CancelIntro. TODO: Dave
+        // explains the level first (mCrazyDaveDialogStart 2400).
+        start_non_scrolling_intro(board);
+        return;
     }
 
     let house = match board.background {
@@ -142,6 +152,19 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
     board.display_advice(res, &house, MessageStyle::HouseName, None);
 
     music.make_sure_music_is_playing(MusicTune::ChooseYourSeeds);
+}
+
+/// `CutScene::CancelIntro` for levels that don't scroll: the lawn is set up
+/// and play starts in a moment.
+fn start_non_scrolling_intro(board: &mut Board) {
+    place_lawn_items(board);
+    board.x = 0;
+    board.cut_scene.cutscene_time = board.cut_scene.time_to_start() - 20;
+    board.seed_bank.x = SEED_BANK_OFFSET_X_END;
+    board.seed_bank.y = 0;
+    board.seed_bank.cut_scene_darken = 255;
+    board.menu_button.no_draw = false;
+    board.show_bowling_line = true;
 }
 
 /// `CutScene::Update`, every tick during the level intro.

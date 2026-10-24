@@ -45,6 +45,10 @@ pub enum PlantAction {
     Particle { x: i32, y: i32, render_order: i32, effect: ParticleEffect },
     /// A sound.
     Foley(FoleyType),
+    /// A rolling wall-nut hits this zombie (`Plant::UpdateBowling`).
+    BowlingHit(sexy::data_array::Id<Zombie>),
+    /// An explode-o-nut blows up where it hit.
+    ExplodeONut { x: i32, y: i32, row: i32 },
 }
 
 /// `PlantState`, for the plants ported so far.
@@ -59,6 +63,8 @@ enum PlantState {
     ChomperBitingMissed,
     ChomperDigesting,
     ChomperSwallowing,
+    BowlingUp,
+    BowlingDown,
 }
 
 /// Plants that shoot straight peas.
@@ -106,6 +112,8 @@ pub struct Plant {
     pub recently_eaten_countdown: i32,
     /// Flashes white for this many ticks after a bite (`mEatenFlashCountdown`).
     pub eaten_flash_countdown: i32,
+    /// Planted on the wall-nut bowling level: it rolls instead of standing.
+    bowling: bool,
     body: Option<ReanimationId>,
     head: Option<ReanimationId>,
     blink: Option<ReanimationId>,
@@ -142,6 +150,7 @@ impl Plant {
         x: i32,
         y: i32,
         seed: SeedType,
+        bowling: bool,
         effects: &mut EffectSystem,
         res: &mut GameResources,
         images: &mut Assets<Image>,
@@ -168,6 +177,7 @@ impl Plant {
             shooting_counter: 0,
             recently_eaten_countdown: 0,
             eaten_flash_countdown: 0,
+            bowling,
             body: None,
             head: None,
             blink: None,
@@ -182,6 +192,17 @@ impl Plant {
                 body.anim_rate = rng.range_f32(10.0, 15.0);
                 if body.definition.find_track("anim_idle").is_some() {
                     body.set_frames_for_layer("anim_idle");
+                }
+                if bowling && body.definition.find_track("_ground").is_some() {
+                    body.set_frames_for_layer("_ground");
+                    if matches!(seed, SeedType::Wallnut | SeedType::ExplodeONut) {
+                        body.anim_rate = rng.range_f32(12.0, 18.0);
+                    } else if seed == SeedType::GiantWallnut {
+                        body.anim_rate = rng.range_f32(6.0, 10.0);
+                    }
+                }
+                if seed == SeedType::ExplodeONut {
+                    body.color_override = [255, 64, 64, 255];
                 }
                 body.is_attachment = true;
                 plant.body = Some(id);
@@ -261,10 +282,12 @@ impl Plant {
             Flowerpot | Lilypad => PlantOrder::Lilypad,
             _ => PlantOrder::Normal,
         };
-        make_render_order(render_layer::PLANT, self.row, order as i32 * 5 - self.x + 800)
+        let layer = if self.bowling { render_layer::PROJECTILE } else { render_layer::PLANT };
+        make_render_order(layer, self.row, order as i32 * 5 - self.x + 800)
     }
 
     /// `Plant::Update`, while playing.
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         zombies: &DataArray<Zombie>,
@@ -272,9 +295,10 @@ impl Plant {
         effects: &mut EffectSystem,
         res: &mut GameResources,
         images: &mut Assets<Image>,
+        row_y: &[i32; super::MAX_GRID_SIZE_Y],
         rng: &mut MtRand,
     ) {
-        self.update_abilities(zombies, actions, effects, rng);
+        self.update_abilities(zombies, actions, effects, row_y, rng);
         self.animate(actions, effects, res, images, rng);
         if self.health < 0 {
             self.die(effects);
@@ -477,6 +501,9 @@ impl Plant {
 
     /// `Plant::GetPlantAttackRect`, for the plants ported so far.
     fn attack_rect(&self) -> IRect {
+        if self.bowling {
+            return IRect::new(self.x, self.y, PLANT_SIZE - 20, PLANT_SIZE);
+        }
         match self.seed {
             SeedType::Leftpeater => IRect::new(0, self.y, self.x, PLANT_SIZE),
             _ => IRect::new(self.x + 60, self.y, super::BOARD_WIDTH, PLANT_SIZE),
@@ -489,6 +516,7 @@ impl Plant {
         zombies: &DataArray<Zombie>,
         actions: &mut Vec<PlantAction>,
         effects: &mut EffectSystem,
+        row_y: &[i32; super::MAX_GRID_SIZE_Y],
         rng: &mut MtRand,
     ) {
         if self.dead {
@@ -497,6 +525,10 @@ impl Plant {
         self.update_shooting(actions, effects);
         if self.state_countdown > 0 {
             self.state_countdown -= 1;
+        }
+        if self.bowling {
+            self.update_bowling(zombies, actions, effects, row_y, rng);
+            return;
         }
         if self.seed == SeedType::Potatomine {
             self.update_potato(zombies, actions, effects, rng);
@@ -517,6 +549,78 @@ impl Plant {
             }
         }
         // TODO: the other plants' abilities.
+    }
+
+    /// `Plant::UpdateBowling`: a nut rolls right along its row, flattening
+    /// what it hits and bouncing off up or down the lawn after the first hit.
+    fn update_bowling(
+        &mut self,
+        zombies: &DataArray<Zombie>,
+        actions: &mut Vec<PlantAction>,
+        effects: &mut EffectSystem,
+        row_y: &[i32; super::MAX_GRID_SIZE_Y],
+        rng: &mut MtRand,
+    ) {
+        if let Some(body) = self.body.and_then(|b| effects.get(b))
+            && body.definition.find_track("_ground").is_some()
+        {
+            let mut speed = body.track_velocity("_ground");
+            if self.seed == SeedType::GiantWallnut {
+                speed *= 2.0;
+            }
+            self.x = (self.x as f32 - speed) as i32;
+            if self.x > 800 {
+                self.die(effects);
+                return;
+            }
+        }
+        match self.state {
+            PlantState::BowlingUp => self.y -= 2,
+            PlantState::BowlingDown => self.y += 2,
+            _ => {}
+        }
+        if (row_y[self.row as usize] - self.y).abs() > 2 {
+            return;
+        }
+
+        let mut new_state = self.state;
+        if self.state == PlantState::BowlingUp && self.row <= 0 {
+            new_state = PlantState::BowlingDown;
+        } else if self.state == PlantState::BowlingDown && self.row >= 4 {
+            new_state = PlantState::BowlingUp;
+        }
+        if let Some(target) = self.find_target_zombie(zombies) {
+            if self.seed == SeedType::ExplodeONut {
+                actions.push(PlantAction::ExplodeONut { x: self.x + PLANT_SIZE / 2, y: self.y + PLANT_SIZE / 2, row: self.row });
+                self.die(effects);
+                return;
+            }
+            actions.push(PlantAction::BowlingHit(target));
+            // TODO: giant wall-nuts (which flatten everything and keep going straight).
+            new_state = if self.row == 4 || self.state == PlantState::BowlingDown {
+                PlantState::BowlingUp
+            } else if self.row == 0 || self.state == PlantState::BowlingUp {
+                PlantState::BowlingDown
+            } else if rng.next_range(2) != 0 {
+                PlantState::BowlingUp
+            } else {
+                PlantState::BowlingDown
+            };
+        }
+        // TODO: money from nuts that hit many zombies (after level 10).
+        match new_state {
+            PlantState::BowlingUp => {
+                self.row -= 1;
+                self.state = new_state;
+                self.render_order = self.calc_render_order();
+            }
+            PlantState::BowlingDown => {
+                self.state = new_state;
+                self.render_order = self.calc_render_order();
+                self.row += 1;
+            }
+            _ => {}
+        }
     }
 
     /// `Plant::UpdateProductionPlant`, for sunflowers.
@@ -557,6 +661,9 @@ impl Plant {
         let mut best: Option<(i32, sexy::data_array::Id<Zombie>)> = None;
         for (id, zombie) in zombies.iter() {
             if zombie.row != self.row || !zombie.effected_by_damage(damage_range::GROUND) {
+                continue;
+            }
+            if self.seed == SeedType::ExplodeONut && zombie.phase == super::zombie::ZombiePhase::PoleInVault {
                 continue;
             }
             let rect = zombie.zombie_rect();

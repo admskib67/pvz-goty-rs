@@ -241,6 +241,11 @@ pub struct Board {
     pub plant_row: [PlantRowType; MAX_GRID_SIZE_Y],
     pub grid_square_type: [[GridSquareType; MAX_GRID_SIZE_Y]; MAX_GRID_SIZE_X],
     pub sun_money: i32,
+    /// `Challenge::mConveyorBeltCounter`: ticks until the next seed packet rides in.
+    conveyor_belt_counter: i32,
+    last_conveyor_seed: Option<SeedType>,
+    /// `Challenge::mShowBowlingLine`.
+    show_bowling_line: bool,
     /// The player's money, as shown by the coin bank (the profile holds the real total).
     pub player_coins: i32,
     /// Money collected since the last tick, for the profile.
@@ -334,6 +339,9 @@ impl Board {
             plant_row: [PlantRowType::Normal; MAX_GRID_SIZE_Y],
             grid_square_type: [[GridSquareType::Grass; MAX_GRID_SIZE_Y]; MAX_GRID_SIZE_X],
             sun_money: 50,
+            conveyor_belt_counter: 0,
+            last_conveyor_seed: None,
+            show_bowling_line: false,
             player_coins: player.map_or(0, |p| p.coins),
             pending_money: 0,
             coin_bank_fade_count: 0,
@@ -392,15 +400,24 @@ impl Board {
             board.sun_count_down = rng.range_int(425, 700);
         }
         let num_packets = board.num_seeds_in_bank(player);
+        board.seed_bank.conveyor = board.has_conveyor_belt_seed_bank();
         board.seed_bank.num_packets = num_packets;
         board.seed_bank.update_width(resources);
         // TODO: the seed chooser; until it exists every level gets the
         // first plants in order, as levels without choosing do.
-        for i in 0..num_packets {
-            let seed = SeedType::from_index(i as i32);
-            board.seed_bank.packets[i].set_packet_type(seed);
+        if !board.has_conveyor_belt_seed_bank() {
+            for i in 0..num_packets {
+                let seed = SeedType::from_index(i as i32);
+                board.seed_bank.packets[i].set_packet_type(seed);
+            }
         }
         board.init_zombie_waves(rng);
+        // Challenge::InitLevel for wall-nut bowling.
+        if board.is_wallnut_bowling_level() {
+            board.seed_bank.add_seed(SeedType::Wallnut);
+            board.conveyor_belt_counter = 400;
+            board.show_bowling_line = true;
+        }
         board
     }
 
@@ -491,10 +508,23 @@ impl Board {
 
     /// `GetNumSeedsInBank`.
     fn num_seeds_in_bank(&self, player: Option<&PlayerInfo>) -> usize {
+        if self.has_conveyor_belt_seed_bank() {
+            return 10;
+        }
         let Some(player) = player else { return 0 };
         // TODO: STORE_ITEM_PACKET_UPGRADE adds slots once purchases exist.
         let slots = 6;
         slots.min(seeds_available(player)).max(0) as usize
+    }
+
+    /// `LawnApp::IsWallnutBowlingLevel`, for adventure mode.
+    pub fn is_wallnut_bowling_level(&self) -> bool {
+        self.mode == GameMode::Adventure && self.level == 5
+    }
+
+    /// `Board::HasConveyorBeltSeedBank`.
+    pub fn has_conveyor_belt_seed_bank(&self) -> bool {
+        self.is_wallnut_bowling_level()
     }
 
     /// `GridToPixelY` for the grid's left column.
@@ -534,7 +564,9 @@ impl Board {
 
     /// `Music::StartGameMusic`'s choice of tune.
     fn game_music(&self) -> MusicTune {
-        if self.mode == GameMode::Adventure && matches!(self.level, 10 | 20 | 30) {
+        if self.is_wallnut_bowling_level() {
+            MusicTune::MinigameLoonboon
+        } else if self.mode == GameMode::Adventure && matches!(self.level, 10 | 20 | 30) {
             MusicTune::Conveyer
         } else if self.level == FINAL_LEVEL {
             MusicTune::FinalBossBrainiacManiac
@@ -671,6 +703,9 @@ fn update_board(
     if board.scene == GameScene::Playing {
         board.main_counter += 1;
         board.update_sun_spawning(&mut effects, &mut resources, &mut images, &mut sounds);
+        if board.has_conveyor_belt_seed_bank() {
+            board.update_conveyor_belt(sounds.rng());
+        }
         board.update_zombie_spawning(&mut effects, &mut resources, &mut images, &mut sounds);
         if board.main_counter == 1 && board.first_time_adventure && board.level == 1 {
             board.set_tutorial_state(&resources, TutorialState::Level1PickUpPeashooter);
@@ -742,8 +777,9 @@ impl Board {
         let playing = self.scene == GameScene::Playing;
         let zombies_won = self.scene == GameScene::ZombiesWon;
         if playing {
+            let row_y: [i32; MAX_GRID_SIZE_Y] = std::array::from_fn(|row| self.grid_to_pixel_y(0, row as i32));
             for (_, plant) in self.plants.iter_mut() {
-                plant.update(&self.zombies, &mut self.plant_actions, effects, res, images, sounds.rng());
+                plant.update(&self.zombies, &mut self.plant_actions, effects, res, images, &row_y, sounds.rng());
             }
         }
         let env = self.zombie_env();
@@ -904,6 +940,24 @@ impl Board {
                 self.add_particle((x + 20) as f32, y as f32, order, ParticleEffect::PotatoMine);
                 self.shake_board(3, -4);
             }
+            PlantAction::BowlingHit(id) => {
+                sounds.play_foley(FoleyType::BowlingImpact);
+                self.shake_board(1, -2);
+                let env = self.zombie_env();
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                if let Some(zombie) = self.zombies.get_mut(id) {
+                    zombie.bowling_damage(&env, &mut fx);
+                }
+            }
+            PlantAction::ExplodeONut { x, y, row } => {
+                sounds.play_foley(FoleyType::Cherrybomb);
+                sounds.play_sample("SOUND_BOWLINGIMPACT2");
+                let env = self.zombie_env();
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                self.kill_all_zombies_in_radius(row, x, y, 90, 1, true, &env, &mut fx);
+                self.add_particle(x as f32, y as f32, render_layer::TOP, ParticleEffect::Powie);
+                self.shake_board(3, -4);
+            }
             PlantAction::MakeSun { x, y } => {
                 sounds.play_foley(FoleyType::SpawnSun);
                 self.add_coin(x as f32, y as f32, CoinType::Sun, CoinMotion::FromPlant, effects, res, images, sounds);
@@ -929,7 +983,7 @@ impl Board {
         images: &mut Assets<Image>,
         sounds: &mut Sounds,
     ) {
-        if self.stage_is_night() || self.has_level_award_dropped() {
+        if self.stage_is_night() || self.has_level_award_dropped() || self.has_conveyor_belt_seed_bank() {
             return;
         }
         let waiting = matches!(self.tutorial_state, TutorialState::Level1PickUpPeashooter | TutorialState::Level1PlantPeashooter);
@@ -1223,6 +1277,13 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
                 g.draw_image(bg, offset, 0.0);
             }
         }
+    }
+    // Challenge::DrawBackground: the line wall-nuts start behind.
+    if board.is_wallnut_bowling_level()
+        && board.show_bowling_line
+        && let Some(stripe) = image("IMAGE_WALLNUT_BOWLINGSTRIPE")
+    {
+        g.draw_image(stripe, 268.0, 77.0);
     }
     // TODO: the pool's water effect, the level 1 tutorial's flashing sod row,
     // and the night intro's graveyard.

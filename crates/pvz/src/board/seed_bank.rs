@@ -92,6 +92,7 @@ impl SeedPacket {
             };
         }
         let cost = seed.cost();
+        let conveyor = board.has_conveyor_belt_seed_bank();
         let mut grayness = 255;
         if board.scene != GameScene::Playing {
             grayness = board.seed_bank.cut_scene_darken;
@@ -102,11 +103,11 @@ impl SeedPacket {
             || (board.tutorial_state.is_sunflower_pick_up() && seed == SeedType::Sunflower)
         {
             grayness = flashing_gray(board.main_counter, 75);
-        } else if !board.can_take_sun_money(cost) || percent_dark > 1.0 {
+        } else if (!board.can_take_sun_money(cost) && !conveyor) || percent_dark > 1.0 {
             // TODO: upgrades are also gray without their base plant.
             grayness = 128;
         }
-        draw_seed_packet(g, res, self.offset_x as f32, 0.0, seed, percent_dark, grayness, true);
+        draw_seed_packet(g, res, self.offset_x as f32, 0.0, seed, percent_dark, grayness, !conveyor);
     }
 }
 
@@ -120,6 +121,9 @@ pub struct SeedBank {
     pub packets: [SeedPacket; SEEDBANK_MAX],
     /// How dark the packets are during the intro (255 is normal).
     pub cut_scene_darken: i32,
+    /// A conveyor belt bank (`HasConveyorBeltSeedBank`): packets ride in.
+    pub conveyor: bool,
+    conveyor_belt_counter: i32,
 }
 
 impl SeedBank {
@@ -132,6 +136,8 @@ impl SeedBank {
             num_packets: 0,
             packets: Default::default(),
             cut_scene_darken: 255,
+            conveyor: false,
+            conveyor_belt_counter: 0,
         }
     }
 
@@ -149,6 +155,9 @@ impl SeedBank {
     /// `Board::GetSeedPacketPositionX`.
     fn packet_x(&self, index: usize) -> i32 {
         let i = index as i32;
+        if self.conveyor {
+            return i * 50 + 91;
+        }
         match self.num_packets {
             0..=7 => i * 59 + 85,
             8 => i * 54 + 81,
@@ -177,9 +186,19 @@ impl SeedBank {
 
         let extra = self.extra_width();
         let (w, h) = (bank.width as f32, bank.height as f32);
-        g.draw_image(bank, 0.0, 0.0);
-        let src = SexyRect::new(w - extra as f32 - 12.0, 0.0, extra as f32 + 12.0, h);
-        g.draw_image_src(bank, w - 12.0, 0.0, src);
+        if self.conveyor {
+            if let Some(backdrop) = res.image("IMAGE_CONVEYORBELT_BACKDROP") {
+                g.draw_image(backdrop, 83.0, 0.0);
+            }
+            if let Some(belt) = res.image("IMAGE_CONVEYORBELT") {
+                g.draw_image_cel(belt, 90.0, 63.0, 0, (self.conveyor_belt_counter / 4 % 6) as u32);
+            }
+            g.clip_rect(90.0, 0.0, 501.0, super::BOARD_HEIGHT as f32);
+        } else {
+            g.draw_image(bank, 0.0, 0.0);
+            let src = SexyRect::new(w - extra as f32 - 12.0, 0.0, extra as f32 + 12.0, h);
+            g.draw_image_src(bank, w - 12.0, 0.0, src);
+        }
 
         for packet in &self.packets[..self.num_packets] {
             g.push_state();
@@ -188,12 +207,103 @@ impl SeedBank {
             g.pop_state();
         }
 
-        if let Some(font) = res.font("FONT_CONTINUUMBOLD14") {
+        if !self.conveyor
+            && let Some(font) = res.font("FONT_CONTINUUMBOLD14")
+        {
             let flash = board.out_of_money_counter > 0 && board.out_of_money_counter % 20 < 10;
             let color = if flash { SexyColor::rgba(255, 0, 0, 255) } else { SexyColor::BLACK };
             g.tod_draw_string(font, 34, 78, &board.sun_money.max(0).to_string(), color, Justify::Center);
         }
         g.pop_state();
+    }
+}
+
+impl SeedBank {
+    /// `SeedBank::GetNumSeedsOnConveyorBelt`.
+    pub fn num_seeds_on_conveyor_belt(&self) -> usize {
+        self.packets[..self.num_packets].iter().position(|p| p.packet_type.is_none()).unwrap_or(self.num_packets)
+    }
+
+    /// `SeedBank::AddSeed`: a new packet rides in from the right.
+    pub fn add_seed(&mut self, seed: SeedType) {
+        let n = self.num_seeds_on_conveyor_belt();
+        if n == self.num_packets {
+            return;
+        }
+        let prev_offset = (n > 0).then(|| self.packets[n - 1].offset_x);
+        let packet = &mut self.packets[n];
+        *packet = SeedPacket { x: packet.x, y: packet.y, packet_type: Some(seed), ..SeedPacket::default() };
+        packet.offset_x = 515 - (SEED_PACKET_WIDTH as i32 + 1) * n as i32;
+        if let Some(prev) = prev_offset
+            && packet.offset_x < prev
+        {
+            packet.offset_x = prev + 40;
+        }
+    }
+
+    /// `SeedBank::RemoveSeed`: the packets after it shift one place left.
+    pub fn remove_seed(&mut self, index: usize) {
+        for i in index..self.num_packets {
+            if self.packets[i].packet_type.is_none() {
+                break;
+            }
+            let next = (i + 1 < self.num_packets).then(|| (self.packets[i + 1].packet_type, self.packets[i + 1].offset_x));
+            let packet = &mut self.packets[i];
+            match next {
+                Some((ty, offset)) => {
+                    packet.packet_type = ty;
+                    packet.offset_x = offset + SEED_PACKET_WIDTH as i32 + 1;
+                }
+                None => {
+                    packet.packet_type = None;
+                    packet.offset_x = 0;
+                }
+            }
+            packet.refresh_counter = 0;
+            packet.refresh_time = 0;
+            packet.refreshing = false;
+            packet.active = true;
+        }
+    }
+
+    /// `SeedBank::UpdateConveyorBelt`: the packets creep left.
+    pub fn update_conveyor_belt(&mut self) {
+        self.conveyor_belt_counter += 1;
+        if self.conveyor_belt_counter % 4 == 0 {
+            for packet in &mut self.packets[..self.num_packets] {
+                packet.offset_x = (packet.offset_x - 1).max(0);
+            }
+        }
+    }
+}
+
+impl Board {
+    /// `Challenge::UpdateConveyorBelt`, for wall-nut bowling: every so often
+    /// a new packet rides in (wall-nuts mostly, sometimes an explode-o-nut).
+    pub(super) fn update_conveyor_belt(&mut self, rng: &mut sexy::rand::MtRand) {
+        if self.has_level_award_dropped() {
+            return;
+        }
+        self.seed_bank.update_conveyor_belt();
+        self.conveyor_belt_counter -= 1;
+        if self.conveyor_belt_counter > 0 {
+            return;
+        }
+        let on_belt = self.seed_bank.num_seeds_on_conveyor_belt();
+        self.conveyor_belt_counter = if on_belt > 8 {
+            1000
+        } else if on_belt > 6 {
+            500
+        } else if on_belt > 4 {
+            425
+        } else {
+            400
+        };
+        // TodWeightedArray: wall-nut 85, explode-o-nut 15. With only two
+        // choices the in-bank weight tweaks don't apply.
+        let seed = if rng.next_range(100) < 85 { SeedType::Wallnut } else { SeedType::ExplodeONut };
+        self.seed_bank.add_seed(seed);
+        self.last_conveyor_seed = Some(seed);
     }
 }
 

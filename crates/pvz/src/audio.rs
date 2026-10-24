@@ -360,6 +360,8 @@ pub enum FoleyType {
     Digger,
     /// Collecting sun.
     Sun,
+    /// A rolling wall-nut hits a zombie.
+    BowlingImpact,
     /// Collecting a silver or gold coin.
     Coin,
     MoneyFalls,
@@ -448,6 +450,7 @@ impl FoleyType {
             Self::ReverseExplosion => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_REVERSE_EXPLOSION"], flags: 0 },
             Self::Frozen => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_FROZEN"], flags: 0 },
             Self::SnowPeaSparkles => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_SNOW_PEA_SPARKLES"], flags: 0 },
+            Self::BowlingImpact => FoleyParams { pitch_range: -3.0, sounds: &["SOUND_BOWLINGIMPACT"], flags: 0 },
             Self::Shovel => FoleyParams { pitch_range: 5.0, sounds: &["SOUND_SHOVEL"], flags: 0 },
             Self::UseShovel => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_PLANT2"], flags: 0 },
             Self::BigChomp => FoleyParams { pitch_range: -2.0, sounds: &["SOUND_BIGCHOMP"], flags: 0 },

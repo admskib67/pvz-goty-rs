@@ -72,6 +72,8 @@ pub enum PlantingReason {
     NotHere,
     NotOnWater,
     NeedsPot,
+    /// Wall-nut bowling: nuts go in the first three columns.
+    NotPassedLine,
 }
 
 impl Board {
@@ -119,6 +121,9 @@ impl Board {
     /// The plant in `(x, y)`, ignoring lily pads, pots and pumpkins.
     fn normal_plant_at(&self, grid_x: i32, grid_y: i32) -> Option<&Plant> {
         use SeedType::*;
+        if self.is_wallnut_bowling_level() {
+            return None;
+        }
         self.plants.iter().map(|(_, p)| p).find(|p| {
             p.col == grid_x && p.row == grid_y && !p.dead && !matches!(p.seed, Lilypad | Flowerpot | Pumpkinshell | InstantCoffee)
         })
@@ -130,6 +135,10 @@ impl Board {
     pub fn can_plant_at(&self, grid_x: i32, grid_y: i32, seed: SeedType) -> PlantingReason {
         if !(0..MAX_GRID_SIZE_X as i32).contains(&grid_x) || !(0..MAX_GRID_SIZE_Y as i32).contains(&grid_y) {
             return PlantingReason::NotHere;
+        }
+        // Challenge::CanPlantAt: nuts only start behind the line.
+        if self.is_wallnut_bowling_level() {
+            return if grid_x > 2 { PlantingReason::NotPassedLine } else { PlantingReason::Ok };
         }
         let square = self.grid_square_type[grid_x as usize][grid_y as usize];
         if square == GridSquareType::Dirt {
@@ -181,7 +190,10 @@ impl Board {
         let packet = &self.seed_bank.packets[index];
         let Some(seed) = packet.packet_type else { return false };
         // TODO: upgrades also need their base plant on the lawn.
-        !self.paused && self.scene == GameScene::Playing && packet.active && self.can_take_sun_money(seed.cost())
+        !self.paused
+            && self.scene == GameScene::Playing
+            && packet.active
+            && (self.can_take_sun_money(seed.cost()) || self.has_conveyor_belt_seed_bank())
     }
 
     /// `SeedBank::MouseHitTest`: the packet under the mouse.
@@ -356,7 +368,7 @@ impl Board {
             }
             return;
         }
-        if !self.can_take_sun_money(seed.cost()) {
+        if !self.can_take_sun_money(seed.cost()) && !self.has_conveyor_belt_seed_bank() {
             sounds.play_sample("SOUND_BUZZER");
             self.out_of_money_counter = 70;
             if level1 {
@@ -420,20 +432,33 @@ impl Board {
                 self.display_advice(res, "[ADVICE_PLANT_NEED_POT2]", MessageStyle::HintFast, advice);
                 return;
             }
+            PlantingReason::NotPassedLine => {
+                let advice = Some(AdviceType::PlantNotPassedLine);
+                self.display_advice(res, "[ADVICE_NOT_PASSED_LINE]", MessageStyle::HintFast, advice);
+                return;
+            }
             PlantingReason::NotHere => return,
         }
         for advice in [AdviceType::CantPlantThere, AdviceType::PlantNotOnWater, AdviceType::PlantNeedPot] {
             self.clear_advice(Some(advice));
         }
-        if !self.take_sun_money(seed.cost(), sounds) {
+        let conveyor = self.has_conveyor_belt_seed_bank();
+        if !conveyor && !self.take_sun_money(seed.cost(), sounds) {
             return;
         }
         self.add_plant(grid_x, grid_y, seed, effects, res, images, sounds);
         if let Some(i) = self.cursor.seed_bank_index {
             // SeedPacket::WasPlanted.
-            let packet = &mut self.seed_bank.packets[i];
-            packet.refreshing = true;
-            packet.refresh_time = seed.definition().refresh_time;
+            if conveyor {
+                self.seed_bank.remove_seed(i);
+            } else {
+                let packet = &mut self.seed_bank.packets[i];
+                packet.refreshing = true;
+                packet.refresh_time = seed.definition().refresh_time;
+            }
+        }
+        if self.is_wallnut_bowling_level() {
+            sounds.play_sample("SOUND_BOWLING");
         }
         if self.tutorial_state == TutorialState::Level1PlantPeashooter {
             let next = if self.plants.len() >= 2 {
@@ -461,7 +486,8 @@ impl Board {
         sounds: &mut Sounds,
     ) {
         let (x, y) = (self.grid_to_pixel_x(grid_x), self.grid_to_pixel_y(grid_x, grid_y));
-        let plant = Plant::new(grid_x, grid_y, x, y, seed, effects, res, images, sounds.rng());
+        let bowling = self.is_wallnut_bowling_level();
+        let plant = Plant::new(grid_x, grid_y, x, y, seed, bowling, effects, res, images, sounds.rng());
         self.plants.alloc(plant);
         // TODO: water sounds and splashes in the pool.
         sounds.play_foley(FoleyType::Plant);

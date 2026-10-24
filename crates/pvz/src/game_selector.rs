@@ -810,12 +810,16 @@ fn draw_overlay(
         let pressed = gs.buttons.adventure.is_down && gs.buttons.adventure.is_over;
         let offset = if pressed { 1.0 } else { 0.0 };
         let bg = reanim.current_transform(reanim.find_track("SelectorScreen_BG_Right"));
-        let (mut area_x, mut area_y) = (bg.x + offset, bg.y + offset);
-        let (mut sub_x, sub_y) = (area_x, area_y);
+        let mut area_x = bg.x + offset;
+        let mut sub_x = area_x;
+        // The "LEVEL -" label is part of the button image, so sit on the button
+        // (the original's BG_Right + 125 lands lower than the label in this pak).
+        let button_y = gs.buttons.adventure.y as f32 + offset;
+        let (mut label_area_y, label_sub_y) = (button_y + 23.0, button_y + 26.0);
         let stage = ((gs.level - 1) / 10 + 1).clamp(1, 6);
         let sub = gs.level - (stage - 1) * 10;
         if stage == 1 {
-            area_y += 1.0;
+            label_area_y += 1.0;
         } else if stage == 4 {
             area_x -= 1.0;
         }
@@ -825,12 +829,12 @@ fn draw_overlay(
         g.push_state();
         g.set_colorize_images(true);
         g.set_color(gs.buttons.adventure.color);
-        g.draw_image_cel(numbers, area_x + 486.0, area_y + 125.0, stage as u32, 0);
+        g.draw_image_cel(numbers, area_x + 486.0, label_area_y, stage as u32, 0);
         if sub < 10 {
-            g.draw_image_cel(numbers, sub_x + 504.0, sub_y + 128.0, sub as u32, 0);
+            g.draw_image_cel(numbers, sub_x + 513.0, label_sub_y, sub as u32, 0);
         } else if sub == 10 {
-            g.draw_image_cel(numbers, sub_x + 504.0, sub_y + 128.0, 1, 0);
-            g.draw_image_cel(numbers, sub_x + 513.0, sub_y + 129.0, 0, 0);
+            g.draw_image_cel(numbers, sub_x + 513.0, label_sub_y, 1, 0);
+            g.draw_image_cel(numbers, sub_x + 522.0, label_sub_y + 1.0, 0, 0);
         }
         g.pop_state();
     }

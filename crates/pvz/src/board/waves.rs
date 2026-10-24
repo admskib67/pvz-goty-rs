@@ -162,7 +162,9 @@ impl Board {
             self.waves.zombie_allowed[i] = can_spawn_on_level(ZombieType::from_index(i), self.level);
         }
         self.pick_zombie_waves(rng);
-        self.waves.zombie_count_down = if self.first_time_adventure && self.level == 2 {
+        self.waves.zombie_count_down = if self.is_wallnut_bowling_level() {
+            200
+        } else if self.first_time_adventure && self.level == 2 {
             ZOMBIE_COUNTDOWN * 2
         } else {
             ZOMBIE_COUNTDOWN_FIRST_WAVE
@@ -205,6 +207,9 @@ impl Board {
                     self.put_zombie_in_wave(ZombieType::Normal, wave, &mut picker);
                 }
                 self.put_zombie_in_wave(ZombieType::Flag, wave, &mut picker);
+            }
+            if self.is_wallnut_bowling_level() {
+                picker.zombie_points *= 4;
             }
 
             if let Some(intro) = intro
@@ -324,6 +329,7 @@ impl Board {
             level: self.level,
             finished_adventure: !self.first_time_adventure,
             zombie_count: self.zombies.len(),
+            bowling: self.is_wallnut_bowling_level(),
             zombies_on_screen: self.zombies.iter().filter(|(_, z)| !z.is_dead_or_dying() && z.x < super::BOARD_WIDTH).count(),
         }
     }
@@ -431,7 +437,7 @@ impl Board {
             let wave = self.waves.current_wave;
             self.waves.zombie_health_wave_start = self.total_zombies_health_in_wave(wave - 1);
             let rng = sounds.rng();
-            if self.is_flag_wave(wave) {
+            if self.is_flag_wave(wave) && !self.is_wallnut_bowling_level() {
                 self.waves.zombie_health_to_next_wave = 0;
                 self.waves.zombie_count_down = ZOMBIE_COUNTDOWN_BEFORE_FLAG;
             } else {
