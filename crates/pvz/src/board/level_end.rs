@@ -100,7 +100,15 @@ impl Board {
             // on instead; finishing adventure gives a money bag.
             sounds.play_foley(FoleyType::SpawnSun);
             let (x, y) = (center.0 as f32, center.1 as f32);
-            let ty = if self.level == 4 { CoinType::Shovel } else { CoinType::FinalSeedPacket };
+            let ty = match self.level {
+                9 | 19 | 29 | 39 | 49 => CoinType::Note,
+                4 => CoinType::Shovel,
+                14 => CoinType::Almanac,
+                24 => CoinType::CarKeys,
+                34 => CoinType::Taco,
+                44 => CoinType::WateringCan,
+                _ => CoinType::FinalSeedPacket,
+            };
             self.add_coin(x, y, ty, CoinMotion::Coin, effects, res, images, sounds);
             let seed = SeedType::from_index(crate::plant::award_seed_for_level(self.level));
             if let Some(seed) = seed

@@ -33,10 +33,31 @@ pub enum CoinType {
     FinalSeedPacket,
     /// Level 1-4's award (`COIN_SHOVEL`).
     Shovel,
+    /// The other level awards (`COIN_NOTE`, `COIN_ALMANAC`, `COIN_CARKEYS`,
+    /// `COIN_TACO`, `COIN_WATERING_CAN`).
+    Note,
+    Almanac,
+    CarKeys,
+    Taco,
+    WateringCan,
     /// Worth 1, 5 and 100 coins (`COIN_SILVER`, `COIN_GOLD`, `COIN_DIAMOND`).
     Silver,
     Gold,
     Diamond,
+}
+
+impl CoinType {
+    /// The picture of the awards that are just an item (`Coin::Draw`).
+    fn award_image(self) -> Option<&'static str> {
+        match self {
+            Self::Note => Some("IMAGE_ZOMBIE_NOTE_SMALL"),
+            Self::Almanac => Some("IMAGE_ALMANAC"),
+            Self::CarKeys => Some("IMAGE_CARKEYS"),
+            Self::Taco => Some("IMAGE_TACO"),
+            Self::WateringCan => Some("IMAGE_WATERINGCAN"),
+            _ => None,
+        }
+    }
 }
 
 /// `CoinMotion`: where the coin comes from.
@@ -138,8 +159,12 @@ impl Coin {
             hit_ground: false,
             attach_offset: (0.0, 0.0),
         };
-        if matches!(ty, CoinType::FinalSeedPacket | CoinType::Shovel) {
-            let image = if ty == CoinType::Shovel { "IMAGE_SHOVEL" } else { "IMAGE_SEEDS" };
+        if coin.is_level_award() {
+            let image = match ty {
+                CoinType::Shovel => "IMAGE_SHOVEL",
+                CoinType::FinalSeedPacket => "IMAGE_SEEDS",
+                _ => ty.award_image().unwrap_or("IMAGE_SEEDS"),
+            };
             if let Some(image) = res.image(image) {
                 coin.width = image.cel_width() as f32;
                 coin.height = image.cel_height() as f32;
@@ -224,7 +249,16 @@ impl Coin {
 
     /// `IsLevelAward`.
     pub fn is_level_award(&self) -> bool {
-        matches!(self.ty, CoinType::FinalSeedPacket | CoinType::Shovel)
+        matches!(
+            self.ty,
+            CoinType::FinalSeedPacket
+                | CoinType::Shovel
+                | CoinType::Note
+                | CoinType::Almanac
+                | CoinType::CarKeys
+                | CoinType::Taco
+                | CoinType::WateringCan
+        )
     }
 
     /// `Coin::IsMoney`.
@@ -426,6 +460,7 @@ impl Coin {
             self.disappear_counter += 1;
             let (dest_x, dest_y) = (400.0 - self.width / 2.0, 200.0 - self.height / 2.0);
             let t = self.disappear_counter;
+            self.scale = sexy::tod::animate_curve_float(0, 400, t, 1.01, 2.0, TodCurve::EaseInOut);
             self.pos_x = sexy::tod::animate_curve_float(0, 350, t, self.collect_x, dest_x, TodCurve::EaseOut);
             self.pos_y = sexy::tod::animate_curve_float(0, 350, t, self.collect_y, dest_y, TodCurve::EaseOut);
             return None;
@@ -458,6 +493,7 @@ impl Coin {
         match self.ty {
             CoinType::Shovel => &["SOUND_SHOVEL"],
             CoinType::Diamond => &["SOUND_DIAMOND"],
+            CoinType::CarKeys | CoinType::Taco | CoinType::WateringCan => &["SOUND_TAP2"],
             _ => &["SOUND_SEEDLIFT", "SOUND_TAP2"],
         }
     }
@@ -500,6 +536,16 @@ impl Coin {
                 g.set_color(crate::graphics::SexyColor::rgba(v, v, v, 255));
             }
             g.draw_image(shovel, self.pos_x, self.pos_y);
+            g.pop_state();
+        }
+        if let Some(image) = self.ty.award_image().and_then(|id| res.image(id)) {
+            g.push_state();
+            if !self.is_being_collected {
+                let v = super::seed_bank::flashing_gray(self.coin_age, 75) as u8;
+                g.set_colorize_images(true);
+                g.set_color(crate::graphics::SexyColor::rgba(v, v, v, 255));
+            }
+            g.draw_image_cel_center_scaled(image, self.pos_x, self.pos_y, 0, self.scale, self.scale);
             g.pop_state();
         }
         if self.ty == CoinType::FinalSeedPacket

@@ -1,4 +1,5 @@
 mod audio;
+mod award;
 mod board;
 mod devshot;
 mod dialog;
@@ -45,6 +46,8 @@ pub enum AppState {
     GameSelector,
     /// Playing a level.
     Board,
+    /// The new plant (or other prize) after winning a level.
+    Award,
 }
 
 /// Frame-by-frame order of input handling and drawing: dialogs get the
@@ -123,6 +126,7 @@ fn main() {
             title::TitlePlugin,
             game_selector::GameSelectorPlugin,
             board::BoardPlugin,
+            award::AwardPlugin,
             dialog::DialogPlugin,
             lawn_app::LawnAppPlugin,
             devshot::DevShotPlugin,

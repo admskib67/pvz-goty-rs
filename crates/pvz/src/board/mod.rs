@@ -701,6 +701,7 @@ fn kill_board(mut commands: Commands, mut effects: ResMut<EffectSystem>, mut mus
 /// `Board::Update`, at 100 ticks per second.
 #[allow(clippy::too_many_arguments)]
 fn update_board(
+    mut commands: Commands,
     mut board: ResMut<Board>,
     mut effects: ResMut<EffectSystem>,
     mut resources: ResMut<GameResources>,
@@ -771,9 +772,17 @@ fn update_board(
         do_game_over_dialog(&mut dialogs, &resources);
     }
     if board.level_complete {
-        // LawnApp::CheckForGameEnd. TODO: the award screen shows the new plant first.
+        // LawnApp::CheckForGameEnd: the award screen shows what was won.
+        let (first_time, level) = (board.first_time_adventure, board.level);
         board.finish_level(&mut profiles);
-        next_state.set(AppState::Board);
+        let next_level = if board.level_overridden { level + 1 } else { profiles.player().map_or(level + 1, |p| p.level) };
+        match first_time.then(|| crate::award::AwardScreen::new(next_level)).flatten() {
+            Some(screen) => {
+                commands.insert_resource(screen);
+                next_state.set(AppState::Award);
+            }
+            None => next_state.set(AppState::Board),
+        }
     }
     board.flush_particle_requests(&mut effects, &mut resources, &mut images, sounds.rng());
 }
@@ -1368,6 +1377,11 @@ fn draw_top_right_ui(board: &Board, res: &GameResources, g: &mut Graphics) {
         return;
     }
     draw_menu_button(board, res, g);
+}
+
+/// A seed packet drawn at a spot (the award screen).
+pub fn draw_seed_packet_at(g: &mut Graphics, res: &GameResources, x: f32, y: f32, seed: SeedType) {
+    seed_bank::draw_seed_packet(g, res, x, y, seed, 0.0, 255, true);
 }
 
 /// The stone Menu button at the top right.

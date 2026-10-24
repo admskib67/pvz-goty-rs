@@ -110,11 +110,22 @@ struct GraphicsState {
     /// `DRAWMODE_ADDITIVE`: transformed images add their color to what's
     /// behind them instead of covering it.
     additive: bool,
+    /// `SetScale`: images and glyphs grow about `scale_origin` (local coordinates).
+    scale: f32,
+    scale_origin: Vec2,
 }
 
 impl Default for GraphicsState {
     fn default() -> Self {
-        Self { color: SexyColor::WHITE, colorize_images: false, clip: SCREEN, trans: Vec2::ZERO, additive: false }
+        Self {
+            color: SexyColor::WHITE,
+            colorize_images: false,
+            clip: SCREEN,
+            trans: Vec2::ZERO,
+            additive: false,
+            scale: 1.0,
+            scale_origin: Vec2::ZERO,
+        }
     }
 }
 
@@ -161,6 +172,13 @@ impl Graphics {
         self.state.trans += Vec2::new(dx, dy);
     }
 
+    /// `Graphics::SetScale`: later images and text are drawn `scale` times
+    /// bigger, growing away from (`origin_x`, `origin_y`).
+    pub fn set_scale(&mut self, scale: f32, origin_x: f32, origin_y: f32) {
+        self.state.scale = scale;
+        self.state.scale_origin = Vec2::new(origin_x, origin_y);
+    }
+
     /// The current translation (`mTransX`, `mTransY`).
     pub fn translation(&self) -> Vec2 {
         self.state.trans
@@ -198,13 +216,20 @@ impl Graphics {
 
     /// Draws the `src` part of `image` with its top-left at (x, y).
     pub fn draw_image_src(&mut self, image: &ImageRes, x: f32, y: f32, src: SexyRect) {
-        let (x, y) = (x + self.state.trans.x, y + self.state.trans.y);
-        let dest = SexyRect::new(x, y, src.w, src.h);
+        let s = self.state.scale;
+        let o = self.state.scale_origin;
+        let (x, y) = (o.x + (x - o.x) * s + self.state.trans.x, o.y + (y - o.y) * s + self.state.trans.y);
+        let dest = SexyRect::new(x, y, src.w * s, src.h * s);
         let clipped = dest.intersect(self.state.clip);
         if clipped.is_empty() {
             return;
         }
-        let src = SexyRect::new(src.x + clipped.x - x, src.y + clipped.y - y, clipped.w, clipped.h);
+        let src = SexyRect::new(
+            src.x + (clipped.x - x) / s,
+            src.y + (clipped.y - y) / s,
+            clipped.w / s,
+            clipped.h / s,
+        );
         let color = self.image_color();
         self.cmds.push(DrawCmd::Image { image: image.handle.clone(), dest: clipped, src, color });
     }
@@ -389,7 +414,9 @@ impl Graphics {
 
     /// [`Self::draw_image_matrix`] for part of an image (e.g. one cel).
     pub fn draw_image_matrix_src(&mut self, image: &ImageRes, transform: Affine2, src: SexyRect) {
-        let transform = Affine2::from_translation(self.state.trans) * transform;
+        let o = self.state.scale_origin;
+        let scaling = Affine2::from_translation(o) * Affine2::from_scale(Vec2::splat(self.state.scale)) * Affine2::from_translation(-o);
+        let transform = Affine2::from_translation(self.state.trans) * scaling * transform;
         let image_size = Vec2::new(image.width as f32, image.height as f32);
         let color = self.image_color();
         let additive = self.state.additive;
