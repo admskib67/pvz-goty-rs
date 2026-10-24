@@ -175,6 +175,15 @@ impl SeedType {
         matches!(self, Gatlingpea | Wintermelon | Twinsunflower | Spikerock | Cobcannon | GoldMagnet | Gloomshroom | Cattail)
     }
 
+    /// `Plant::IsNocturnal`: the mushrooms, which sleep through the day.
+    pub fn is_nocturnal(self) -> bool {
+        use SeedType::*;
+        matches!(
+            self,
+            Puffshroom | Seashroom | Sunshroom | Fumeshroom | Hypnoshroom | Doomshroom | Iceshroom | Magnetshroom | Scaredyshroom | Gloomshroom
+        )
+    }
+
     /// `Plant::GetCost`, outside the challenge modes that change prices.
     pub fn cost(self) -> i32 {
         self.definition().cost

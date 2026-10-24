@@ -1,4 +1,5 @@
-//! Things plants shoot (`Projectile`). So far the pea and the snow pea.
+//! Things plants shoot (`Projectile`). So far the pea, the snow pea and
+//! the puff-shroom's short-range puff.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Projectile.cpp`:
 //! `ProjectileInitialize`, `Update`, `UpdateMotion`, `UpdateNormalMotion`,
@@ -6,10 +7,12 @@
 //! `DoImpact`, `Draw`, `DrawShadow`, `Die` and `GetProjectileRect`.
 
 use sexy::data_array::DataArray;
+use sexy::tod::{TodCurve, animate_curve_float};
 
 use crate::audio::FoleyType;
 use crate::graphics::Graphics;
 use crate::particle::ParticleEffect;
+use crate::reanim::ParticleSystemId;
 use crate::resources::GameResources;
 
 use super::zombie::{Fx, HelmType, IRect, Zombie, ZombieEnv, damage, damage_range, rect_overlap};
@@ -20,13 +23,14 @@ use super::{make_render_order, render_layer};
 pub enum ProjectileType {
     Pea,
     Snowpea,
+    Puff,
 }
 
 impl ProjectileType {
     /// `ProjectileDefinition::mDamage`.
     fn damage(self) -> i32 {
         match self {
-            Self::Pea | Self::Snowpea => 20,
+            Self::Pea | Self::Snowpea | Self::Puff => 20,
         }
     }
 }
@@ -46,6 +50,8 @@ pub struct Projectile {
     y: i32,
     age: i32,
     damage_range_flags: u32,
+    /// The trail that follows it (`mAttachmentID`), and its offset.
+    trail: Option<(ParticleSystemId, f32, f32)>,
     pub dead: bool,
 }
 
@@ -67,14 +73,42 @@ impl Projectile {
             y,
             age: 0,
             damage_range_flags: damage_range::GROUND,
+            trail: None,
             dead: false,
         }
+    }
+
+    /// The trail particles a snow pea or puff leaves (`ProjectileInitialize`),
+    /// and where they sit on it.
+    pub fn trail_effect(ty: ProjectileType) -> Option<(ParticleEffect, f32, f32)> {
+        match ty {
+            ProjectileType::Snowpea => Some((ParticleEffect::SnowpeaTrail, 8.0, 13.0)),
+            ProjectileType::Puff => Some((ParticleEffect::PuffshroomTrail, 13.0, 13.0)),
+            ProjectileType::Pea => None,
+        }
+    }
+
+    /// `AttachParticle`: `trail` follows the projectile from now on.
+    pub fn attach_trail(&mut self, trail: ParticleSystemId, dx: f32, dy: f32) {
+        self.trail = Some((trail, dx, dy));
     }
 
     /// `Projectile::GetProjectileRect`.
     fn rect(&self) -> IRect {
         match self.ty {
             ProjectileType::Pea | ProjectileType::Snowpea => IRect::new(self.x - 15, self.y, self.width + 15, self.height),
+            ProjectileType::Puff => IRect::new(self.x, self.y, self.width, self.height),
+        }
+    }
+
+    /// `Projectile::Die`: the trail fades out where it is.
+    fn die(&mut self, fx: &mut Fx) {
+        self.dead = true;
+        if let Some((id, _, _)) = self.trail.take() {
+            let rng = fx.sounds.rng();
+            if let Some(trail) = fx.effects.particle_mut(id) {
+                trail.cross_fade("FadeOut", rng);
+            }
         }
     }
 
@@ -86,6 +120,12 @@ impl Projectile {
             self.render_order = make_render_order(render_layer::PROJECTILE, self.row, 0);
         }
         self.update_motion(zombies, env, fx);
+        // AttachmentUpdateAndMove.
+        if let Some((id, dx, dy)) = self.trail
+            && let Some(trail) = fx.effects.particle_mut(id)
+        {
+            trail.system_move(self.pos_x + dx, self.pos_y + self.pos_z + dy);
+        }
     }
 
     /// `Projectile::UpdateMotion` + `UpdateNormalMotion`.
@@ -98,8 +138,13 @@ impl Projectile {
 
     /// `Projectile::CheckForCollision`.
     fn check_for_collision(&mut self, zombies: &mut DataArray<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
+        // Puffs only go so far.
+        if self.ty == ProjectileType::Puff && self.age >= 75 {
+            self.die(fx);
+            return;
+        }
         if self.pos_x > super::BOARD_WIDTH as f32 || self.pos_x + (self.width as f32) < 0.0 {
-            self.dead = true;
+            self.die(fx);
             return;
         }
         // Peas lifted well off the ground go over everyone.
@@ -150,29 +195,47 @@ impl Projectile {
         zombie.take_damage(self.ty.damage(), flags, env, fx);
 
         // The splat sits on the zombie and moves with it.
-        let (splat_x, splat_y) = (self.pos_x + 12.0 - 15.0, self.pos_y + 12.0);
+        let (splat_offset, effect) = match self.ty {
+            ProjectileType::Pea => (-15.0, ParticleEffect::PeaSplat),
+            ProjectileType::Snowpea => (-15.0, ParticleEffect::SnowpeaSplat),
+            ProjectileType::Puff => (-20.0, ParticleEffect::PuffSplat),
+        };
+        let (splat_x, splat_y) = (self.pos_x + 12.0 + splat_offset, self.pos_y + 12.0);
         let mut x = splat_x + 52.0 - zombie.x as f32;
         let y = (splat_y - zombie.y as f32).clamp(20.0, 100.0);
         if self.pos_x > (zombie.x + 40) as f32 {
             x -= 60.0;
         }
-        let effect = if self.ty == ProjectileType::Snowpea { ParticleEffect::SnowpeaSplat } else { ParticleEffect::PeaSplat };
         zombie.add_attached_particle(x, y, effect, fx);
-        self.dead = true;
+        self.die(fx);
     }
 
     /// `Projectile::Draw`: in the projectile's own coordinates.
     pub fn draw(&self, g: &mut Graphics, res: &GameResources) {
-        let id = if self.ty == ProjectileType::Snowpea { "IMAGE_PROJECTILESNOWPEA" } else { "IMAGE_PROJECTILEPEA" };
+        let id = match self.ty {
+            ProjectileType::Pea => "IMAGE_PROJECTILEPEA",
+            ProjectileType::Snowpea => "IMAGE_PROJECTILESNOWPEA",
+            ProjectileType::Puff => "IMAGE_PUFFSHROOM_PUFF1",
+        };
         let Some(image) = res.image(id) else { return };
         g.push_state();
         g.translate(self.x as f32, self.y as f32);
-        g.draw_image(image, 0.0, 0.0);
+        if self.ty == ProjectileType::Puff {
+            // Puffs grow as they leave the mushroom.
+            let scale = animate_curve_float(0, 30, self.age, 0.3, 1.0, TodCurve::Linear);
+            let (dx, dy) = (self.pos_x - self.x as f32, self.pos_y + self.pos_z - self.y as f32);
+            g.draw_image_cel_center_scaled(image, dx, dy, 0, scale, scale);
+        } else {
+            g.draw_image(image, 0.0, 0.0);
+        }
         g.pop_state();
     }
 
     /// `Projectile::DrawShadow`.
     pub fn draw_shadow(&self, g: &mut Graphics, night: bool, res: &GameResources) {
+        if self.ty == ProjectileType::Puff {
+            return;
+        }
         let Some(image) = res.image("IMAGE_PEA_SHADOWS") else { return };
         let (offset_x, offset_y) = (self.pos_x - self.x as f32 + 3.0, self.pos_y - self.y as f32);
         g.push_state();

@@ -1,8 +1,9 @@
 //! Plants on the lawn (`Plant`). So far a plant is planted, idles and
-//! blinks; peashooters, snow peas and repeaters shoot at zombies in their
-//! row, sunflowers make sun, wall-nuts crack as they're eaten, cherry
-//! bombs explode and potato mines arm and blow up. The other plants'
-//! abilities come as they're needed.
+//! blinks; peashooters, snow peas, repeaters and puff-shrooms shoot at
+//! zombies in their row, sunflowers and sun-shrooms make sun, wall-nuts
+//! crack as they're eaten, cherry bombs explode, potato mines arm and blow
+//! up, and grave busters eat graves. Mushrooms sleep in the day. The other
+//! plants' abilities come as they're needed.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Plant.cpp`: `PlantInitialize`,
 //! `CalcRenderOrder`, `Update`, `Animate`, `UpdateReanim`, `UpdateBlink`,
@@ -10,20 +11,23 @@
 //! `PlantDrawHeightOffset`, `UpdateAbilities`, `UpdateShooter`,
 //! `UpdateShooting`, `FindTargetAndFire`, `FindTargetZombie`, `Fire`,
 //! `UpdateProductionPlant`, `GetPlantRect`, `GetPlantAttackRect`,
-//! `AnimateNuts`, `UpdatePotato`, `DoSpecial` and `PlayBodyReanim`.
+//! `AnimateNuts`, `UpdatePotato`, `DoSpecial`, `PlayBodyReanim`,
+//! `PlayIdleAnim`, `SetSleeping`, `UpdateSunShroom` and `UpdateGraveBuster`.
 
 use bevy::prelude::*;
 use sexy::data_array::DataArray;
 use sexy::rand::MtRand;
 use sexy::reanim::{LoopType, RENDER_GROUP_HIDDEN, RENDER_GROUP_NORMAL};
+use sexy::tod::{TodCurve, animate_curve, animate_curve_float};
 
 use crate::audio::FoleyType;
 use crate::graphics::Graphics;
 use crate::particle::ParticleEffect;
 use crate::plant::{PlantSubClass, SeedType};
-use crate::reanim::{EffectSystem, ReanimationId};
+use crate::reanim::{EffectSystem, ReanimationId, ReanimationType};
 use crate::resources::GameResources;
 
+use super::projectile::ProjectileType;
 use super::zombie::{IRect, Zombie, damage_range, rect_overlap};
 use super::{make_render_order, render_layer};
 
@@ -31,10 +35,10 @@ use super::{make_render_order, render_layer};
 /// projectiles and coins).
 #[derive(Debug, Clone, Copy)]
 pub enum PlantAction {
-    /// `Plant::Fire`: a pea leaves the plant at this spot.
-    Shoot { x: i32, y: i32, row: i32, render_order: i32, snow: bool },
-    /// A sunflower makes sun at its square.
-    MakeSun { x: i32, y: i32 },
+    /// `Plant::Fire`: a projectile leaves the plant at this spot.
+    Shoot { x: i32, y: i32, row: i32, render_order: i32, projectile: ProjectileType },
+    /// A sunflower or sun-shroom makes sun at its square; a small sun-shroom's is small.
+    MakeSun { x: i32, y: i32, small: bool },
     /// `Plant::DoSpecial` for the cherry bomb: burns zombies near it.
     CherryBomb { x: i32, y: i32, row: i32 },
     /// `Plant::DoSpecial` for the potato mine: kills zombies on top of it.
@@ -49,6 +53,8 @@ pub enum PlantAction {
     BowlingHit(sexy::data_array::Id<Zombie>),
     /// An explode-o-nut blows up where it hit.
     ExplodeONut { x: i32, y: i32, row: i32 },
+    /// A grave buster has eaten the grave on its square (`x`, `y` is the plant's spot).
+    GraveBusterDone { x: i32, y: i32, col: i32, row: i32, render_order: i32 },
 }
 
 /// `PlantState`, for the plants ported so far.
@@ -65,6 +71,11 @@ enum PlantState {
     ChomperSwallowing,
     BowlingUp,
     BowlingDown,
+    SunshroomSmall,
+    SunshroomGrowing,
+    SunshroomBig,
+    GravebusterLanding,
+    GravebusterEating,
 }
 
 /// Plants that shoot straight peas.
@@ -114,6 +125,10 @@ pub struct Plant {
     pub eaten_flash_countdown: i32,
     /// Planted on the wall-nut bowling level: it rolls instead of standing.
     bowling: bool,
+    /// A mushroom in the day (`mIsAsleep`).
+    is_asleep: bool,
+    /// The Zs over a sleeping mushroom.
+    sleeping: Option<ReanimationId>,
     body: Option<ReanimationId>,
     head: Option<ReanimationId>,
     blink: Option<ReanimationId>,
@@ -178,6 +193,8 @@ impl Plant {
             recently_eaten_countdown: 0,
             eaten_flash_countdown: 0,
             bowling,
+            is_asleep: false,
+            sleeping: None,
             body: None,
             head: None,
             blink: None,
@@ -210,7 +227,6 @@ impl Plant {
             }
             Err(e) => error!("{e}"),
         }
-        // TODO: mushrooms asleep in the day (SetSleeping).
 
         if plant.launch_rate > 0 {
             plant.launch_counter = if seed.makes_sun() {
@@ -282,6 +298,26 @@ impl Plant {
             Tallnut => {
                 plant.health = 8000;
                 plant.blink_countdown = 1000 + rng.next_range(1000) as i32;
+            }
+            Gravebuster => {
+                if let Some(body) = plant.body.and_then(|b| effects.get_mut(b)) {
+                    body.set_frames_for_layer("anim_land");
+                    body.loop_type = LoopType::PlayOnceAndHold;
+                }
+                plant.state = PlantState::GravebusterLanding;
+            }
+            Sunshroom => {
+                if let Some(body) = plant.body.and_then(|b| effects.get_mut(b)) {
+                    body.frame_base_pose = 6;
+                }
+                plant.x += rng.next_range(10) as i32 - 5;
+                plant.y += rng.next_range(10) as i32 - 5;
+                plant.state = PlantState::SunshroomSmall;
+                plant.state_countdown = 12000;
+            }
+            Puffshroom | Seashroom => {
+                plant.x += rng.next_range(10) as i32 - 5;
+                plant.y += rng.next_range(6) as i32 - 3;
             }
             // TODO: the rest of PlantInitialize's per-plant setup as plants are ported.
             _ => {}
@@ -378,6 +414,59 @@ impl Plant {
             body.anim_rate = 0.1;
         } else if body.anim_rate < 1.0 {
             body.anim_rate = rng.range_f32(10.0, 15.0);
+        }
+    }
+
+    /// `Plant::SetSleeping`: a sleeping mushroom snores (a cloud of Zs) and
+    /// does nothing. TODO: waking up (coffee beans).
+    pub fn set_sleeping(
+        &mut self,
+        asleep: bool,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut MtRand,
+    ) {
+        if self.is_asleep == asleep {
+            return;
+        }
+        self.is_asleep = asleep;
+        if asleep {
+            let (mut x, mut y) = (self.x as f32 + 50.0, self.y as f32 + 40.0);
+            match self.seed {
+                SeedType::Fumeshroom => x += 12.0,
+                SeedType::Scaredyshroom => y -= 20.0,
+                SeedType::Gloomshroom => y -= 12.0,
+                _ => {}
+            }
+            match effects.add_reanimation(x, y, ReanimationType::Sleeping, res, images) {
+                Ok((id, zs)) => {
+                    zs.render_order = self.render_order + 2;
+                    zs.loop_type = LoopType::Loop;
+                    zs.anim_rate = rng.range_f32(6.0, 8.0);
+                    zs.anim_time = rng.range_f32(0.0, 0.9);
+                    self.sleeping = Some(id);
+                }
+                Err(e) => error!("{e}"),
+            }
+        } else if let Some(id) = self.sleeping.take() {
+            effects.kill(id);
+        }
+        let Some(body) = self.body.and_then(|b| effects.get_mut(b)) else { return };
+        let track = if asleep { "anim_sleep" } else { "anim_idle" };
+        if body.definition.find_track(track).is_some() {
+            let time = body.anim_time;
+            body.start_blend(20);
+            body.set_frames_for_layer(track);
+            body.anim_time = time;
+        } else if asleep {
+            body.anim_rate = 1.0;
+        }
+        if !asleep && body.anim_rate < 2.0 {
+            body.anim_rate = rng.range_f32(10.0, 15.0);
+        }
+        if asleep {
+            self.end_blink(effects);
         }
     }
 
@@ -524,6 +613,7 @@ impl Plant {
         }
         match self.seed {
             SeedType::Leftpeater => IRect::new(0, self.y, self.x, PLANT_SIZE),
+            SeedType::Puffshroom | SeedType::Seashroom => IRect::new(self.x + 60, self.y, 230, PLANT_SIZE),
             _ => IRect::new(self.x + 60, self.y, super::BOARD_WIDTH, PLANT_SIZE),
         }
     }
@@ -537,7 +627,7 @@ impl Plant {
         row_y: &[i32; super::MAX_GRID_SIZE_Y],
         rng: &mut MtRand,
     ) {
-        if self.dead {
+        if self.dead || self.is_asleep {
             return;
         }
         self.update_shooting(actions, effects);
@@ -554,8 +644,13 @@ impl Plant {
         if self.seed == SeedType::Chomper {
             self.update_chomper(zombies, actions, effects);
         }
-        if self.seed.makes_sun() {
+        if self.seed == SeedType::Sunshroom {
+            self.update_sun_shroom(actions, effects, rng);
+        } else if self.seed.makes_sun() {
             self.update_production_plant(actions, rng);
+        }
+        if self.seed == SeedType::Gravebuster {
+            self.update_grave_buster(actions, effects);
         }
         if self.seed.definition().sub_class == PlantSubClass::Shooter {
             self.update_shooter(zombies, actions, effects, rng);
@@ -641,14 +736,80 @@ impl Plant {
         }
     }
 
-    /// `Plant::UpdateProductionPlant`, for sunflowers.
+    /// `Plant::UpdateProductionPlant`, for sunflowers and sun-shrooms: the
+    /// plant glows brighter for a second, then makes sun.
     fn update_production_plant(&mut self, actions: &mut Vec<PlantAction>, rng: &mut MtRand) {
         self.launch_counter -= 1;
+        if self.launch_counter <= 100 {
+            let flash = animate_curve(100, 0, self.launch_counter, 0, 100, TodCurve::Linear);
+            self.eaten_flash_countdown = self.eaten_flash_countdown.max(flash);
+        }
         if self.launch_counter <= 0 {
             self.launch_counter = rng.range_int(self.launch_rate - 150, self.launch_rate);
-            actions.push(PlantAction::MakeSun { x: self.x, y: self.y });
-            // TODO: the sunflower flashes before it makes sun (mEatenFlashCountdown).
+            let small = self.state == PlantState::SunshroomSmall;
+            actions.push(PlantAction::MakeSun { x: self.x, y: self.y, small });
         }
+    }
+
+    /// `Plant::UpdateSunShroom`: small sun-shrooms make small sun, and grow
+    /// up after two minutes.
+    fn update_sun_shroom(&mut self, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem, rng: &mut MtRand) {
+        match self.state {
+            PlantState::SunshroomSmall => {
+                if self.state_countdown == 0 {
+                    self.play_body_reanim(effects, "anim_grow", LoopType::PlayOnceAndHold, 10, 12.0);
+                    self.state = PlantState::SunshroomGrowing;
+                    actions.push(PlantAction::Foley(FoleyType::PlantGrow));
+                }
+                self.update_production_plant(actions, rng);
+            }
+            PlantState::SunshroomGrowing => {
+                if self.body.and_then(|b| effects.get(b)).is_some_and(|b| b.loop_count > 0) {
+                    let rate = rng.range_f32(12.0, 15.0);
+                    self.play_body_reanim(effects, "anim_bigidle", LoopType::Loop, 10, rate);
+                    self.state = PlantState::SunshroomBig;
+                }
+            }
+            _ => self.update_production_plant(actions, rng),
+        }
+    }
+
+    /// `Plant::UpdateGraveBuster`: it lands on the grave, chews it for four
+    /// seconds, then the grave and the grave buster are gone.
+    fn update_grave_buster(&mut self, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem) {
+        match self.state {
+            PlantState::GravebusterLanding => {
+                if self.body.and_then(|b| effects.get(b)).is_some_and(|b| b.loop_count > 0) {
+                    self.play_body_reanim(effects, "anim_idle", LoopType::Loop, 10, 12.0);
+                    self.state_countdown = 400;
+                    self.state = PlantState::GravebusterEating;
+                    // TODO: the original attaches this to the plant (AddAttachedParticle).
+                    actions.push(PlantAction::Particle {
+                        x: self.x + 40,
+                        y: self.y + 40,
+                        render_order: self.render_order + 4,
+                        effect: ParticleEffect::GraveBuster,
+                    });
+                }
+            }
+            PlantState::GravebusterEating if self.state_countdown == 0 => {
+                actions.push(PlantAction::GraveBusterDone {
+                    x: self.x,
+                    y: self.y,
+                    col: self.col,
+                    row: self.row,
+                    render_order: self.render_order + 4,
+                });
+                self.die(effects);
+            }
+            _ => {}
+        }
+    }
+
+    /// While a grave buster chews its grave, how long it has left; the
+    /// grave sinks as it goes (`GridItem::DrawGraveStone`).
+    pub(super) fn grave_buster_eaten_countdown(&self) -> Option<i32> {
+        (self.state == PlantState::GravebusterEating).then_some(self.state_countdown)
     }
 
     /// `Plant::UpdateShooter`.
@@ -663,7 +824,7 @@ impl Plant {
         if self.launch_counter <= 0 {
             self.launch_counter = self.launch_rate - rng.next_range(15) as i32;
             // TODO: the other shooters (threepeater, cactus, split pea, ...).
-            if is_pea_shooter(self.seed) {
+            if is_pea_shooter(self.seed) || self.seed == SeedType::Puffshroom {
                 self.find_target_and_fire(zombies, actions, effects);
             }
         }
@@ -714,6 +875,11 @@ impl Plant {
                 head.anim_rate = 45.0;
                 self.shooting_counter = 26;
             }
+        } else if self.body.and_then(|b| effects.get(b)).is_some_and(|b| b.definition.find_track("anim_shooting").is_some()) {
+            // Mushrooms shoot with their whole body.
+            self.play_body_reanim(effects, "anim_shooting", LoopType::PlayOnceAndHold, 20, 35.0);
+            // TODO: the other body shooters' timings (fume-shroom 50, scaredy-shroom 25, ...).
+            self.shooting_counter = 29;
         } else {
             self.fire(actions, effects);
         }
@@ -744,6 +910,15 @@ impl Plant {
             head.anim_time = time;
             return;
         }
+        // PlayIdleAnim, once a body shooter's shot is done.
+        if self.head.is_none()
+            && let Some(body) = self.body.and_then(|b| effects.get(b))
+            && body.loop_count > 0
+        {
+            let fps = body.definition.fps;
+            self.play_body_reanim(effects, "anim_idle", LoopType::Loop, 20, fps);
+            return;
+        }
         self.shooting_counter = 1;
     }
 
@@ -755,19 +930,32 @@ impl Plant {
         (t.x as i32, t.y as i32)
     }
 
-    /// `Plant::Fire`, for peashooters.
+    /// `Plant::Fire`, for peashooters and puff-shrooms.
     fn fire(&mut self, actions: &mut Vec<PlantAction>, effects: &EffectSystem) {
-        let (offset_x, offset_y) = self.pea_head_offset(effects);
-        let (x, y) = (self.x + offset_x + 24, self.y + offset_y - 33);
+        let (x, y) = if self.seed == SeedType::Puffshroom {
+            (self.x + 40, self.y + 40)
+        } else {
+            let (offset_x, offset_y) = self.pea_head_offset(effects);
+            (self.x + offset_x + 24, self.y + offset_y - 33)
+        };
         // TODO: shots leave 5 pixels higher from a flower pot.
-        let snow = self.seed == SeedType::Snowpea;
-        if snow {
-            // The frosty puff at the plant's mouth.
-            let order = make_render_order(render_layer::LAWN_MOWER, self.row, 1);
-            actions.push(PlantAction::Particle { x: x + 8, y: y + 13, render_order: order, effect: ParticleEffect::SnowpeaPuff });
-            actions.push(PlantAction::Foley(FoleyType::SnowPeaSparkles));
-        }
-        actions.push(PlantAction::Shoot { x, y, row: self.row, render_order: self.render_order - 1, snow });
+        let muzzle = make_render_order(render_layer::LAWN_MOWER, self.row, 1);
+        let projectile = match self.seed {
+            SeedType::Snowpea => {
+                // The frosty puff at the plant's mouth.
+                actions.push(PlantAction::Particle { x: x + 8, y: y + 13, render_order: muzzle, effect: ParticleEffect::SnowpeaPuff });
+                actions.push(PlantAction::Foley(FoleyType::SnowPeaSparkles));
+                ProjectileType::Snowpea
+            }
+            SeedType::Puffshroom => {
+                let effect = ParticleEffect::PuffshroomMuzzle;
+                actions.push(PlantAction::Particle { x: x + 18, y: y + 13, render_order: muzzle, effect });
+                actions.push(PlantAction::Foley(FoleyType::Puff));
+                ProjectileType::Puff
+            }
+            _ => ProjectileType::Pea,
+        };
+        actions.push(PlantAction::Shoot { x, y, row: self.row, render_order: self.render_order - 1, projectile });
     }
 
     /// `Plant::UpdateReanim`.
@@ -792,6 +980,10 @@ impl Plant {
                 offset_y += 12.0;
             }
             _ => {}
+        }
+        // A grave buster sinks into the grave it's eating.
+        if self.state == PlantState::GravebusterEating {
+            offset_y += animate_curve_float(400, 0, self.state_countdown, 0.0, 30.0, TodCurve::Linear);
         }
         effects.update_reanimation(body);
         if self.seed == SeedType::Leftpeater {
@@ -828,7 +1020,7 @@ impl Plant {
     fn do_blink(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, rng: &mut MtRand) {
         use SeedType::*;
         self.blink_countdown = 400 + rng.next_range(400) as i32;
-        if self.shooting_counter != 0 {
+        if self.shooting_counter != 0 || self.is_asleep {
             return;
         }
         self.end_blink(effects);
@@ -893,7 +1085,7 @@ impl Plant {
     /// `Plant::Die`.
     pub fn die(&mut self, effects: &mut EffectSystem) {
         self.dead = true;
-        for id in [self.body.take(), self.head.take(), self.blink.take()].into_iter().flatten() {
+        for id in [self.body.take(), self.head.take(), self.blink.take(), self.sleeping.take()].into_iter().flatten() {
             effects.kill(id);
         }
     }

@@ -1,7 +1,8 @@
 //! Zombies on the lawn (`Zombie`). So far the plain family: the normal,
 //! flag, conehead and buckethead zombies. They walk in from the right, eat
 //! plants that are in their way, lose their helmet, arm and head as they're
-//! hurt, and fall over when they die.
+//! hurt, and fall over when they die. On the last wave of a night level
+//! some climb out of the graves.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Zombie.cpp`: `ZombieInitialize`,
 //! `LoadReanim`, `LoadPlainZombieReanim`, `SetupReanimLayers`,
@@ -11,7 +12,9 @@
 //! `UpdateReanim`, `GetDrawPos`, `GetZombieRect`/`GetZombieAttackRect`,
 //! `TakeDamage`, `TakeHelmDamage`, `TakeBodyDamage`, `UpdateDamageStates`,
 //! `DropHead`/`DropArm`/`DropHelm`/`DropFlag`, `PlayDeathAnim`,
-//! `UpdateDeath`, `DieNoLoot`, `EffectedByDamage`, `DrawShadow`.
+//! `UpdateDeath`, `DieNoLoot`, `EffectedByDamage`, `DrawShadow`,
+//! `RiseFromGrave`, `UpdateZombieRiseFromGrave`, `DrawReanim`'s clipping
+//! and `HasShadow`.
 //!
 //! Not yet: the other zombie types, the chilled/frozen/buttered/yucky
 //! states, pools and ladders, and mind control.
@@ -19,6 +22,7 @@
 use bevy::prelude::*;
 use sexy::data_array::DataArray;
 use sexy::reanim::{LoopType, RENDER_GROUP_HIDDEN, RENDER_GROUP_NORMAL};
+use sexy::tod::{TodCurve, animate_curve};
 
 use crate::audio::{FoleyType, Sounds};
 use crate::graphics::Graphics;
@@ -121,6 +125,8 @@ pub enum ZombiePhase {
     PolePreVault,
     /// The pole vaulter in mid-jump, untouchable.
     PoleInVault,
+    /// Climbing out of a grave on the last wave of a night level.
+    RisingFromGrave,
 }
 
 /// What the board tells its zombies each tick.
@@ -153,7 +159,14 @@ struct DrawPos {
     body_y: f32,
     image_offset_x: f32,
     image_offset_y: f32,
+    /// How much of the bottom is hidden (`mClipHeight`); `CLIP_HEIGHT_OFF` when nothing is.
+    clip_height: f32,
 }
+
+/// `CLIP_HEIGHT_LIMIT` and `CLIP_HEIGHT_OFF`: a draw position clips the
+/// zombie only when its clip height is above the limit.
+const CLIP_HEIGHT_LIMIT: f32 = -100.0;
+const CLIP_HEIGHT_OFF: f32 = -200.0;
 
 #[derive(Debug)]
 pub struct Zombie {
@@ -174,6 +187,8 @@ pub struct Zombie {
     /// Ticks left of being slowed by cold (`mChilledCounter`).
     chilled_counter: i32,
     phase_counter: i32,
+    /// How far above the ground it is (`mAltitude`); below it while rising from a grave.
+    altitude: f32,
     pub has_head: bool,
     has_arm: bool,
     /// The flag zombie still has its flag.
@@ -243,6 +258,7 @@ impl Zombie {
             just_got_shot_counter: 0,
             chilled_counter: 0,
             phase_counter: 0,
+            altitude: 0.0,
             has_head: true,
             has_arm: true,
             has_object: false,
@@ -662,7 +678,12 @@ impl Zombie {
             image_offset_x -= 6.0;
             image_offset_y -= 11.0;
         }
-        DrawPos { head_x, head_y, body_y: 0.0, image_offset_x, image_offset_y }
+        let (mut body_y, mut clip_height) = (0.0, CLIP_HEIGHT_OFF);
+        if self.phase == ZombiePhase::RisingFromGrave {
+            body_y = -self.altitude;
+            clip_height = body_y + (self.phase_counter as f32).min(40.0);
+        }
+        DrawPos { head_x, head_y, body_y, image_offset_x, image_offset_y, clip_height }
     }
 
     /// `Zombie::GetZombieRect`.
@@ -694,7 +715,7 @@ impl Zombie {
         if self.zombie_rect().x > WIDE_BOARD_WIDTH as i32 {
             return false;
         }
-        if self.phase == ZombiePhase::PoleInVault {
+        if matches!(self.phase, ZombiePhase::PoleInVault | ZombiePhase::RisingFromGrave) {
             return damage_range & damage_range::OFF_GROUND != 0;
         }
         // Nothing's flying, submerged or underground yet.
@@ -726,7 +747,10 @@ impl Zombie {
             }
             ZombiePhase::Mowered => self.update_mowered(fx),
             ZombiePhase::Burned => self.update_burn(fx),
-            ZombiePhase::Normal | ZombiePhase::PolePreVault | ZombiePhase::PoleInVault => {
+            ZombiePhase::Normal | ZombiePhase::PolePreVault | ZombiePhase::PoleInVault | ZombiePhase::RisingFromGrave => {
+                if self.phase_counter > 0 {
+                    self.phase_counter -= 1;
+                }
                 self.update_playing(plants, env, fx);
                 self.animate(plants, fx);
             }
@@ -786,8 +810,8 @@ impl Zombie {
         if self.dead || self.phase == ZombiePhase::Mowered {
             return;
         }
-        if self.phase == ZombiePhase::Dying {
-            // Already falling over: just a puff of smoke.
+        if matches!(self.phase, ZombiePhase::Dying | ZombiePhase::RisingFromGrave) {
+            // Falling over or still in the ground: just a puff of smoke.
             if let Ok((_, puff)) = fx.effects.add_reanimation(self.pos_x - 73.0, self.pos_y - 56.0, ReanimationType::Puff, fx.res, fx.images) {
                 puff.render_order = self.render_order + 2;
                 puff.set_frames_for_layer("anim_puff");
@@ -845,6 +869,10 @@ impl Zombie {
             fx.sounds.play_foley_pitch(FoleyType::Groan, 0.0);
             self.groan_counter = fx.sounds.rng().next_range(1000) as i32 + 500;
         }
+        if self.phase == ZombiePhase::RisingFromGrave {
+            self.update_zombie_rise_from_grave();
+            return;
+        }
 
         if self.zombie_type == ZombieType::Polevaulter {
             self.update_zombie_polevaulter(plants, env, fx);
@@ -893,6 +921,32 @@ impl Zombie {
                 self.attack_rect = IRect::new(50, 0, 20, 115);
                 self.start_walk_anim(0, env, fx);
             }
+        }
+    }
+
+    /// `Zombie::RiseFromGrave`: the zombie starts under the grave whose
+    /// column is at `grave_x` in its row, and climbs out. TODO: rising out
+    /// of the pool.
+    pub fn rise_from_grave(&mut self, grave_x: i32, env: &ZombieEnv, fx: &mut Fx) {
+        self.pos_x = (grave_x - 25) as f32;
+        self.pos_y = self.pos_y_based_on_row(self.row, env);
+        self.x = self.pos_x as i32;
+        self.y = self.pos_y as i32;
+        self.altitude = CLIP_HEIGHT_OFF;
+        self.phase = ZombiePhase::RisingFromGrave;
+        self.phase_counter = 150;
+        fx.sounds.play_foley(FoleyType::GravestoneRumble);
+        let order = make_render_order(render_layer::PARTICLE, self.row, 0);
+        let rng = fx.sounds.rng();
+        fx.effects.add_particle(self.pos_x + 60.0, self.pos_y + 110.0, order, ParticleEffect::ZombieRise, fx.res, fx.images, rng);
+        self.update_reanim(fx.effects);
+    }
+
+    /// `Zombie::UpdateZombieRiseFromGrave`.
+    fn update_zombie_rise_from_grave(&mut self) {
+        self.altitude = animate_curve(50, 0, self.phase_counter, -200, 0, TodCurve::Linear) as f32;
+        if self.phase_counter == 0 {
+            self.phase = ZombiePhase::Normal;
         }
     }
 
@@ -1385,6 +1439,12 @@ impl Zombie {
             // Winners vanish into the house (SetupDrawZombieWon).
             g.clip_rect(-123.0 - self.x as f32, -self.y as f32, 800.0, 600.0);
         }
+        // DrawReanim: a zombie climbing out of the ground is cut off at it.
+        let pos = self.draw_pos();
+        if pos.clip_height > CLIP_HEIGHT_LIMIT {
+            let height = 120.0 - pos.clip_height + 71.0;
+            g.clip_rect(pos.image_offset_x - 200.0, pos.image_offset_y + pos.body_y - 78.0, 520.0, height);
+        }
         if let Some(body) = self.body {
             effects.draw(g, body, res);
         }
@@ -1393,7 +1453,8 @@ impl Zombie {
 
     /// `Zombie::DrawShadow`.
     pub fn draw_shadow(&self, g: &mut Graphics, night: bool, res: &GameResources) {
-        if matches!(self.phase, ZombiePhase::Dying | ZombiePhase::PoleInVault) {
+        // `Zombie::HasShadow`.
+        if matches!(self.phase, ZombiePhase::Dying | ZombiePhase::PoleInVault | ZombiePhase::RisingFromGrave) {
             return;
         }
         let pos = self.draw_pos();

@@ -3,8 +3,8 @@
 //! levels and the lawn mowers roll in before play starts.
 //!
 //! Times are in hundredths of a second (`mCutsceneTime` advances by 10 per
-//! tick). Not yet ported: Crazy Dave, the seed chooser, the zombies waiting
-//! on the street, grave stones, fog and the boss.
+//! tick). On night levels the graves rise out of the lawn after the pan.
+//! Not yet ported: fog and the boss.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/CutScene.cpp`: `StartLevelIntro`,
 //! `Update`, `AnimateBoard`, `PlaceLawnItems`, `ShowShovel`,
@@ -45,6 +45,8 @@ const TIME_ROLL_SOD_END: i32 = 8000;
 const TIME_READY_SET_PLANT_START: i32 = 6000;
 const TIME_READY_SET_PLANT_END: i32 = 7830;
 const TIME_INTRO_END: i32 = 6000;
+const TIME_GRAVE_STONE_START: i32 = 6000;
+const TIME_GRAVE_STONE_END: i32 = 7000;
 const TIME_LAWN_MOWER_DURATION: i32 = 250;
 const LOST_TIME_BRAIN_GRAPHIC_START: i32 = 6000;
 const LOST_TIME_BRAIN_GRAPHIC_END: i32 = 11000;
@@ -137,6 +139,9 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
     let level = board.level;
     let first_time = board.first_time_adventure;
     let bowling = board.is_wallnut_bowling_level();
+    // 2-5 is whack-a-zombie, whose graves aren't there from the start.
+    let graves = board.stage_has_grave_stones() && level != 15;
+    board.enable_grave_stones = false;
     let cs = &mut board.cut_scene;
     *cs = CutScene::default();
     cs.crazy_dave_dialog_start = -1;
@@ -148,8 +153,7 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
         cs.sod_time = 0;
         board.sod_position = 1000;
     }
-    // TODO: grave stones (TimeGraveStoneEnd - TimeGraveStoneStart on night levels).
-    cs.grave_stone_time = 0;
+    cs.grave_stone_time = if graves { TIME_GRAVE_STONE_END - TIME_GRAVE_STONE_START } else { 0 };
     cs.ready_set_plant_time = if (first_time && level <= 2) || bowling {
         0
     } else {
@@ -199,6 +203,7 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
 /// and play starts in a moment.
 fn start_non_scrolling_intro(board: &mut Board) {
     place_lawn_items(board);
+    board.enable_grave_stones = true;
     board.x = 0;
     board.cut_scene.cutscene_time = board.cut_scene.time_to_start() - 20;
     board.seed_bank.x = SEED_BANK_OFFSET_X_END;
@@ -241,6 +246,7 @@ pub fn update(
             }
         }
         board.menu_button.no_draw = false;
+        board.enable_grave_stones = true;
         show_shovel(board);
         board.start_playing(music);
         return;
@@ -474,6 +480,12 @@ fn animate_board(
         if time == sod_end {
             sounds.stop_foley(FoleyType::Digger);
         }
+    }
+
+    // The night lawn's graves come up.
+    if cs.grave_stone_time > 0 && time == cs.sod_time + TIME_GRAVE_STONE_START + dave {
+        board.enable_grave_stones = true;
+        board.add_grave_stone_particles(sounds);
     }
 
     if time == pan_left_start {

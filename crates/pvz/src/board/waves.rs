@@ -16,6 +16,7 @@
 //! drum burst and zombies rising from graves.
 
 use bevy::prelude::*;
+use sexy::data_array::Id;
 use sexy::rand::MtRand;
 
 use crate::audio::Sounds;
@@ -300,12 +301,12 @@ impl Board {
     }
 
     /// `Board::AddZombieInRow`.
-    pub(super) fn add_zombie_in_row(&mut self, ty: ZombieType, row: i32, from_wave: i32, fx: &mut Fx) {
+    pub(super) fn add_zombie_in_row(&mut self, ty: ZombieType, row: i32, from_wave: i32, fx: &mut Fx) -> Id<Zombie> {
         let variant = fx.sounds.rng().next_range(5) == 0;
         let env = self.zombie_env();
         let is_flag_wave = self.is_flag_wave(from_wave);
         let zombie = Zombie::new(row, ty, variant, from_wave, is_flag_wave, &env, fx);
-        self.zombies.alloc(zombie);
+        self.zombies.alloc(zombie)
     }
 
     /// `CutScene::PlaceStreetZombies`: a few zombies shuffling about on the
@@ -354,7 +355,10 @@ impl Board {
         for ty in types {
             self.add_zombie(ty, wave, fx);
         }
-        // TODO: the last wave brings zombies out of the graves (mRiseFromGraveCounter).
+        // The last wave brings zombies out of the graves.
+        if wave == self.waves.num_waves - 1 {
+            self.rise_from_grave_counter = 200;
+        }
         if self.is_flag_wave(wave) {
             self.waves.flag_raise_counter = 100;
         }
@@ -401,6 +405,13 @@ impl Board {
         }
         if self.has_level_award_dropped() {
             return;
+        }
+        if self.rise_from_grave_counter > 0 {
+            self.rise_from_grave_counter -= 1;
+            if self.rise_from_grave_counter == 0 {
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                self.spawn_zombies_from_graves(&mut fx);
+            }
         }
         if self.waves.huge_wave_count_down > 0 {
             self.waves.huge_wave_count_down -= 1;

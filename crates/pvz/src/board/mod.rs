@@ -20,6 +20,7 @@ mod crazy_dave;
 mod conveyor;
 mod cursor;
 mod cutscene;
+mod grid_item;
 mod lawn_mower;
 mod level_end;
 mod message;
@@ -51,10 +52,11 @@ use crate::{AppState, UiSet};
 use coin::{Coin, CoinEvent, CoinMotion, CoinType};
 use cursor::{CursorObject, CursorPreview};
 use cutscene::CutScene;
+use grid_item::{GridCels, GridItem};
 use lawn_mower::LawnMower;
 use message::{MessageStyle, MessageWidget};
 use plant::{Plant, PlantAction};
-use projectile::{Projectile, ProjectileType};
+use projectile::Projectile;
 use seed_bank::SeedBank;
 use tutorial::{AdviceType, TutorialState};
 use waves::WaveState;
@@ -286,6 +288,18 @@ pub struct Board {
     plants: DataArray<Plant>,
     zombies: DataArray<Zombie>,
     projectiles: DataArray<Projectile>,
+    /// `mGridItems`: the night levels' graves.
+    grid_items: DataArray<GridItem>,
+    grid_cels: GridCels,
+    /// `mBoardRandSeed`, part of the level's random seed (`GetLevelRandSeed`).
+    board_rand_seed: u32,
+    /// `mEnableGraveStones`: the graves rise once the intro gets to them.
+    enable_grave_stones: bool,
+    /// `mGravesCleared`: graves eaten by grave busters.
+    graves_cleared: i32,
+    /// `mRiseFromGraveCounter`: counts down from the last wave to zombies
+    /// climbing out of the graves.
+    rise_from_grave_counter: i32,
     waves: WaveState,
     plant_actions: Vec<PlantAction>,
     shake_counter: i32,
@@ -393,6 +407,12 @@ impl Board {
             plants: DataArray::default(),
             zombies: DataArray::default(),
             projectiles: DataArray::default(),
+            grid_items: DataArray::default(),
+            grid_cels: GridCels::new(rng),
+            board_rand_seed: rng.next_u31(),
+            enable_grave_stones: false,
+            graves_cleared: 0,
+            rise_from_grave_counter: 0,
             waves: WaveState::default(),
             plant_actions: Vec::new(),
             shake_counter: 0,
@@ -425,6 +445,8 @@ impl Board {
 
         // InitLevel.
         board.pick_background(resources, images);
+        let level_seed = board.level_rand_seed(player.map_or(0, |p| p.id), player.map_or(0, |p| p.finished_adventure));
+        board.add_level_grave_stones(&mut sexy::rand::MtRand::new(level_seed), rng);
         board.sun_money = if board.first_time_adventure && level == 1 { 150 } else { 50 };
         if !board.stage_is_night() {
             board.sun_count_down = rng.range_int(425, 700);
@@ -520,7 +542,6 @@ impl Board {
                 };
             }
         }
-        // TODO: grave stones on night levels.
     }
 
     pub fn stage_is_night(&self) -> bool {
@@ -791,6 +812,7 @@ fn update_board(
     board.advice.update();
     board.update_tutorial(&resources);
 
+    board.update_grid_items();
     // UpdateGame.
     board.update_game_objects(&mut effects, &mut resources, &mut images, &mut sounds);
     if let Some(zombie) = board.zombies_won_trigger.take() {
@@ -1016,18 +1038,31 @@ impl Board {
         sounds: &mut Sounds,
     ) {
         match action {
-            PlantAction::Shoot { x, y, row, render_order, snow } => {
+            PlantAction::Shoot { x, y, row, render_order, projectile } => {
                 sounds.play_foley(FoleyType::Throw);
                 let grid_x = self.pixel_to_grid_x(x).max(0);
                 let shadow_y = self.grid_to_pixel_y(grid_x, row) as f32 + 67.0;
                 // TODO: shadows sit 12 pixels higher on the roof's left side.
-                let ty = if snow { ProjectileType::Snowpea } else { ProjectileType::Pea };
-                self.projectiles.alloc(Projectile::new(x, y, render_order, row, shadow_y, ty));
+                let mut shot = Projectile::new(x, y, render_order, row, shadow_y, projectile);
+                if let Some((effect, dx, dy)) = Projectile::trail_effect(projectile)
+                    && let Some(trail) = effects.add_particle(x as f32 + dx, y as f32 + dy, 400000, effect, res, images, sounds.rng())
+                {
+                    shot.attach_trail(trail, dx, dy);
+                }
+                self.projectiles.alloc(shot);
             }
             PlantAction::Particle { x, y, render_order, effect } => {
                 self.add_particle(x as f32, y as f32, render_order, effect);
             }
             PlantAction::Foley(foley) => sounds.play_foley(foley),
+            PlantAction::GraveBusterDone { x, y, col, row, render_order } => {
+                if let Some(grave) = self.grave_stone_at(col, row) {
+                    self.remove_grave_stone(grave);
+                    self.graves_cleared += 1;
+                }
+                self.add_particle((x + 40) as f32, (y + 40) as f32, render_order, ParticleEffect::GraveBusterDie);
+                self.drop_loot_piece(x + 40, y, 12, effects, res, images, sounds);
+            }
             PlantAction::EatZombie(id) => {
                 let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
                 if let Some(zombie) = self.zombies.get_mut(id) {
@@ -1068,9 +1103,10 @@ impl Board {
                 self.add_particle(x as f32, y as f32, render_layer::TOP, ParticleEffect::Powie);
                 self.shake_board(3, -4);
             }
-            PlantAction::MakeSun { x, y } => {
+            PlantAction::MakeSun { x, y, small } => {
                 sounds.play_foley(FoleyType::SpawnSun);
-                self.add_coin(x as f32, y as f32, CoinType::Sun, CoinMotion::FromPlant, effects, res, images, sounds);
+                let ty = if small { CoinType::SmallSun } else { CoinType::Sun };
+                self.add_coin(x as f32, y as f32, ty, CoinMotion::FromPlant, effects, res, images, sounds);
             }
         }
     }
@@ -1082,6 +1118,7 @@ impl Board {
         self.lawn_mowers.retain(|m| !m.dead);
         self.projectiles.retain(|p| !p.dead);
         self.coins.retain(|c| !c.dead);
+        self.grid_items.retain(|g| !g.dead);
     }
 
     /// `Board::UpdateSunSpawning`: sun falls from the sky every few seconds
@@ -1249,6 +1286,7 @@ enum RenderItem {
     CrazyDave,
     TopUi,
     LawnMower(usize),
+    GridItem(sexy::data_array::Id<GridItem>),
     Reanimation(crate::reanim::ReanimationId),
     Plant(sexy::data_array::Id<Plant>),
     Zombie(sexy::data_array::Id<Zombie>),
@@ -1285,6 +1323,9 @@ fn draw_board(
     for (id, projectile) in board.projectiles.iter() {
         items.push((projectile.render_order, RenderItem::Projectile(id)));
         items.push((make_render_order(render_layer::GROUND, projectile.row, 3), RenderItem::ProjectileShadow(id)));
+    }
+    for (id, item) in board.grid_items.iter() {
+        items.push((item.render_order, RenderItem::GridItem(id)));
     }
     for (i, mower) in board.lawn_mowers.iter().enumerate() {
         items.push((mower.render_order, RenderItem::LawnMower(i)));
@@ -1339,6 +1380,11 @@ fn draw_board(
                 g.pop_state();
             }
             RenderItem::LawnMower(i) => board.lawn_mowers[i].draw(board, &effects, &resources, &mut g),
+            RenderItem::GridItem(id) => {
+                if let Some(item) = board.grid_items.get(id) {
+                    board.draw_grave_stone(item, &resources, &mut g);
+                }
+            }
             RenderItem::Reanimation(id) => effects.draw(&mut g, id, &resources),
             RenderItem::Plant(id) => {
                 if let Some(plant) = board.plants.get(id) {
@@ -1444,8 +1490,14 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
     {
         g.draw_image(stripe, 268.0, 77.0);
     }
-    // TODO: the pool's water effect, the level 1 tutorial's flashing sod row,
-    // and the night intro's graveyard.
+    // The graveyard beyond the night lawn, seen as the intro pans right.
+    if board.scene == GameScene::LevelIntro
+        && board.stage_has_grave_stones()
+        && let Some(graveyard) = image("IMAGE_NIGHT_GRAVE_GRAPHIC")
+    {
+        g.draw_image(graveyard, 1092.0, 40.0);
+    }
+    // TODO: the pool's water effect and the level 1 tutorial's flashing sod row.
 }
 
 /// `Board::DrawUIBottom`: the seed bank and the menu button.

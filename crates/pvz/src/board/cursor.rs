@@ -74,6 +74,10 @@ pub enum PlantingReason {
     NeedsPot,
     /// Wall-nut bowling: nuts go in the first three columns.
     NotPassedLine,
+    /// A grave buster needs a grave to eat.
+    OnlyOnGraves,
+    /// Nothing else can go on a grave.
+    NotOnGrave,
 }
 
 impl Board {
@@ -119,7 +123,7 @@ impl Board {
     }
 
     /// The plant in `(x, y)`, ignoring lily pads, pots and pumpkins.
-    fn normal_plant_at(&self, grid_x: i32, grid_y: i32) -> Option<&Plant> {
+    pub(super) fn normal_plant_at(&self, grid_x: i32, grid_y: i32) -> Option<&Plant> {
         use SeedType::*;
         if self.is_wallnut_bowling_level() {
             return None;
@@ -130,8 +134,8 @@ impl Board {
     }
 
     /// `Board::CanPlantAt`, for ordinary plants on grass, dirt and water.
-    /// TODO: lily pads, pots, pumpkins, upgrades, graves, craters and the
-    /// other special cases.
+    /// TODO: lily pads, pots, pumpkins, upgrades, craters and the other
+    /// special cases.
     pub fn can_plant_at(&self, grid_x: i32, grid_y: i32, seed: SeedType) -> PlantingReason {
         if !(0..MAX_GRID_SIZE_X as i32).contains(&grid_x) || !(0..MAX_GRID_SIZE_Y as i32).contains(&grid_y) {
             return PlantingReason::NotHere;
@@ -139,6 +143,17 @@ impl Board {
         // Challenge::CanPlantAt: nuts only start behind the line.
         if self.is_wallnut_bowling_level() {
             return if grid_x > 2 { PlantingReason::NotPassedLine } else { PlantingReason::Ok };
+        }
+        // Grave busters only go on graves, and nothing else does.
+        let has_grave = self.grave_stone_at(grid_x, grid_y).is_some();
+        if seed == SeedType::Gravebuster {
+            if self.normal_plant_at(grid_x, grid_y).is_some() {
+                return PlantingReason::NotHere;
+            }
+            return if has_grave { PlantingReason::Ok } else { PlantingReason::OnlyOnGraves };
+        }
+        if has_grave {
+            return PlantingReason::NotOnGrave;
         }
         let square = self.grid_square_type[grid_x as usize][grid_y as usize];
         if square == GridSquareType::Dirt {
@@ -449,9 +464,26 @@ impl Board {
                 self.display_advice(res, "[ADVICE_NOT_PASSED_LINE]", MessageStyle::HintFast, advice);
                 return;
             }
+            PlantingReason::OnlyOnGraves => {
+                let advice = Some(AdviceType::PlantGravebustersOnGraves);
+                self.display_advice(res, "[ADVICE_GRAVEBUSTERS_ON_GRAVES]", MessageStyle::HintFast, advice);
+                return;
+            }
+            PlantingReason::NotOnGrave => {
+                let advice = Some(AdviceType::PlantNotOnGrave);
+                self.display_advice(res, "[ADVICE_PLANT_NOT_ON_GRAVE]", MessageStyle::HintFast, advice);
+                return;
+            }
             PlantingReason::NotHere => return,
         }
-        for advice in [AdviceType::CantPlantThere, AdviceType::PlantNotOnWater, AdviceType::PlantNeedPot] {
+        for advice in [
+            AdviceType::CantPlantThere,
+            AdviceType::PlantNotOnWater,
+            AdviceType::PlantNotOnGrave,
+            AdviceType::PlantNeedPot,
+            AdviceType::PlantNotPassedLine,
+            AdviceType::PlantGravebustersOnGraves,
+        ] {
             self.clear_advice(Some(advice));
         }
         let conveyor = self.has_conveyor_belt_seed_bank();
@@ -500,11 +532,20 @@ impl Board {
         let (x, y) = (self.grid_to_pixel_x(grid_x), self.grid_to_pixel_y(grid_x, grid_y));
         let bowling = self.is_wallnut_bowling_level();
         let plant = Plant::new(grid_x, grid_y, x, y, seed, bowling, effects, res, images, sounds.rng());
-        self.plants.alloc(plant);
+        let id = self.plants.alloc(plant);
         // TODO: water sounds and splashes in the pool.
         sounds.play_foley(FoleyType::Plant);
         if seed == SeedType::Cherrybomb {
             sounds.play_foley(FoleyType::ReverseExplosion);
+        }
+        if seed == SeedType::Gravebuster {
+            sounds.play_foley(FoleyType::GravebusterChomp);
+        }
+        // Mushrooms sleep through the day.
+        if seed.is_nocturnal() && !self.stage_is_night()
+            && let Some(plant) = self.plants.get_mut(id)
+        {
+            plant.set_sleeping(true, effects, res, images, sounds.rng());
         }
         let (px, py) = ((x + 41) as f32, (y + 74) as f32);
         let py = match seed {

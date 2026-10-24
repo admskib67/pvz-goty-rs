@@ -397,6 +397,14 @@ pub enum FoleyType {
     ReverseExplosion,
     Frozen,
     SnowPeaSparkles,
+    /// A puff-shroom shooting.
+    Puff,
+    /// A grave buster landing on its grave.
+    GravebusterChomp,
+    /// A sun-shroom growing up.
+    PlantGrow,
+    /// A zombie climbing out of a grave.
+    GravestoneRumble,
 }
 
 struct FoleyParams {
@@ -486,6 +494,14 @@ impl FoleyType {
                 sounds: &["SOUND_PLASTICHIT", "SOUND_PLASTICHIT2"],
                 flags: 0,
             },
+            Self::Puff => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_PUFF"], flags: 0 },
+            Self::GravebusterChomp => FoleyParams {
+                pitch_range: 0.0,
+                sounds: &["SOUND_GRAVEBUSTERCHOMP"],
+                flags: foley_flags::MUTE_ON_PAUSE,
+            },
+            Self::PlantGrow => FoleyParams { pitch_range: -2.0, sounds: &["SOUND_PLANTGROW"], flags: 0 },
+            Self::GravestoneRumble => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_GRAVESTONE_RUMBLE"], flags: 0 },
             Self::Digger => FoleyParams {
                 pitch_range: 0.0,
                 sounds: &["SOUND_DIGGER_ZOMBIE"],
