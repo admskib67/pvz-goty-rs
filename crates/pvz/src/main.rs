@@ -62,6 +62,24 @@ pub enum UiSet {
 /// Command-line flag that wipes all saved app data before starting.
 const CLEAN_FLAG: &str = "--clean";
 
+/// `--lvl-8` or `--lvl 8`: start adventure on that level, without touching the saved player.
+pub fn level_flag() -> Option<i32> {
+    static FLAG: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(parse_level_flag)
+}
+
+fn parse_level_flag() -> Option<i32> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    args.iter().enumerate().find_map(|(i, a)| {
+        a.strip_prefix("--lvl-")
+            .or_else(|| a.strip_prefix("--lvl="))
+            .map(str::to_owned)
+            .or_else(|| (a == "--lvl").then(|| args.get(i + 1).cloned()).flatten())
+            .and_then(|v| v.parse::<i32>().ok())
+            .map(|l| l.clamp(1, 50))
+    })
+}
+
 fn main() {
     if std::env::args().skip(1).any(|a| a == CLEAN_FLAG) {
         match install::clean_user_data() {
@@ -89,6 +107,7 @@ fn main() {
         .init_state::<AppState>()
         .init_resource::<SetupStatus>()
         .init_resource::<player::GameRng>()
+        .insert_resource(board::LevelOverride(level_flag()))
         .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND))
         .insert_resource(ClearColor(Color::BLACK))
         .configure_sets(

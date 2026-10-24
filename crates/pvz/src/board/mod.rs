@@ -24,6 +24,7 @@ mod message;
 mod plant;
 mod projectile;
 mod seed_bank;
+mod seed_chooser;
 mod tutorial;
 mod waves;
 mod zombie;
@@ -244,6 +245,12 @@ pub struct Board {
     /// `Challenge::mConveyorBeltCounter`: ticks until the next seed packet rides in.
     conveyor_belt_counter: i32,
     last_conveyor_seed: Option<SeedType>,
+    /// The seed chooser, while the level intro has it on screen.
+    seed_chooser: Option<seed_chooser::SeedChooser>,
+    /// Started with `--lvl-N`: finishing it leaves the saved player alone.
+    level_overridden: bool,
+    /// `GetSeedsAvailable`.
+    seeds_available: usize,
     /// `Challenge::mShowBowlingLine`.
     show_bowling_line: bool,
     /// The player's money, as shown by the coin bank (the profile holds the real total).
@@ -311,6 +318,10 @@ enum ParticleRequest {
 }
 
 /// The next adventure level of `player` (`PlayerInfo::GetLevel`).
+/// The level given on the command line (`--lvl-N`), if any.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct LevelOverride(pub Option<i32>);
+
 fn adventure_level(player: Option<&PlayerInfo>) -> i32 {
     player.map_or(1, |p| p.level)
 }
@@ -327,7 +338,7 @@ impl Board {
         let level = match mode {
             GameMode::Adventure => adventure_level(player),
         };
-        let first_time_adventure = mode == GameMode::Adventure && !player.is_some_and(PlayerInfo::has_finished_adventure);
+            let first_time_adventure = mode == GameMode::Adventure && !player.is_some_and(PlayerInfo::has_finished_adventure);
         let mut board = Self {
             mode,
             scene: GameScene::LevelIntro,
@@ -341,6 +352,9 @@ impl Board {
             sun_money: 50,
             conveyor_belt_counter: 0,
             last_conveyor_seed: None,
+            seed_chooser: None,
+            level_overridden: false,
+            seeds_available: player.map_or(0, |p| seeds_available(p).max(0) as usize),
             show_bowling_line: false,
             player_coins: player.map_or(0, |p| p.coins),
             pending_money: 0,
@@ -405,7 +419,7 @@ impl Board {
         board.seed_bank.update_width(resources);
         // TODO: the seed chooser; until it exists every level gets the
         // first plants in order, as levels without choosing do.
-        if !board.has_conveyor_belt_seed_bank() {
+        if !board.has_conveyor_belt_seed_bank() && !board.choose_seeds_on_current_level() {
             for i in 0..num_packets {
                 let seed = SeedType::from_index(i as i32);
                 board.seed_bank.packets[i].set_packet_type(seed);
@@ -559,6 +573,7 @@ impl Board {
     /// `LawnApp::StartPlaying` + `Board::StartLevel`.
     fn start_playing(&mut self, music: &mut Music) {
         self.scene = GameScene::Playing;
+        self.seed_chooser = None;
         music.make_sure_music_is_playing(self.game_music());
     }
 
@@ -610,6 +625,7 @@ impl IRect {
 }
 
 /// `LawnApp::PreNewGame` + `NewGame`: a fresh board and its level intro.
+#[allow(clippy::too_many_arguments)]
 fn new_game(
     mut commands: Commands,
     mut resources: ResMut<GameResources>,
@@ -618,6 +634,7 @@ fn new_game(
     mut music: ResMut<Music>,
     mut sounds: Sounds,
     profiles: Res<ProfileMgr>,
+    level_override: Res<LevelOverride>,
 ) {
     // TODO: the first adventure ever starts with the intro (GAMEMODE_INTRO);
     // saved games aren't loaded yet either.
@@ -629,10 +646,21 @@ fn new_game(
             error!("{e}");
         }
     }
-    let player = profiles.player();
+    // `--lvl-N` plays a level as a copy of the player who has reached it.
+    let player_copy = level_override.0.and_then(|level| profiles.player().map(|p| PlayerInfo { level, ..p.clone() }));
+    let player = player_copy.as_ref().or(profiles.player());
     let mut board = Board::new(GameMode::Adventure, player, &mut resources, &mut images, sounds.rng());
+    board.level_overridden = level_override.0.is_some();
     for packet in &board.seed_bank.packets[..board.seed_bank.num_packets] {
         if let Some(seed) = packet.packet_type
+            && let Err(e) = resources.reanim_definition(seed.definition().reanim.file(), &mut images)
+        {
+            error!("{e}");
+        }
+    }
+    // The seed chooser shows every plant the player has.
+    for index in 0..board.seeds_available {
+        if let Some(seed) = SeedType::from_index(index as i32)
             && let Err(e) = resources.reanim_definition(seed.definition().reanim.file(), &mut images)
         {
             error!("{e}");
@@ -672,6 +700,7 @@ fn update_board(
     board.paused = dialogs.is_modal();
 
     cutscene::update(board, &mut effects, &mut resources, &mut images, &mut music, &mut sounds);
+    board.update_seed_chooser();
     if board.paused {
         return;
     }
@@ -1063,6 +1092,9 @@ fn board_input(
     if mouse.just_pressed(MouseButton::Left) {
         if board.menu_button.is_mouse_over() && board.can_interact_with_board_buttons() {
             sounds.play_sample("SOUND_GRAVEBUTTON");
+        } else if board.cut_scene.seed_choosing {
+            let screen = p + Vec2::new(board.x as f32, board.y as f32);
+            board.seed_chooser_mouse_down(screen.floor().as_ivec2(), &mut sounds);
         } else {
             board.mouse_down(p, false, &mut effects, &mut resources, &mut images, &mut sounds);
         }
@@ -1113,6 +1145,7 @@ fn do_confirm_back_to_main(dialogs: &mut Dialogs, res: &GameResources) {
 enum RenderItem {
     Backdrop,
     BottomUi,
+    SeedChooser,
     TopUi,
     LawnMower(usize),
     Reanimation(crate::reanim::ReanimationId),
@@ -1174,6 +1207,8 @@ fn draw_board(
     };
     items.push((make_render_order(render_layer::UI_BOTTOM, 0, 0), RenderItem::Backdrop));
     items.push((bottom_ui, RenderItem::BottomUi));
+    // The chooser sits in front of the seed bank its seeds fly into.
+    items.push((make_render_order(render_layer::ABOVE_UI, 0, 2), RenderItem::SeedChooser));
     items.push((make_render_order(render_layer::UI_TOP, 0, 0), RenderItem::TopUi));
     // TODO: the coin bank, screen fade and cursor preview.
     items.sort_by_key(|(z, _)| *z);
@@ -1185,6 +1220,7 @@ fn draw_board(
             RenderItem::Backdrop => draw_backdrop(board, &resources, &mut g),
             RenderItem::BottomUi => draw_ui_bottom(board, &resources, &mut g),
             RenderItem::TopUi => draw_ui_top(board, &resources, &mut g),
+            RenderItem::SeedChooser => board.draw_seed_chooser(&resources, &mut g),
             RenderItem::LawnMower(i) => board.lawn_mowers[i].draw(board, &effects, &resources, &mut g),
             RenderItem::Reanimation(id) => effects.draw(&mut g, id, &resources),
             RenderItem::Plant(id) => {
@@ -1311,6 +1347,15 @@ fn draw_ui_bottom(board: &Board, res: &GameResources, g: &mut Graphics) {
 
 /// `Board::DrawTopRightUI`.
 fn draw_top_right_ui(board: &Board, res: &GameResources, g: &mut Graphics) {
+    // While the seed chooser is up it draws the button, in screen coordinates.
+    if board.scene != GameScene::Playing && board.seed_chooser.is_some() {
+        return;
+    }
+    draw_menu_button(board, res, g);
+}
+
+/// The stone Menu button at the top right.
+fn draw_menu_button(board: &Board, res: &GameResources, g: &mut Graphics) {
     let b = &board.menu_button;
     if b.no_draw {
         return;

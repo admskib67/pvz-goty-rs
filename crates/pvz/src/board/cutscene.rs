@@ -27,6 +27,8 @@ use super::{
 const TIME_PAN_RIGHT_START: i32 = 1500;
 const TIME_PAN_RIGHT_END: i32 = 3500;
 const TIME_SEED_CHOOSER_SLIDE_ON_START: i32 = 4000;
+const TIME_SEED_CHOOSER_SLIDE_ON_END: i32 = 4250;
+const TIME_SEED_CHOOSER_SLIDE_OFF_END: i32 = 4750;
 const TIME_SEED_CHOOSER_SLIDE_OFF_START: i32 = 4500;
 const TIME_SEED_BANK_ON_START: i32 = 4000;
 const TIME_SEED_BANK_ON_END: i32 = 4250;
@@ -56,6 +58,8 @@ pub struct CutScene {
     crazy_dave_time: i32,
     lawn_mower_time: i32,
     placed_lawn_items: bool,
+    /// `mSeedChoosing`: the intro's clock waits while seeds are picked.
+    pub(super) seed_choosing: bool,
     /// The brains graphic of the lost-level cutscene.
     zombies_won_reanim: Option<crate::reanim::ReanimationId>,
 }
@@ -75,6 +79,12 @@ impl CutScene {
     /// `CutScene::StartZombiesWon`.
     pub fn start_zombies_won(&mut self) {
         self.cutscene_time = 0;
+    }
+
+    /// `CutScene::EndSeedChooser`.
+    pub(super) fn end_seed_choosing(&mut self) {
+        self.seed_choosing = false;
+        self.cutscene_time = self.crazy_dave_time + TIME_SEED_CHOOSER_SLIDE_ON_END + 10;
     }
 
     /// `IsAfterSeedChooser`.
@@ -136,6 +146,10 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
     if cs.is_scrolled_left_at_start() {
         board.x = BOARD_OFFSET;
     }
+    if board.choose_seeds_on_current_level() {
+        let y = super::seed_chooser::offset_y(res);
+        board.seed_chooser = Some(super::seed_chooser::SeedChooser::new(board.seeds_available, y));
+    }
     if bowling {
         // IsNonScrollingCutscene with no Crazy Dave: CancelIntro. TODO: Dave
         // explains the level first (mCrazyDaveDialogStart 2400).
@@ -179,8 +193,15 @@ pub fn update(
     if board.paused || board.scene != GameScene::LevelIntro || board.draw_count == 0 {
         return;
     }
-    // TODO: the seed chooser, which stops the clock while seeds are picked.
-    board.cut_scene.cutscene_time += 10;
+    if !board.cut_scene.seed_choosing {
+        board.cut_scene.cutscene_time += 10;
+        let start_choosing = board.cut_scene.cutscene_time
+            == TIME_SEED_CHOOSER_SLIDE_ON_END + board.cut_scene.crazy_dave_time
+            && board.choose_seeds_on_current_level();
+        if start_choosing {
+            board.start_seed_choosing();
+        }
+    }
 
     if board.cut_scene.cutscene_time >= board.cut_scene.time_to_start() {
         // RemoveCutsceneZombies.
@@ -286,6 +307,29 @@ fn animate_board(
     }
     if time > pan_left_start {
         board.x = -cs.calc_position(pan_left_start, pan_left_end, pan_right_to, 0);
+    }
+
+    // The seed chooser slides up, and away again once the seeds are picked.
+    if board.choose_seeds_on_current_level()
+        && let Some(offset) = board.seed_chooser.as_ref().map(|_| super::seed_chooser::offset_y(res))
+    {
+        let on_start = TIME_SEED_CHOOSER_SLIDE_ON_START + dave;
+        let on_end = TIME_SEED_CHOOSER_SLIDE_ON_END + dave;
+        let off_start = TIME_SEED_CHOOSER_SLIDE_OFF_START + dave;
+        let off_end = TIME_SEED_CHOOSER_SLIDE_OFF_END + dave;
+        let y = if time > on_start && time <= on_end {
+            Some(cs.calc_position(on_start, on_end, offset, 0))
+        } else if time > off_start && time <= off_end {
+            Some(cs.calc_position(off_start, off_end, 0, offset))
+        } else {
+            None
+        };
+        if let (Some(y), Some(chooser)) = (y, board.seed_chooser.as_mut()) {
+            chooser.y = y;
+        }
+        if time > on_start {
+            board.menu_button.no_draw = false;
+        }
     }
 
     // The seed bank drops in, after the sod when there's no seed choosing.

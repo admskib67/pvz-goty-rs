@@ -153,7 +153,7 @@ impl SeedBank {
     }
 
     /// `Board::GetSeedPacketPositionX`.
-    fn packet_x(&self, index: usize) -> i32 {
+    pub fn packet_x(&self, index: usize) -> i32 {
         let i = index as i32;
         if self.conveyor {
             return i * 50 + 91;

@@ -192,6 +192,9 @@ impl Board {
     /// for adventure mode: the player moves on to the next level.
     pub(super) fn finish_level(&mut self, profiles: &mut ProfileMgr) {
         self.level_complete = false;
+        if self.level_overridden {
+            return;
+        }
         if let Some(player) = profiles.player_mut() {
             if self.level == super::FINAL_LEVEL {
                 player.level = 1;
