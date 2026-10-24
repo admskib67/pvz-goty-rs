@@ -195,6 +195,8 @@ pub struct ZombieEnv {
     pub bowling: bool,
     /// `mMainCounter`: dancers step in time with it (`GetDancerFrame`).
     pub main_counter: i32,
+    /// `HasLevelAwardDropped`: the level's won.
+    pub award_dropped: bool,
 }
 
 /// The things a zombie touches besides itself and the plants.
@@ -291,6 +293,9 @@ pub struct Zombie {
     /// The board should see whether this zombie leaving the fight ends the
     /// level (`TrySpawnLevelAward`), without it dropping anything.
     pub award_check: bool,
+    /// The plant it finished eating this tick (its type and column), for
+    /// the board's count and advice.
+    pub ate_plant: Option<(crate::plant::SeedType, i32)>,
     pub body_health: i32,
     body_max_health: i32,
     pub phase: ZombiePhase,
@@ -379,6 +384,7 @@ impl Zombie {
             zombie_target: None,
             bitten_zombie: None,
             award_check: false,
+            ate_plant: None,
             body_health: 270,
             body_max_health: 270,
             phase: ZombiePhase::Normal,
@@ -1564,19 +1570,32 @@ impl Zombie {
 
     /// `Zombie::EatPlant`.
     fn eat_plant(&mut self, plants: &mut DataArray<Plant>, id: sexy::data_array::Id<Plant>, fx: &mut Fx) {
+        use crate::plant::SeedType;
+        // A dancer still moonwalking in stops to point instead.
+        if self.phase == ZombiePhase::DancerDancingIn {
+            self.phase_counter = 1;
+            return;
+        }
         self.start_eating(fx);
+        let Some(plant) = plants.get_mut(id) else { return };
+        // Plants that are about to go off can't be eaten (unless asleep), nor
+        // can an armed potato mine.
+        let going_off = matches!(plant.seed, SeedType::Cherrybomb | SeedType::Doomshroom | SeedType::Iceshroom | SeedType::Hypnoshroom);
+        if going_off && !plant.is_asleep() {
+            return;
+        }
+        if plant.seed == SeedType::Potatomine && plant.is_armed_or_rising() {
+            return;
+        }
         if self.chilled_counter > 0 && self.age % 2 == 1 {
             return;
         }
-        let Some(plant) = plants.get_mut(id) else { return };
-        // TODO: instant plants and others in a special state aren't eaten
-        // (cherry bomb, jalapeno, squash, ...).
         plant.health -= DAMAGE_PER_EAT;
         plant.recently_eaten_countdown = 50;
         if plant.health <= 0 {
             fx.sounds.play_sample("SOUND_GULP");
             plant.die(fx.effects);
-            // TODO: the plants-eaten count and "peashooter died" advice.
+            self.ate_plant = Some((plant.seed, plant.col));
         }
     }
 
@@ -1899,7 +1918,7 @@ impl Zombie {
             self.apply_chill(false, fx);
         }
         self.body_health -= damage;
-        self.update_damage_states(flags, fx);
+        self.update_damage_states(flags, env, fx);
         if self.body_health <= 0 {
             self.body_health = 0;
             self.play_death_anim(flags, env, fx);
@@ -1908,14 +1927,17 @@ impl Zombie {
     }
 
     /// `Zombie::UpdateDamageStates`: arm off at two thirds, head at one third.
-    fn update_damage_states(&mut self, flags: u32, fx: &mut Fx) {
+    fn update_damage_states(&mut self, flags: u32, env: &ZombieEnv, fx: &mut Fx) {
         if self.has_arm && self.body_health < 2 * self.body_max_health / 3 && self.body_health > 0 {
             self.drop_arm(flags, fx);
         }
         if self.has_head && self.body_health < self.body_max_health / 3 {
             self.drop_head(flags, fx);
             self.drop_loot();
-            // TODO: dying right away once the level's award has dropped.
+            // Once the level's won, a headless zombie falls over at once.
+            if env.award_dropped {
+                self.play_death_anim(flags, env, fx);
+            }
         }
     }
 

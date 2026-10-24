@@ -28,6 +28,7 @@ mod plant;
 mod projectile;
 mod seed_bank;
 mod seed_chooser;
+mod tooltip;
 mod tutorial;
 mod waves;
 mod whack_a_zombie;
@@ -324,6 +325,8 @@ pub struct Board {
     /// climbing out of the graves.
     rise_from_grave_counter: i32,
     waves: WaveState,
+    /// `mPlantsEaten`.
+    plants_eaten: i32,
     /// Whack-a-zombie's mallet and timer.
     whack: whack_a_zombie::WhackState,
     plant_actions: Vec<PlantAction>,
@@ -442,6 +445,7 @@ impl Board {
             graves_cleared: 0,
             rise_from_grave_counter: 0,
             waves: WaveState::default(),
+            plants_eaten: 0,
             whack: Default::default(),
             plant_actions: Vec::new(),
             shake_counter: 0,
@@ -858,6 +862,8 @@ pub(super) struct TickOutcome {
     level_complete: bool,
     /// Dave is offering a seed slot: ask the player (slots after buying, price in coins).
     packet_offer: Option<(i32, i32)>,
+    /// The seed chooser has another question before play starts.
+    chooser_warning: Option<&'static str>,
 }
 
 /// `Board::Update`, at 100 ticks per second: the game in [`Board::tick`],
@@ -889,6 +895,9 @@ fn update_board(
     }
     if outcome.game_over {
         do_game_over_dialog(&mut dialogs, &resources);
+    }
+    if let Some(warning) = outcome.chooser_warning {
+        do_chooser_warning_dialog(&mut dialogs, &resources, warning);
     }
     if let Some((slots, cost)) = outcome.packet_offer {
         do_purchase_packet_slot_dialog(&mut dialogs, &resources, slots, cost);
@@ -930,6 +939,7 @@ impl Board {
             return outcome;
         }
         self.answer_packet_offer(effects, resources, images, sounds);
+        outcome.chooser_warning = self.seed_chooser_warning_answered();
         if std::mem::take(&mut self.packet_offer) {
             outcome.packet_offer = Some((self.packet_upgrades + 7, self.packet_upgrade_cost()));
         }
@@ -1081,6 +1091,7 @@ impl Board {
             let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
             self.summon_backup_dancers(&mut fx);
             self.update_hypnotized_zombies(&mut fx);
+            self.after_plants_eaten(res);
             for action in std::mem::take(&mut self.plant_actions) {
                 self.do_plant_action(action, effects, res, images, sounds);
             }
@@ -1401,7 +1412,9 @@ fn board_input(
             }
         } else if board.cut_scene.seed_choosing {
             let screen = p + Vec2::new(board.x as f32, board.y as f32);
-            board.seed_chooser_mouse_down(screen.floor().as_ivec2(), &mut sounds);
+            if let Some(warning) = board.seed_chooser_mouse_down(screen.floor().as_ivec2(), &mut sounds) {
+                do_chooser_warning_dialog(&mut dialogs, &resources, warning);
+            }
         } else {
             board.mouse_down(p, false, &mut effects, &mut resources, &mut images, &mut sounds);
         }
@@ -1443,6 +1456,18 @@ fn do_purchase_packet_slot_dialog(dialogs: &mut Dialogs, res: &GameResources, sl
     let dialog = dialogs.do_dialog(res, DialogId::PurchasePacketSlot, &header, &body, "", ButtonMode::YesNo);
     dialog.x += 120;
     dialog.y += 130;
+}
+
+/// `SeedChooserScreen::DisplayRepickWarningDialog`.
+fn do_chooser_warning_dialog(dialogs: &mut Dialogs, res: &GameResources, warning: &str) {
+    let header = res.translate("[DIALOG_WARNING]");
+    let dialog = dialogs.do_dialog(res, DialogId::ChooserWarning, &header, &res.translate(warning), "", ButtonMode::YesNo);
+    if let Some(yes) = &mut dialog.yes_button {
+        yes.label = res.translate("[DIALOG_BUTTON_YES]");
+    }
+    if let Some(no) = &mut dialog.no_button {
+        no.label = res.translate("[REPICK_BUTTON]");
+    }
 }
 
 /// `LawnApp::DoConfirmBackToMain`.

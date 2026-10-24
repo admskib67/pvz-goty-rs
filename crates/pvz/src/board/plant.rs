@@ -494,6 +494,12 @@ impl Plant {
         self.state
     }
 
+    /// A potato mine past `STATE_NOTREADY` (rising or armed): zombies
+    /// can't eat it then.
+    pub fn is_armed_or_rising(&self) -> bool {
+        self.state != PlantState::NotReady
+    }
+
     /// A mushroom asleep in the day (`mIsAsleep`).
     pub fn is_asleep(&self) -> bool {
         self.is_asleep

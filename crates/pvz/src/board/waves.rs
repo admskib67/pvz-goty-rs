@@ -496,6 +496,7 @@ impl Board {
             zombie_count: self.zombies.len(),
             bowling: self.is_wallnut_bowling_level(),
             main_counter: self.main_counter,
+            award_dropped: self.has_level_award_dropped(),
             zombies_on_screen: self
                 .zombies
                 .iter()

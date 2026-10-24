@@ -336,6 +336,12 @@ fn handle_dialog_events(
                     board.packet_offer_answer = Some(yes);
                 }
             }
+            DialogEvent::Button(DialogId::ChooserWarning, button) => {
+                app.dialogs.kill_dialog(DialogId::ChooserWarning);
+                if let Some(board) = board.as_deref_mut() {
+                    board.answer_chooser_warning(button == DialogButton::Yes);
+                }
+            }
             DialogEvent::Button(id, DialogButton::Yes) => app.button_depress(id, true),
             DialogEvent::Button(id, DialogButton::No) => app.button_depress(id, false),
             DialogEvent::Button(DialogId::UserDialog, b) => app.user_dialog_button(b),

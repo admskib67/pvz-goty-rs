@@ -6,9 +6,10 @@
 //! `GetSeedPositionInChooser`, `GetSeedPositionInBank`, `Draw`,
 //! `LandFlyingSeed`, `Update`, `ClickedSeedInBank`, `ClickedSeedInChooser`,
 //! `MouseDown`, `CloseSeedChooser` and `EnableStartButton`; and
-//! `CutScene::StartSeedChooser`/`EndSeedChooser`. Not yet: the tooltips,
-//! almanac, store and imitater buttons, the "not recommended" graying and the
-//! repick warnings (no sun, pool, roof).
+//! `CutScene::StartSeedChooser`/`EndSeedChooser`, `ShowToolTip`,
+//! `SeedNotRecommendedToPick` and `OnStartButton`'s repick warnings; and
+//! `Board::SeedNotRecommendedForLevel`. Not yet: the almanac, store and
+//! imitater buttons (none of them are unlocked by then on a first playthrough).
 
 use bevy::prelude::*;
 
@@ -18,6 +19,7 @@ use crate::plant::SeedType;
 use crate::resources::GameResources;
 
 use super::seed_bank::draw_seed_packet;
+use super::tooltip::ToolTip;
 use super::Board;
 
 const SEED_PACKET_WIDTH: i32 = 50;
@@ -56,6 +58,10 @@ pub struct SeedChooser {
     pub y: i32,
     /// Whether the seeds can be clicked (`mMouseVisible`).
     pub mouse_visible: bool,
+    /// How many of the start button's warnings the player has said yes to.
+    warnings_accepted: usize,
+    /// The player's answer to the last warning ("Yes", or "Re-pick").
+    pub warning_answer: Option<bool>,
 }
 
 /// `SEED_CHOOSER_OFFSET_Y`: where the chooser waits, just off the bottom of the screen.
@@ -86,7 +92,7 @@ impl SeedChooser {
                 }
             })
             .collect();
-        Self { seeds, age: 0, in_flight: 0, in_bank: 0, y, mouse_visible: false }
+        Self { seeds, age: 0, in_flight: 0, in_bank: 0, y, mouse_visible: false, warnings_accepted: 0, warning_answer: None }
     }
 
     /// `LandFlyingSeed`.
@@ -152,10 +158,85 @@ impl Board {
         }
     }
 
+    /// `Board::SeedNotRecommendedForLevel`: the tooltip's warning for a plant
+    /// that won't do much here, if any (and it's drawn grayed).
+    pub(super) fn seed_not_recommended(&self, seed: SeedType) -> Option<&'static str> {
+        use SeedType::*;
+        if seed.is_nocturnal() && !self.stage_is_night() {
+            return Some("[NOCTURNAL_WARNING]");
+        }
+        let not_here = match seed {
+            InstantCoffee => self.stage_is_night(),
+            Gravebuster => !self.stage_has_grave_stones(),
+            Plantern => !self.stage_has_fog(),
+            Flowerpot => !self.stage_has_roof(),
+            Spikeweed | Spikerock => self.stage_has_roof(),
+            Lilypad | Tanglekelp | Seashroom | Cattail => !self.stage_has_pool(),
+            _ => false,
+        };
+        not_here.then_some("[NOT_RECOMMENDED_FOR_LEVEL]")
+    }
+
+    /// `OnStartButton`'s questions before play starts: "are you sure, without ...?"
+    pub(super) fn chooser_warnings(&self, picked: impl Fn(SeedType) -> bool) -> Vec<&'static str> {
+        let mut warnings = Vec::new();
+        let night_one = self.first_time_adventure && self.level == 11;
+        if night_one && !picked(SeedType::Puffshroom) {
+            warnings.push("[SEED_CHOOSER_PUFFSHROOM_WARNING]");
+        }
+        if ![SeedType::Sunflower, SeedType::Twinsunflower, SeedType::Sunshroom].into_iter().any(&picked) {
+            warnings.push(if night_one { "[SEED_CHOOSER_NIGHT_SUN_WARNING]" } else { "[SEED_CHOOSER_SUN_WARNING]" });
+        }
+        // TODO: the pool, roof and flyer warnings, with those levels.
+        warnings
+    }
+
+    /// `OnStartButton`: once the player's answered every warning with
+    /// "yes", play starts. Returns the next warning to ask, if any.
+    pub(super) fn seed_chooser_start(&mut self) -> Option<&'static str> {
+        let chooser = self.seed_chooser.as_ref()?;
+        if chooser.in_bank != self.seed_bank.num_packets {
+            return None;
+        }
+        let picked = |seed: SeedType| {
+            chooser.seeds.get(seed as usize).is_some_and(|s| matches!(s.state, ChosenSeedState::InBank | ChosenSeedState::FlyingToBank))
+        };
+        let warnings = self.chooser_warnings(picked);
+        if let Some(&warning) = warnings.get(chooser.warnings_accepted) {
+            return Some(warning);
+        }
+        self.close_seed_chooser();
+        None
+    }
+
+    /// The player's answer to the chooser's warning dialog, for the next tick.
+    pub fn answer_chooser_warning(&mut self, yes: bool) {
+        if let Some(chooser) = &mut self.seed_chooser {
+            chooser.warning_answer = Some(yes);
+        }
+    }
+
+    /// The answer to a warning: "yes" moves on to the next one (or play),
+    /// "Re-pick" goes back to choosing.
+    pub(super) fn seed_chooser_warning_answered(&mut self) -> Option<&'static str> {
+        let chooser = self.seed_chooser.as_mut()?;
+        match chooser.warning_answer.take()? {
+            true => {
+                chooser.warnings_accepted += 1;
+                self.seed_chooser_start()
+            }
+            false => {
+                chooser.warnings_accepted = 0;
+                None
+            }
+        }
+    }
+
     /// `SeedChooserScreen::MouseDown`, at a point in screen coordinates.
-    pub(super) fn seed_chooser_mouse_down(&mut self, p: IVec2, sounds: &mut Sounds) {
+    /// Returns a warning to ask about before play starts, if any.
+    pub(super) fn seed_chooser_mouse_down(&mut self, p: IVec2, sounds: &mut Sounds) -> Option<&'static str> {
         let num_packets = self.seed_bank.num_packets;
-        let Some(chooser) = self.seed_chooser.as_mut().filter(|c| c.mouse_visible) else { return };
+        let chooser = self.seed_chooser.as_mut().filter(|c| c.mouse_visible)?;
         chooser.land_all();
         // The chooser's own coordinates.
         let p = p - IVec2::new(0, chooser.y);
@@ -163,14 +244,11 @@ impl Board {
         let (bx, by, bw, bh) = START_BUTTON;
         if p.x >= bx && p.x < bx + bw && p.y >= by && p.y < by + bh {
             sounds.play_sample("SOUND_TAP");
-            if chooser.in_bank == num_packets {
-                // TODO: warn when there's no sun plant, and about pools and roofs.
-                self.close_seed_chooser();
-            }
-            return;
+            chooser.warnings_accepted = 0;
+            return self.seed_chooser_start();
         }
 
-        let Some(index) = chooser.seed_at(p) else { return };
+        let index = chooser.seed_at(p)?;
         match chooser.seeds[index].state {
             ChosenSeedState::InBank => {
                 let (age, chooser_y) = (chooser.age, chooser.y);
@@ -204,7 +282,7 @@ impl Board {
             }
             ChosenSeedState::InChooser => {
                 if chooser.in_bank == num_packets {
-                    return;
+                    return None;
                 }
                 let (age, chooser_y, slot) = (chooser.age, chooser.y, chooser.in_bank);
                 let end = self.seed_position_in_bank(chooser_y, slot);
@@ -222,6 +300,7 @@ impl Board {
             }
             _ => {}
         }
+        None
     }
 
     /// `SeedChooserScreen::CloseSeedChooser` + `CutScene::EndSeedChooser`.
@@ -284,7 +363,8 @@ impl Board {
                     continue;
                 }
                 if let Some(ty) = SeedType::from_index(index as i32) {
-                    draw_seed_packet(g, res, seed.x as f32, seed.y as f32, ty, 0.0, 255, true);
+                    let grayed = seed.state == ChosenSeedState::InChooser && self.seed_not_recommended(ty).is_some();
+                    draw_seed_packet(g, res, seed.x as f32, seed.y as f32, ty, 0.0, if grayed { 115 } else { 255 }, true);
                 }
             }
         }
@@ -314,6 +394,23 @@ impl Board {
             let ascent = font.font.ascent;
             let y = by + (bh - ascent / 6 - 1 + ascent) / 2 - 1;
             g.tod_draw_string(font, bx + bw / 2, y, &label, color, Justify::Center);
+        }
+        // ShowToolTip: the plant under the mouse, when nothing's moving.
+        if chooser.mouse_visible
+            && chooser.in_flight <= 0
+            && !self.paused
+            && let Some((mx, my)) = mouse
+            && let Some(index) = chooser.seed_at(IVec2::new(mx.floor() as i32, my.floor() as i32))
+            && let Some(seed) = SeedType::from_index(index as i32)
+        {
+            let name = seed.definition().name;
+            let warning = self.seed_not_recommended(seed).unwrap_or("");
+            if let Some(mut tip) = ToolTip::new(res, &format!("[{name}]"), &format!("[{name}_TOOLTIP]"), warning) {
+                let s = &chooser.seeds[index];
+                tip.x = ((SEED_PACKET_WIDTH - tip.width) / 2 + s.x).clamp(0, super::BOARD_WIDTH - tip.width);
+                tip.y = s.y + 70;
+                tip.draw(g, res);
+            }
         }
         g.pop_state();
 

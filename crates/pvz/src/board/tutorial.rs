@@ -80,10 +80,29 @@ pub enum AdviceType {
     PlantGravebustersOnGraves,
     PlantNotOnGrave,
     PlantNotOnCrater,
+    PeashooterDied,
     HugeWave,
 }
 
 impl Board {
+    /// What `Zombie::EatPlant` does when a plant's gone: the count, and on
+    /// levels 2-4 a hint when a peashooter far up the lawn is lost.
+    pub(super) fn after_plants_eaten(&mut self, res: &GameResources) {
+        let eaten: Vec<_> = self.zombies.iter_mut().filter_map(|(_, z)| z.ate_plant.take()).collect();
+        for (seed, col) in eaten {
+            self.plants_eaten += 1;
+            if self.first_time_adventure
+                && (2..=4).contains(&self.level)
+                && col > 4
+                && self.plants.len() < 15
+                && seed == crate::plant::SeedType::Peashooter
+            {
+                let advice = Some(AdviceType::PeashooterDied);
+                self.display_advice(res, "[ADVICE_PEASHOOTER_DIED]", MessageStyle::HintTallFast, advice);
+            }
+        }
+    }
+
     /// `Board::DisplayAdvice`: shows `text` (a `[KEY]` or plain text), once
     /// per level if `help` is given.
     pub(super) fn display_advice(&mut self, res: &GameResources, text: &str, style: MessageStyle, help: Option<AdviceType>) {

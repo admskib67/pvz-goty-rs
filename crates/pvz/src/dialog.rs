@@ -47,6 +47,8 @@ pub enum DialogId {
     GameOver,
     /// Crazy Dave's offer of an extra seed slot.
     PurchasePacketSlot,
+    /// The seed chooser's "are you sure, without ...?" before play.
+    ChooserWarning,
 }
 
 /// `Dialog::BUTTONS_*`.

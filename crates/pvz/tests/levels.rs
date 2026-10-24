@@ -133,3 +133,27 @@ fn planting_in_the_wrong_spot_puts_the_plant_back() {
     t.tick();
     assert_eq!(t.board.cursor.cursor_type, CursorType::Hammer, "the mallet's back in hand");
 }
+
+#[test]
+fn the_seed_chooser_flags_plants_that_wont_help() {
+    let day = test_board!("1-8");
+    assert_eq!(day.board.seed_not_recommended(SeedType::Puffshroom), Some("[NOCTURNAL_WARNING]"), "mushrooms sleep in the day");
+    assert_eq!(day.board.seed_not_recommended(SeedType::Gravebuster), Some("[NOT_RECOMMENDED_FOR_LEVEL]"), "no graves");
+    assert_eq!(day.board.seed_not_recommended(SeedType::Peashooter), None);
+    drop(day);
+    let night = test_board!("2-2");
+    assert_eq!(night.board.seed_not_recommended(SeedType::Puffshroom), None);
+    assert_eq!(night.board.seed_not_recommended(SeedType::Gravebuster), None);
+}
+
+#[test]
+fn the_seed_chooser_warns_about_missing_sun_plants() {
+    let t = test_board!("1-8");
+    let warnings = t.board.chooser_warnings(|seed| seed == SeedType::Peashooter);
+    assert_eq!(warnings, ["[SEED_CHOOSER_SUN_WARNING]"], "no sunflower");
+    assert!(t.board.chooser_warnings(|seed| seed == SeedType::Sunflower).is_empty(), "a sunflower's enough");
+    drop(t);
+    let t = test_board!("2-1");
+    let warnings = t.board.chooser_warnings(|seed| seed == SeedType::Peashooter);
+    assert_eq!(warnings, ["[SEED_CHOOSER_PUFFSHROOM_WARNING]", "[SEED_CHOOSER_NIGHT_SUN_WARNING]"], "2-1 asks twice");
+}
