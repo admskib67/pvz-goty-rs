@@ -1,5 +1,5 @@
-//! Things plants shoot (`Projectile`). So far the pea, the snow pea and
-//! the puff-shroom's short-range puff.
+//! Things plants shoot (`Projectile`). So far the pea, the snow pea, the
+//! puff-shroom's short-range puff and the torchwood's fire pea.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Projectile.cpp`:
 //! `ProjectileInitialize`, `Update`, `UpdateMotion`, `UpdateNormalMotion`,
@@ -12,7 +12,7 @@ use sexy::tod::{TodCurve, animate_curve_float};
 use crate::audio::FoleyType;
 use crate::graphics::Graphics;
 use crate::particle::ParticleEffect;
-use crate::reanim::ParticleSystemId;
+use crate::reanim::{ParticleSystemId, ReanimationId, ReanimationType};
 use crate::resources::GameResources;
 
 use super::zombie::{Fx, HelmType, IRect, Zombie, ZombieEnv, damage, damage_range, rect_overlap};
@@ -24,6 +24,8 @@ pub enum ProjectileType {
     Pea,
     Snowpea,
     Puff,
+    /// A pea that has passed a torchwood (`PROJECTILE_FIREBALL`).
+    Fire,
 }
 
 impl ProjectileType {
@@ -31,6 +33,7 @@ impl ProjectileType {
     fn damage(self) -> i32 {
         match self {
             Self::Pea | Self::Snowpea | Self::Puff => 20,
+            Self::Fire => 40,
         }
     }
 }
@@ -54,6 +57,14 @@ pub struct Projectile {
     pub short_range: bool,
     /// The trail that follows it (`mAttachmentID`), and its offset.
     trail: Option<(ParticleSystemId, f32, f32)>,
+    /// A threepeater's side pea drifts towards its lane at this speed
+    /// (`mVelY`, `MOTION_THREEPEATER`).
+    vel_y: f32,
+    /// The flames around a fire pea (`mAttachmentID`).
+    fire: Option<ReanimationId>,
+    /// The last torchwood column it passed (`mHitTorchwoodGridX`), so one
+    /// torchwood changes it only once.
+    hit_torchwood_col: Option<i32>,
     pub dead: bool,
 }
 
@@ -77,6 +88,9 @@ impl Projectile {
             damage_range_flags: damage_range::GROUND,
             short_range: false,
             trail: None,
+            vel_y: 0.0,
+            fire: None,
+            hit_torchwood_col: None,
             dead: false,
         }
     }
@@ -87,8 +101,15 @@ impl Projectile {
         match ty {
             ProjectileType::Snowpea => Some((ParticleEffect::SnowpeaTrail, 8.0, 13.0)),
             ProjectileType::Puff => Some((ParticleEffect::PuffshroomTrail, 13.0, 13.0)),
-            ProjectileType::Pea => None,
+            ProjectileType::Pea | ProjectileType::Fire => None,
         }
+    }
+
+    /// A threepeater's side pea: it starts in the plant's row and drifts up
+    /// or down (`vel_y` is -3 or 3) into the row it's meant for.
+    pub fn set_lane_drift(&mut self, vel_y: f32) {
+        self.vel_y = vel_y;
+        self.shadow_y += if vel_y < 0.0 { 80.0 } else { -80.0 };
     }
 
     /// `AttachParticle`: `trail` follows the projectile from now on.
@@ -97,8 +118,9 @@ impl Projectile {
     }
 
     /// `Projectile::GetProjectileRect`.
-    fn rect(&self) -> IRect {
+    pub(super) fn rect(&self) -> IRect {
         match self.ty {
+            ProjectileType::Fire => IRect::new(self.x, self.y, self.width - 10, self.height),
             ProjectileType::Pea | ProjectileType::Snowpea => IRect::new(self.x - 15, self.y, self.width + 15, self.height),
             ProjectileType::Puff => IRect::new(self.x, self.y, self.width, self.height),
         }
@@ -107,12 +129,50 @@ impl Projectile {
     /// `Projectile::Die`: the trail fades out where it is.
     fn die(&mut self, fx: &mut Fx) {
         self.dead = true;
+        self.drop_attachments(fx);
+    }
+
+    /// Lets the trail fade out and puts the flames out.
+    fn drop_attachments(&mut self, fx: &mut Fx) {
         if let Some((id, _, _)) = self.trail.take() {
             let rng = fx.sounds.rng();
             if let Some(trail) = fx.effects.particle_mut(id) {
                 trail.cross_fade("FadeOut", rng);
             }
         }
+        if let Some(fire) = self.fire.take() {
+            fx.effects.kill(fire);
+        }
+    }
+
+    /// `Projectile::ConvertToFireball`: a pea passing the torchwood in `col`
+    /// catches fire.
+    pub fn convert_to_fireball(&mut self, col: i32, fx: &mut Fx) {
+        if self.hit_torchwood_col == Some(col) {
+            return;
+        }
+        self.ty = ProjectileType::Fire;
+        self.hit_torchwood_col = Some(col);
+        fx.sounds.play_foley(FoleyType::FirePea);
+        let rng = fx.sounds.rng();
+        let rate = rng.range_f32(50.0, 80.0);
+        if let Ok((id, flames)) = fx.effects.add_reanimation(self.pos_x - 25.0, self.pos_y - 25.0, ReanimationType::FirePea, fx.res, fx.images) {
+            flames.loop_type = sexy::reanim::LoopType::Loop;
+            flames.anim_rate = rate;
+            flames.render_order = self.render_order;
+            self.fire = Some(id);
+        }
+    }
+
+    /// `Projectile::ConvertToPea`: a snow pea thaws at the torchwood in `col`.
+    pub fn convert_to_pea(&mut self, col: i32, fx: &mut Fx) {
+        if self.hit_torchwood_col == Some(col) {
+            return;
+        }
+        self.drop_attachments(fx);
+        self.ty = ProjectileType::Pea;
+        self.hit_torchwood_col = Some(col);
+        fx.sounds.play_foley(FoleyType::Throw);
     }
 
     /// `Projectile::Update`.
@@ -129,11 +189,22 @@ impl Projectile {
         {
             trail.system_move(self.pos_x + dx, self.pos_y + self.pos_z + dy);
         }
+        if let Some(id) = self.fire
+            && let Some(flames) = fx.effects.get_mut(id)
+        {
+            flames.set_position(self.pos_x - 25.0, self.pos_y + self.pos_z - 25.0);
+            flames.render_order = self.render_order;
+        }
     }
 
     /// `Projectile::UpdateMotion` + `UpdateNormalMotion`.
     fn update_motion(&mut self, zombies: &mut DataArray<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
         self.pos_x += 3.33;
+        if self.vel_y != 0.0 {
+            self.pos_y += self.vel_y;
+            self.vel_y *= 0.97;
+            self.shadow_y += self.vel_y;
+        }
         self.check_for_collision(zombies, env, fx);
         self.x = self.pos_x as i32;
         self.y = (self.pos_y + self.pos_z) as i32;
@@ -192,6 +263,10 @@ impl Projectile {
 
     /// `Projectile::DoImpact`.
     fn do_impact(&mut self, zombies: &mut DataArray<Zombie>, id: sexy::data_array::Id<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
+        if self.ty == ProjectileType::Fire {
+            self.do_fire_impact(zombies, id, env, fx);
+            return;
+        }
         let Some(zombie) = zombies.get_mut(id) else { return };
         self.play_impact_sound(zombie, fx);
         let flags = if self.ty == ProjectileType::Snowpea { damage::FREEZE } else { 0 };
@@ -202,6 +277,7 @@ impl Projectile {
             ProjectileType::Pea => (-15.0, ParticleEffect::PeaSplat),
             ProjectileType::Snowpea => (-15.0, ParticleEffect::SnowpeaSplat),
             ProjectileType::Puff => (-20.0, ParticleEffect::PuffSplat),
+            ProjectileType::Fire => return,
         };
         let (splat_x, splat_y) = (self.pos_x + 12.0 + splat_offset, self.pos_y + 12.0);
         let mut x = splat_x + 52.0 - zombie.x as f32;
@@ -213,12 +289,59 @@ impl Projectile {
         self.die(fx);
     }
 
+    /// `Projectile::DoImpact` and `DoSplashDamage` for a fire pea: the zombie
+    /// it hits takes the full damage and thaws; the rest of the row within
+    /// reach take a third each, shared out so the total stays within one hit.
+    fn do_fire_impact(&mut self, zombies: &mut DataArray<Zombie>, hit: sexy::data_array::Id<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
+        fx.sounds.play_foley(FoleyType::Ignite);
+        if let Some(zombie) = zombies.get_mut(hit) {
+            zombie.remove_cold_effects(fx.effects);
+        }
+        let mut reach = self.rect();
+        reach.w = 100;
+        let splashed: Vec<_> = zombies
+            .iter()
+            .filter(|(zid, z)| {
+                z.row == self.row && z.effected_by_damage(self.damage_range_flags) && rect_overlap(reach, z.zombie_rect()) >= 0 && *zid != hit
+            })
+            .map(|(zid, _)| zid)
+            .collect();
+        let full = self.ty.damage();
+        let mut splash = full / 3;
+        let total = splash * splashed.len() as i32;
+        if total > full {
+            splash = (full * full / (total * 3)).max(1);
+        }
+        let flags = damage::HITS_SHIELD_AND_BODY;
+        if let Some(zombie) = zombies.get_mut(hit) {
+            zombie.take_damage(full, flags, env, fx);
+        }
+        for zid in splashed {
+            if let Some(zombie) = zombies.get_mut(zid) {
+                zombie.take_damage(splash, flags, env, fx);
+            }
+        }
+        // The flash of fire where it hit.
+        let order = self.render_order + 1;
+        if let Ok((_, flame)) =
+            fx.effects.add_reanimation(self.pos_x + 38.0, self.pos_y - 20.0, ReanimationType::JalapenoFire, fx.res, fx.images)
+        {
+            flame.anim_time = 0.25;
+            flame.anim_rate = 24.0;
+            flame.override_scale(0.7, 0.4);
+            flame.render_order = order;
+        }
+        self.die(fx);
+    }
+
     /// `Projectile::Draw`: in the projectile's own coordinates.
     pub fn draw(&self, g: &mut Graphics, res: &GameResources) {
         let id = match self.ty {
             ProjectileType::Pea => "IMAGE_PROJECTILEPEA",
             ProjectileType::Snowpea => "IMAGE_PROJECTILESNOWPEA",
             ProjectileType::Puff => "IMAGE_PUFFSHROOM_PUFF1",
+            // The flames are a reanimation of their own.
+            ProjectileType::Fire => return,
         };
         let Some(image) = res.image(id) else { return };
         g.push_state();

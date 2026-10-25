@@ -833,6 +833,13 @@ impl Zombie {
         self.update_anim_speed(fx.effects);
     }
 
+    /// `Zombie::RemoveColdEffects`: fire thaws a zombie.
+    pub fn remove_cold_effects(&mut self, effects: &mut EffectSystem) {
+        self.chilled_counter = 0;
+        self.ice_trap_counter = 0;
+        self.update_anim_speed(effects);
+    }
+
     /// `Zombie::ApplyBurn`: cherry bombs and jalapenos.
     pub fn apply_burn(&mut self, env: &ZombieEnv, fx: &mut Fx) {
         if self.dead || self.phase == ZombiePhase::Burned {
@@ -947,7 +954,7 @@ impl Zombie {
 
     /// `Zombie::IsWalkingBackwards`: not for the types so far.
     /// Hypnotized zombies walk the other way.
-    fn is_walking_backwards(&self) -> bool {
+    pub(super) fn is_walking_backwards(&self) -> bool {
         self.mind_controlled
     }
 
@@ -1039,10 +1046,19 @@ impl Zombie {
         damage_range & damage_range::GROUND != 0
     }
 
-    /// `Zombie::ZombieTargetLeadX`, for lobbed projectiles.
-    #[allow(dead_code, reason = "used by the pult plants once they're ported")]
+    /// `Zombie::ZombieTargetLeadX`: where the middle of the zombie will be in
+    /// `time` ticks, for lobbed shots and the squash's jump.
     pub fn target_lead_x(&self, time: f32) -> f32 {
-        let speed = if self.is_eating { 0.0 } else { self.vel_x };
+        let mut speed = self.vel_x;
+        if self.chilled_counter > 0 {
+            speed *= 0.4;
+        }
+        if self.is_walking_backwards() {
+            speed = -speed;
+        }
+        if self.zombie_not_walking() {
+            speed = 0.0;
+        }
         let rect = self.zombie_rect();
         (rect.x + rect.w / 2) as f32 - speed * time
     }
@@ -1243,16 +1259,33 @@ impl Zombie {
             }
         } else if self.phase == ZombiePhase::PoleInVault {
             let Some(body) = self.body.and_then(|b| fx.effects.get(b)) else { return };
-            let ended = body.loop_count > 0;
-            if body.should_trigger_timed_event(0.2) {
+            let mut ended = body.loop_count > 0;
+            let anim_time = body.anim_time;
+            let (step, vault) = (body.should_trigger_timed_event(0.2), body.should_trigger_timed_event(0.4));
+            // Behaviour per ruslan831 decomp, Zombie::UpdateZombiePolevaulter:
+            // a tall-nut is too high, so the jump ends against it.
+            let blocker = if anim_time > 0.6 && anim_time <= 0.7 {
+                self.find_plant_target(plants).and_then(|id| plants.get(id)).filter(|p| p.seed == crate::plant::SeedType::Tallnut)
+            } else {
+                None
+            };
+            if let Some(plant) = blocker {
+                fx.sounds.play_foley(FoleyType::Bonk);
+                let order = self.render_order + 1;
+                let rng = fx.sounds.rng();
+                fx.effects.add_particle((plant.x + 60) as f32, (plant.y - 20) as f32, order, ParticleEffect::TallNutBlock, fx.res, fx.images, rng);
+                self.pos_x = plant.x as f32;
+                ended = true;
+            } else if ended {
+                self.pos_x -= 150.0;
+            }
+            if step {
                 fx.sounds.play_sample("SOUND_GRASSSTEP");
             }
-            if body.should_trigger_timed_event(0.4) {
+            if vault {
                 fx.sounds.play_sample("SOUND_POLEVAULT");
             }
-            // TODO: tall-nuts stop the jump short (FOLEY_BONK).
             if ended {
-                self.pos_x -= 150.0;
                 self.x = self.pos_x as i32;
                 self.phase = ZombiePhase::Normal;
                 self.attack_rect = IRect::new(50, 0, 20, 115);
@@ -1510,12 +1543,17 @@ impl Zombie {
         } else {
             self.pos_x -= speed;
         }
-        // The football zombie's feet kick up dust.
-        if self.zombie_type == ZombieType::Football
-            && !self.is_winner()
+        // The football zombie's feet and the running pole vaulter's kick up dust.
+        let steps = if self.zombie_type == ZombieType::Football && !self.is_winner() {
+            Some([(0.03, 81.0, 106.0), (0.61, 87.0, 110.0)])
+        } else if self.phase == ZombiePhase::PolePreVault {
+            Some([(0.16, 81.0, 106.0), (0.67, 87.0, 110.0)])
+        } else {
+            None
+        };
+        if let Some(steps) = steps
             && let Some(body) = body
         {
-            let steps = [(0.03, 81.0, 106.0), (0.61, 87.0, 110.0)];
             let dust: Vec<_> = steps.iter().filter(|(t, _, _)| body.should_trigger_timed_event(*t)).collect();
             for &&(_, dx, dy) in &dust {
                 let rng = fx.sounds.rng();
@@ -1580,8 +1618,8 @@ impl Zombie {
         let Some(plant) = plants.get_mut(id) else { return };
         // Plants that are about to go off can't be eaten (unless asleep), nor
         // can an armed potato mine.
-        let going_off = matches!(plant.seed, SeedType::Cherrybomb | SeedType::Doomshroom | SeedType::Iceshroom | SeedType::Hypnoshroom);
-        if going_off && !plant.is_asleep() {
+        let going_off = matches!(plant.seed, SeedType::Cherrybomb | SeedType::Jalapeno | SeedType::Doomshroom | SeedType::Iceshroom | SeedType::Hypnoshroom);
+        if (going_off && !plant.is_asleep()) || plant.is_squash_getting_ready() {
             return;
         }
         if plant.seed == SeedType::Potatomine && plant.is_armed_or_rising() {
@@ -2357,7 +2395,9 @@ fn draw_spotlight(g: &mut Graphics, image: &ImageRes, x: f32, y: f32, color: Sex
 /// `Zombie::CanTargetPlant`, for chewing: spiky plants and the like aren't
 /// ported yet, so everything on the ground is food.
 fn can_target(plant: &Plant) -> bool {
-    !plant.dead && plant.seed != crate::plant::SeedType::Tanglekelp
+    use crate::plant::SeedType;
+    // `Zombie::CanTargetPlant`: the spikes are walked over, not eaten.
+    !plant.dead && !plant.not_on_ground() && !matches!(plant.seed, SeedType::Tanglekelp | SeedType::Spikeweed | SeedType::Spikerock)
 }
 
 #[cfg(test)]

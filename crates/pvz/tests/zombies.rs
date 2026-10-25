@@ -173,6 +173,28 @@ fn pole_vaulter_jumps_the_first_plant() {
 }
 
 #[test]
+fn pole_vaulter_cannot_jump_a_tall_nut() {
+    let mut t = test_board!("1-6");
+    let nut = t.plant(SeedType::Tallnut, 4, 2);
+    let nut_x = t.plant_ref(nut).unwrap().x;
+    let vaulter = t.zombie(ZombieType::Polevaulter, 2, 700.0);
+    assert!(
+        t.run_until(1500, |b| b.zombies.get(vaulter).is_some_and(|z| z.phase == ZombiePhase::PoleInVault)),
+        "it starts the jump at the plant"
+    );
+    assert!(
+        t.run_until(300, |b| b.zombies.get(vaulter).is_some_and(|z| z.phase == ZombiePhase::Normal)),
+        "the jump ends"
+    );
+    assert!(t.zombie_ref(vaulter).unwrap().x >= nut_x - 10, "but it's stopped by the tall-nut, not over it");
+    assert!(
+        t.run_until(600, |b| b.zombies.get(vaulter).is_some_and(|z| z.is_eating)),
+        "and it has to eat the nut"
+    );
+    assert!(t.run_until(600, |b| b.plants.get(nut).is_some_and(|p| p.health < 8000)), "which gets bitten");
+}
+
+#[test]
 fn newspaper_zombie_speeds_up_without_its_paper() {
     let mut t = test_board!("2-1");
     let id = t.zombie(ZombieType::Newspaper, 2, 700.0);

@@ -1,12 +1,16 @@
 //! Plants: planting, digging up, and what each one does.
 
+use sexy::data_array::Id;
+
 use crate::plant::SeedType;
 use crate::zombie::ZombieType;
 
 use super::super::coin::CoinType;
 use super::super::cursor::PlantingReason;
 use super::super::plant::PlantState;
-use super::test_board;
+use super::super::projectile::ProjectileType;
+use super::super::zombie::Zombie;
+use super::{TestBoard, test_board};
 
 /// The plants that stand and do something (not the instant ones).
 const STANDING: [SeedType; 13] = [
@@ -310,4 +314,211 @@ fn grave_buster_eats_a_grave() {
     assert!(t.run_until(800, |b| b.grave_stone_at(col, row).is_none()), "the grave is eaten");
     t.tick();
     assert!(t.plant_at(col, row).is_none(), "and the grave buster with it");
+}
+
+#[test]
+fn squash_flattens_a_zombie_in_front_of_it() {
+    let mut t = test_board!("1-6");
+    let squash = t.plant(SeedType::Squash, 3, 2);
+    let zombie = t.zombie(ZombieType::Normal, 2, 380.0);
+    assert!(t.run_until(600, |b| b.zombies.get(zombie).is_none_or(|z| z.is_dead_or_dying())), "the zombie is flattened");
+    assert!(t.run_until(300, |b| b.plants.get(squash).is_none()), "and the squash is used up afterwards");
+}
+
+#[test]
+fn squash_ignores_other_rows_and_far_zombies() {
+    let mut t = test_board!("1-6");
+    let squash = t.plant(SeedType::Squash, 3, 2);
+    let other_row = t.zombie(ZombieType::Normal, 1, 380.0);
+    let far = t.zombie(ZombieType::Normal, 2, 760.0);
+    t.ticks(100);
+    assert_eq!(t.plant_ref(squash).unwrap().state(), PlantState::NotReady, "nothing to squash yet");
+    assert!(t.zombie_ref(other_row).is_some_and(|z| !z.is_dead_or_dying()));
+    assert!(t.zombie_ref(far).is_some_and(|z| !z.is_dead_or_dying()));
+}
+
+#[test]
+fn jalapeno_burns_its_whole_row() {
+    let mut t = test_board!("1-6");
+    let row: Vec<_> = [300.0, 500.0, 700.0].iter().map(|&x| t.zombie(ZombieType::Normal, 2, x)).collect();
+    let other_row = t.zombie(ZombieType::Normal, 1, 500.0);
+    t.plant(SeedType::Jalapeno, 1, 2);
+    t.ticks(200);
+    for id in row {
+        assert!(t.zombie_ref(id).is_none_or(|z| z.is_dead_or_dying()), "everything in the row is burned");
+    }
+    assert!(t.zombie_ref(other_row).is_some_and(|z| !z.is_dead_or_dying()), "the next row is safe");
+    assert!(t.plant_at(1, 2).is_none(), "the jalapeno is used up");
+}
+
+#[test]
+fn jalapeno_burns_chilled_and_vaulting_zombies() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Snowpea, 0, 2);
+    let chilled = t.zombie(ZombieType::Normal, 2, 600.0);
+    assert!(t.run_until(500, |b| b.zombies.get(chilled).is_some_and(|z| z.is_chilled())), "chilled first");
+    let vaulter = t.zombie(ZombieType::Polevaulter, 2, 700.0);
+    t.plant(SeedType::Jalapeno, 1, 2);
+    t.ticks(200);
+    assert!(t.zombie_ref(chilled).is_none_or(|z| z.is_dead_or_dying()));
+    assert!(t.zombie_ref(vaulter).is_none_or(|z| z.is_dead_or_dying()));
+}
+
+#[test]
+fn spikeweed_hurts_a_zombie_walking_over_it() {
+    let mut t = test_board!("1-6");
+    let weed = t.plant(SeedType::Spikeweed, 3, 2);
+    let weed_x = t.plant_ref(weed).unwrap().x;
+    let zombie = t.zombie(ZombieType::Normal, 2, 430.0);
+    let mut ate = false;
+    assert!(
+        t.run_until(1500, |b| {
+            ate |= b.zombies.get(zombie).is_some_and(|z| z.is_eating);
+            b.zombies.get(zombie).is_none_or(|z| z.x < weed_x - 40)
+        }),
+        "the zombie walks right over it"
+    );
+    assert!(!ate, "zombies don't stop to eat spikeweed");
+    assert!(t.zombie_ref(zombie).unwrap().body_health <= 230, "but its feet are hurt more than once");
+    assert_eq!(t.plant_ref(weed).unwrap().health, 300, "and the spikeweed is unharmed");
+}
+
+#[test]
+fn spikeweed_ignores_zombies_in_other_rows() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Spikeweed, 3, 2);
+    let other = t.zombie(ZombieType::Normal, 1, 300.0);
+    t.ticks(400);
+    assert_eq!(t.zombie_ref(other).unwrap().body_health, 270);
+}
+
+/// The zombie's health once a shot has first hurt it.
+fn first_hit(t: &mut TestBoard, zombie: Id<Zombie>) -> i32 {
+    assert!(t.run_until(800, |b| b.zombies.get(zombie).is_some_and(|z| z.body_health < 270)), "the zombie should be hit");
+    270 - t.zombie_ref(zombie).unwrap().body_health
+}
+
+#[test]
+fn torchwood_turns_peas_into_fire_peas() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Peashooter, 0, 2);
+    t.plant(SeedType::Torchwood, 2, 2);
+    let zombie = t.zombie(ZombieType::Normal, 2, 780.0);
+    assert!(t.run_until(400, |b| b.projectiles.iter().any(|(_, p)| p.ty == ProjectileType::Fire)), "a pea catches fire");
+    assert_eq!(first_hit(&mut t, zombie), 40, "and hits twice as hard");
+}
+
+#[test]
+fn torchwood_thaws_snow_peas() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Snowpea, 0, 2);
+    t.plant(SeedType::Torchwood, 2, 2);
+    let zombie = t.zombie(ZombieType::Normal, 2, 780.0);
+    assert_eq!(first_hit(&mut t, zombie), 20, "a thawed pea is a plain pea, and isn't set alight by the same torchwood");
+    assert!(!t.zombie_ref(zombie).unwrap().is_chilled(), "so the zombie isn't chilled");
+}
+
+#[test]
+fn a_snow_pea_through_two_torchwoods_burns() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Snowpea, 0, 2);
+    t.plant(SeedType::Torchwood, 2, 2);
+    t.plant(SeedType::Torchwood, 3, 2);
+    let zombie = t.zombie(ZombieType::Normal, 2, 780.0);
+    assert_eq!(first_hit(&mut t, zombie), 40);
+}
+
+#[test]
+fn torchwood_ignores_peas_in_other_rows() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Peashooter, 0, 2);
+    t.plant(SeedType::Torchwood, 2, 1);
+    t.zombie(ZombieType::Normal, 2, 780.0);
+    for _ in 0..400 {
+        t.tick();
+        assert!(t.board.projectiles.iter().all(|(_, p)| p.ty != ProjectileType::Fire), "no fire peas");
+    }
+}
+
+fn shot_rows(t: &TestBoard) -> Vec<i32> {
+    let mut rows: Vec<_> = t.board.projectiles.iter().map(|(_, p)| p.row).collect();
+    rows.sort_unstable();
+    rows.dedup();
+    rows
+}
+
+#[test]
+fn threepeater_fires_in_three_rows() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Threepeater, 2, 2);
+    let zombie = t.zombie(ZombieType::Normal, 1, 700.0);
+    assert!(t.run_until(500, |b| b.projectiles.len() >= 3), "it fires a pea in each row");
+    assert_eq!(shot_rows(&t), vec![1, 2, 3]);
+    assert!(t.run_until(600, |b| b.zombies.get(zombie).is_some_and(|z| z.body_health < 270)), "the pea that drifted up hits the zombie");
+}
+
+#[test]
+fn threepeater_on_the_edge_only_fires_rows_that_exist() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Threepeater, 2, 0);
+    t.zombie(ZombieType::Normal, 0, 700.0);
+    let mut seen = Vec::new();
+    for _ in 0..500 {
+        t.tick();
+        seen.extend(shot_rows(&t));
+    }
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(seen, vec![0, 1], "no row above the top one");
+}
+
+#[test]
+fn threepeater_waits_for_a_zombie_in_its_three_rows() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Threepeater, 2, 2);
+    t.zombie(ZombieType::Normal, 4, 700.0);
+    t.ticks(500);
+    assert!(t.board.projectiles.is_empty(), "two rows away is out of its sights");
+}
+
+#[test]
+fn zombies_cannot_eat_a_squash_that_has_jumped() {
+    let mut t = test_board!("1-6");
+    let squash = t.plant(SeedType::Squash, 3, 2);
+    t.zombie(ZombieType::Normal, 2, 380.0);
+    assert!(
+        t.run_until(600, |b| b.plants.get(squash).is_some_and(|p| p.state() == PlantState::SquashDoneFalling)),
+        "the squash lands"
+    );
+    let x = t.plant_ref(squash).unwrap().x;
+    let behind = t.zombie(ZombieType::Normal, 2, x as f32 + 30.0);
+    for _ in 0..60 {
+        t.tick();
+        assert!(t.zombie_ref(behind).is_none_or(|z| !z.is_eating), "it's not on the ground, so it can't be bitten");
+    }
+    assert_eq!(t.plant_ref(squash).unwrap().health, 300);
+}
+
+#[test]
+fn zombies_cannot_eat_a_jalapeno_before_it_goes_off() {
+    let mut t = test_board!("1-6");
+    let jalapeno = t.plant(SeedType::Jalapeno, 3, 2);
+    let x = t.plant_ref(jalapeno).unwrap().x;
+    let zombies: Vec<_> = (0..3).map(|i| t.zombie(ZombieType::Normal, 2, x as f32 + 40.0 + i as f32 * 5.0)).collect();
+    t.ticks(90);
+    assert_eq!(t.plant_ref(jalapeno).unwrap().health, 300, "not a bite while its fuse burns");
+    t.ticks(100);
+    for id in zombies {
+        assert!(t.zombie_ref(id).is_none_or(|z| z.is_dead_or_dying()), "the row is burned");
+    }
+}
+
+#[test]
+fn zombies_cannot_eat_a_squash_that_is_about_to_jump() {
+    let mut t = test_board!("1-6");
+    let squash = t.plant(SeedType::Squash, 3, 2);
+    let x = t.plant_ref(squash).unwrap().x;
+    t.zombie(ZombieType::Normal, 2, x as f32 + 60.0);
+    t.ticks(100);
+    assert_eq!(t.plant_ref(squash).unwrap().health, 300, "no bites while it looks and crouches");
 }

@@ -423,6 +423,15 @@ pub enum FoleyType {
     /// The whack-a-zombie mallet swinging, and hitting.
     Swing,
     Bonk,
+    /// The squash looking at the zombie it will jump on.
+    SquashHmm,
+    /// The squash landing.
+    Thump,
+    /// A jalapeno going off.
+    JalapenoIgnite,
+    /// A pea passing a torchwood, and a fire pea hitting.
+    FirePea,
+    Ignite,
 }
 
 struct FoleyParams {
@@ -522,6 +531,19 @@ impl FoleyType {
             Self::GravestoneRumble => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_GRAVESTONE_RUMBLE"], flags: 0 },
             Self::Swing => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_SWING"], flags: 0 },
             Self::Bonk => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_BONK"], flags: 0 },
+            Self::SquashHmm => FoleyParams {
+                pitch_range: 2.0,
+                sounds: &["SOUND_SQUASH_HMM", "SOUND_SQUASH_HMM", "SOUND_SQUASH_HMM2"],
+                flags: 0,
+            },
+            Self::FirePea => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_FIREPEA"], flags: 0 },
+            Self::Ignite => FoleyParams {
+                pitch_range: 5.0,
+                sounds: &["SOUND_IGNITE", "SOUND_IGNITE", "SOUND_IGNITE", "SOUND_IGNITE2"],
+                flags: 0,
+            },
+            Self::JalapenoIgnite => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_JALAPENO"], flags: 0 },
+            Self::Thump => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_GARGANTUAR_THUMP"], flags: 0 },
             Self::Floop => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_FLOOP"], flags: 0 },
             Self::Fume => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_FUME"], flags: 0 },
             Self::NewspaperRip => FoleyParams { pitch_range: -2.0, sounds: &["SOUND_NEWSPAPER_RIP"], flags: 0 },

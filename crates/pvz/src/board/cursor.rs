@@ -557,7 +557,7 @@ impl Board {
         let id = self.plants.alloc(plant);
         // TODO: water sounds and splashes in the pool.
         sounds.play_foley(FoleyType::Plant);
-        if seed == SeedType::Cherrybomb {
+        if matches!(seed, SeedType::Cherrybomb | SeedType::Jalapeno) {
             sounds.play_foley(FoleyType::ReverseExplosion);
         }
         if seed == SeedType::Gravebuster {

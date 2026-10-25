@@ -40,7 +40,10 @@ use super::{make_render_order, render_layer};
 #[derive(Debug, Clone, Copy)]
 pub enum PlantAction {
     /// `Plant::Fire`: a projectile leaves the plant at this spot.
-    Shoot { x: i32, y: i32, row: i32, render_order: i32, projectile: ProjectileType, short_range: bool },
+    ///
+    /// A threepeater's side peas start in its own row and drift towards `row`
+    /// (`drift` is their vertical speed, `MOTION_THREEPEATER`).
+    Shoot { x: i32, y: i32, row: i32, render_order: i32, projectile: ProjectileType, short_range: bool, drift: f32 },
     /// `Plant::DoRowAreaDamage`: hurts every zombie in `row` touching `rect`
     /// (the fume-shroom's fumes).
     RowAreaDamage { row: i32, rect: IRect, damage: i32, flags: u32 },
@@ -66,6 +69,12 @@ pub enum PlantAction {
     BowlingHit(sexy::data_array::Id<Zombie>),
     /// An explode-o-nut blows up where it hit.
     ExplodeONut { x: i32, y: i32, row: i32 },
+    /// `Plant::DoSpecial` for the jalapeno: a wall of fire burns the whole `row`.
+    Jalapeno { row: i32 },
+    /// `Plant::DoSquashDamage`: the squash lands on `rect` in `row`.
+    Squash { row: i32, rect: IRect },
+    /// The board jolts (`Board::ShakeBoard`).
+    ShakeBoard { x: i32, y: i32 },
     /// A grave buster has eaten the grave on its square (`x`, `y` is the plant's spot).
     GraveBusterDone { x: i32, y: i32, col: i32, row: i32, render_order: i32 },
 }
@@ -92,6 +101,14 @@ pub(super) enum PlantState {
     ScaredyshroomLowering,
     ScaredyshroomScared,
     ScaredyshroomRaising,
+    /// The squash has spotted a zombie and looks at it, then crouches,
+    /// rises, falls on it and stays put for a while.
+    SquashLook,
+    SquashPreLaunch,
+    SquashRising,
+    SquashFalling,
+    SquashDoneFalling,
+    SpikeweedAttacking,
     /// An instant plant counting down to going off.
     DoingSpecial,
 }
@@ -149,7 +166,14 @@ pub struct Plant {
     sleeping: Option<ReanimationId>,
     body: Option<ReanimationId>,
     head: Option<ReanimationId>,
+    /// The threepeater's other two heads (`mHeadReanimID2` and `3`); `head` is the first.
+    extra_heads: [Option<ReanimationId>; 2],
     blink: Option<ReanimationId>,
+    /// The squash's square, where it jumps from (`mStartRow` and its column).
+    home: (i32, i32),
+    /// The zombie it's jumping on (`mTargetZombieID`) and the x it jumps to.
+    target_zombie: Option<sexy::data_array::Id<Zombie>>,
+    target_x: i32,
 }
 
 /// `PlantDrawHeightOffset`, without the pool's bobbing and flower pots.
@@ -215,7 +239,11 @@ impl Plant {
             sleeping: None,
             body: None,
             head: None,
+            extra_heads: [None; 2],
             blink: None,
+            home: (x, y),
+            target_zombie: None,
+            target_x: x,
         };
         plant.render_order = plant.calc_render_order();
 
@@ -290,12 +318,16 @@ impl Plant {
                             head.anim_rate = rate;
                             head.set_frames_for_layer(&format!("anim_head_idle{i}"));
                             effects.attach_to_another(head_id, body_id, &format!("anim_head{i}"));
+                            match i {
+                                1 => plant.head = Some(head_id),
+                                _ => plant.extra_heads[i - 2] = Some(head_id),
+                            }
                         }
                     }
                 }
             }
             Chomper | Scaredyshroom => plant.state = PlantState::Ready,
-            Cherrybomb => {
+            Cherrybomb | Jalapeno => {
                 plant.do_special_countdown = 100;
                 if let Some(body) = plant.body.and_then(|b| effects.get_mut(b)) {
                     body.set_frames_for_layer("anim_explode");
@@ -368,9 +400,10 @@ impl Plant {
         res: &mut GameResources,
         images: &mut Assets<Image>,
         row_y: &[i32; super::MAX_GRID_SIZE_Y],
+        open_rows: &[bool; super::MAX_GRID_SIZE_Y],
         rng: &mut MtRand,
     ) {
-        self.update_abilities(zombies, actions, effects, row_y, rng);
+        self.update_abilities(zombies, actions, effects, row_y, open_rows, rng);
         self.animate(actions, effects, res, images, rng);
         if self.health < 0 {
             self.die(effects);
@@ -496,6 +529,17 @@ impl Plant {
 
     /// A potato mine past `STATE_NOTREADY` (rising or armed): zombies
     /// can't eat it then.
+    /// `Plant::NotOnGround`: a jumping or landed squash can't be reached.
+    pub fn not_on_ground(&self) -> bool {
+        self.seed == SeedType::Squash
+            && matches!(self.state, PlantState::SquashRising | PlantState::SquashFalling | PlantState::SquashDoneFalling)
+    }
+
+    /// A squash that is still looking or crouching can't be eaten (`Zombie::EatPlant`).
+    pub fn is_squash_getting_ready(&self) -> bool {
+        self.seed == SeedType::Squash && matches!(self.state, PlantState::SquashLook | PlantState::SquashPreLaunch)
+    }
+
     pub fn is_armed_or_rising(&self) -> bool {
         self.state != PlantState::NotReady
     }
@@ -624,6 +668,12 @@ impl Plant {
                 actions.push(PlantAction::CherryBomb { x, y, row: self.row });
                 self.die(effects);
             }
+            SeedType::Jalapeno => {
+                actions.push(PlantAction::Foley(FoleyType::JalapenoIgnite));
+                actions.push(PlantAction::Foley(FoleyType::Juicy));
+                actions.push(PlantAction::Jalapeno { row: self.row });
+                self.die(effects);
+            }
             SeedType::Potatomine => {
                 actions.push(PlantAction::PotatoMine { x: x - 20, y, row: self.row });
                 self.die(effects);
@@ -651,7 +701,7 @@ impl Plant {
     }
 
     /// `Plant::GetPlantAttackRect`, for the plants ported so far.
-    fn attack_rect(&self) -> IRect {
+    pub(super) fn attack_rect(&self) -> IRect {
         if self.bowling {
             return IRect::new(self.x, self.y, PLANT_SIZE - 20, PLANT_SIZE);
         }
@@ -659,6 +709,9 @@ impl Plant {
             SeedType::Leftpeater => IRect::new(0, self.y, self.x, PLANT_SIZE),
             SeedType::Puffshroom | SeedType::Seashroom => IRect::new(self.x + 60, self.y, 230, PLANT_SIZE),
             SeedType::Fumeshroom => IRect::new(self.x + 60, self.y, 340, PLANT_SIZE),
+            SeedType::Squash => IRect::new(self.x + 20, self.y, PLANT_SIZE - 35, PLANT_SIZE),
+            SeedType::Spikeweed => IRect::new(self.x + 20, self.y, PLANT_SIZE - 50, PLANT_SIZE),
+            SeedType::Torchwood => IRect::new(self.x + 50, self.y, 30, PLANT_SIZE),
             _ => IRect::new(self.x + 60, self.y, super::BOARD_WIDTH, PLANT_SIZE),
         }
     }
@@ -670,6 +723,7 @@ impl Plant {
         actions: &mut Vec<PlantAction>,
         effects: &mut EffectSystem,
         row_y: &[i32; super::MAX_GRID_SIZE_Y],
+        open_rows: &[bool; super::MAX_GRID_SIZE_Y],
         rng: &mut MtRand,
     ) {
         if self.dead || self.is_asleep {
@@ -700,6 +754,12 @@ impl Plant {
         if self.seed == SeedType::Scaredyshroom {
             self.update_scaredy_shroom(zombies, effects, rng);
         }
+        if self.seed == SeedType::Squash {
+            self.update_squash(zombies, actions, effects);
+        }
+        if self.seed == SeedType::Spikeweed {
+            self.update_spikeweed(zombies, actions, effects, rng);
+        }
         // UpdateIceShroom: it goes off as soon as it's awake.
         if self.seed == SeedType::Iceshroom && self.state != PlantState::DoingSpecial {
             self.state = PlantState::DoingSpecial;
@@ -718,7 +778,7 @@ impl Plant {
             actions.push(PlantAction::Foley(FoleyType::ReverseExplosion));
         }
         if self.seed.definition().sub_class == PlantSubClass::Shooter {
-            self.update_shooter(zombies, actions, effects, rng);
+            self.update_shooter(zombies, actions, effects, open_rows, rng);
         }
         if self.do_special_countdown > 0 {
             self.do_special_countdown -= 1;
@@ -727,6 +787,137 @@ impl Plant {
             }
         }
         // TODO: the other plants' abilities.
+    }
+
+    /// `Plant::UpdateSpikeweed` and `SpikeweedAttack`: the spikes come up
+    /// under any zombie standing on it, and hurt it once per attack.
+    fn update_spikeweed(
+        &mut self,
+        zombies: &DataArray<Zombie>,
+        actions: &mut Vec<PlantAction>,
+        effects: &mut EffectSystem,
+        rng: &mut MtRand,
+    ) {
+        if self.state == PlantState::SpikeweedAttacking {
+            if self.state_countdown == 0 {
+                self.state = PlantState::NotReady;
+            } else if self.state_countdown == 75 {
+                // 33: `DAMAGE_SPIKE` through the shield.
+                let flags = damage::BYPASSES_SHIELD | damage::SPIKE;
+                actions.push(PlantAction::RowAreaDamage { row: self.row, rect: self.attack_rect(), damage: 20, flags });
+            }
+            if self.body.and_then(|b| effects.get(b)).is_some_and(|b| b.loop_count > 0) {
+                let rate = rng.range_f32(12.0, 15.0);
+                self.play_body_reanim(effects, "anim_idle", LoopType::Loop, 20, rate);
+            }
+        } else if self.find_target_zombie(zombies).is_some() {
+            self.play_body_reanim(effects, "anim_attack", LoopType::PlayOnceAndHold, 20, 18.0);
+            actions.push(PlantAction::Foley(FoleyType::Throw));
+            self.state = PlantState::SpikeweedAttacking;
+            self.state_countdown = 100;
+        }
+    }
+
+    /// `Plant::GetDamageRangeFlags` for the squash.
+    const SQUASH_DAMAGE_RANGE: u32 = 13;
+
+    /// `Plant::FindSquashTarget`: the closest zombie in its row that it can
+    /// jump on, sticking with the one it's already after.
+    fn find_squash_target(&self, zombies: &DataArray<Zombie>) -> Option<sexy::data_array::Id<Zombie>> {
+        use super::zombie::ZombiePhase;
+        use crate::zombie::ZombieType;
+        let attack = self.attack_rect();
+        let mut closest: Option<(i32, sexy::data_array::Id<Zombie>)> = None;
+        for (id, zombie) in zombies.iter() {
+            if zombie.row != self.row || !zombie.has_head || !zombie.effected_by_damage(Self::SQUASH_DAMAGE_RANGE) {
+                continue;
+            }
+            let rect = zombie.zombie_rect();
+            let pre_vault = zombie.phase == ZombiePhase::PolePreVault;
+            if (pre_vault && rect.x >= self.x + 20) || zombie.phase == ZombiePhase::PoleInVault {
+                continue;
+            }
+            let range = -rect_overlap(attack, rect);
+            if range > if zombie.is_eating { 110 } else { 70 } {
+                continue;
+            }
+            // Zombies that run or lunge are met earlier.
+            let ahead = pre_vault || zombie.zombie_type == ZombieType::Polevaulter || zombie.zombie_type == ZombieType::Football;
+            let plant_x = if ahead { attack.x - 60 } else { attack.x };
+            if !(zombie.is_walking_backwards() || rect.x + rect.w >= plant_x) {
+                continue;
+            }
+            if self.target_zombie == Some(id) {
+                return Some(id);
+            }
+            if closest.is_none_or(|(r, _)| range < r) {
+                closest = Some((range, id));
+            }
+        }
+        closest.map(|(_, id)| id)
+    }
+
+    /// `Plant::UpdateSquash`.
+    fn update_squash(&mut self, zombies: &DataArray<Zombie>, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem) {
+        let lead_x = |zombies: &DataArray<Zombie>, id: Option<sexy::data_array::Id<Zombie>>, time: f32| {
+            id.and_then(|id| zombies.get(id)).map(|z| z.target_lead_x(time) as i32 - PLANT_SIZE / 2)
+        };
+        let (home_x, home_y) = self.home;
+        // The square it lands in, and where on the lawn its feet go.
+        let dest_y = home_y + 8;
+        match self.state {
+            PlantState::NotReady => {
+                if let Some(id) = self.find_squash_target(zombies) {
+                    self.target_zombie = Some(id);
+                    self.target_x = lead_x(zombies, Some(id), 0.0).unwrap_or(self.x);
+                    self.state = PlantState::SquashLook;
+                    self.state_countdown = 80;
+                    let track = if self.target_x < self.x { "anim_lookleft" } else { "anim_lookright" };
+                    self.play_body_reanim(effects, track, LoopType::PlayOnceAndHold, 10, 24.0);
+                    actions.push(PlantAction::Foley(FoleyType::SquashHmm));
+                }
+            }
+            PlantState::SquashLook if self.state_countdown <= 0 => {
+                self.play_body_reanim(effects, "anim_jumpup", LoopType::PlayOnceAndHold, 20, 24.0);
+                self.state = PlantState::SquashPreLaunch;
+                self.state_countdown = 45;
+            }
+            PlantState::SquashPreLaunch if self.state_countdown <= 0 => {
+                // Aim a little ahead of a moving zombie.
+                let target = self.find_squash_target(zombies);
+                if let Some(x) = lead_x(zombies, target, 30.0) {
+                    self.target_x = x;
+                }
+                self.state = PlantState::SquashRising;
+                self.state_countdown = 50;
+                self.render_order = make_render_order(render_layer::PARTICLE, self.row, 0);
+            }
+            PlantState::SquashRising => {
+                self.x = animate_curve(50, 20, self.state_countdown, home_x, self.target_x, TodCurve::EaseInOut);
+                self.y = animate_curve(50, 20, self.state_countdown, home_y, dest_y - 120, TodCurve::EaseInOut);
+                if self.state_countdown == 0 {
+                    self.play_body_reanim(effects, "anim_jumpdown", LoopType::PlayOnceAndHold, 0, 60.0);
+                    self.state = PlantState::SquashFalling;
+                    self.state_countdown = 10;
+                }
+            }
+            PlantState::SquashFalling => {
+                self.y = animate_curve(10, 0, self.state_countdown, dest_y - 120, dest_y, TodCurve::Linear);
+                if self.state_countdown == 5 {
+                    actions.push(PlantAction::Squash { row: self.row, rect: self.attack_rect() });
+                }
+                if self.state_countdown == 0 {
+                    self.state = PlantState::SquashDoneFalling;
+                    self.state_countdown = 100;
+                    actions.push(PlantAction::ShakeBoard { x: 1, y: 4 });
+                    actions.push(PlantAction::Foley(FoleyType::Thump));
+                    let render_order = self.render_order + 4;
+                    actions.push(PlantAction::Particle { x: self.x + 40, y: self.y + 80, render_order, effect: ParticleEffect::DustSquash });
+                }
+            }
+            PlantState::SquashDoneFalling if self.state_countdown == 0 => self.die(effects),
+            _ => {}
+        }
     }
 
     /// `Plant::UpdateBowling`: a nut rolls right along its row, flattening
@@ -922,13 +1113,16 @@ impl Plant {
         zombies: &DataArray<Zombie>,
         actions: &mut Vec<PlantAction>,
         effects: &mut EffectSystem,
+        open_rows: &[bool; super::MAX_GRID_SIZE_Y],
         rng: &mut MtRand,
     ) {
         self.launch_counter -= 1;
         if self.launch_counter <= 0 {
             self.launch_counter = self.launch_rate - rng.next_range(15) as i32;
-            // TODO: the other shooters (threepeater, cactus, split pea, ...).
-            if is_pea_shooter(self.seed)
+            // TODO: the other shooters (cactus, split pea, ...).
+            if self.seed == SeedType::Threepeater {
+                self.launch_threepeater(zombies, effects, open_rows);
+            } else if is_pea_shooter(self.seed)
                 || matches!(self.seed, SeedType::Puffshroom | SeedType::Fumeshroom | SeedType::Scaredyshroom)
             {
                 self.find_target_and_fire(zombies, actions, effects);
@@ -942,10 +1136,15 @@ impl Plant {
     /// `Plant::FindTargetZombie`, for peashooters: the leftmost zombie in
     /// the row that's in range.
     fn find_target_zombie(&self, zombies: &DataArray<Zombie>) -> Option<sexy::data_array::Id<Zombie>> {
+        self.find_target_zombie_in_row(zombies, self.row)
+    }
+
+    /// `Plant::FindTargetZombie` for any `row` (the threepeater looks at three).
+    fn find_target_zombie_in_row(&self, zombies: &DataArray<Zombie>, row: i32) -> Option<sexy::data_array::Id<Zombie>> {
         let attack = self.attack_rect();
         let mut best: Option<(i32, sexy::data_array::Id<Zombie>)> = None;
         for (id, zombie) in zombies.iter() {
-            if zombie.row != self.row || !zombie.effected_by_damage(damage_range::GROUND) {
+            if zombie.row != row || !zombie.effected_by_damage(damage_range::GROUND) {
                 continue;
             }
             if self.seed == SeedType::ExplodeONut && zombie.phase == super::zombie::ZombiePhase::PoleInVault {
@@ -961,6 +1160,41 @@ impl Plant {
             }
         }
         best.map(|(_, id)| id)
+    }
+
+    /// `Plant::LaunchThreepeater`: the heads that have a row to shoot into
+    /// lean forward when a zombie is in any of the three rows.
+    fn launch_threepeater(&mut self, zombies: &DataArray<Zombie>, effects: &mut EffectSystem, open_rows: &[bool; super::MAX_GRID_SIZE_Y]) {
+        let open = |row: i32| (0..super::MAX_GRID_SIZE_Y as i32).contains(&row) && open_rows[row as usize];
+        let (above, below) = (self.row - 1, self.row + 1);
+        let sees = |row: i32| self.find_target_zombie_in_row(zombies, row).is_some();
+        if !(sees(self.row) || (open(above) && sees(above)) || (open(below) && sees(below))) {
+            return;
+        }
+        // Head 1 shoots the row below, head 2 its own, head 3 the row above.
+        let heads = [(self.head, open(below), "anim_shooting1"), (self.extra_heads[0], true, "anim_shooting2"), (self.extra_heads[1], open(above), "anim_shooting3")];
+        for (head, shoots, track) in heads {
+            if shoots && let Some(head) = head.and_then(|h| effects.get_mut(h)) {
+                head.start_blend(10);
+                head.loop_type = LoopType::PlayOnceAndHold;
+                head.anim_rate = 20.0;
+                head.set_frames_for_layer(track);
+            }
+        }
+        self.shooting_counter = 35;
+    }
+
+    /// The threepeater's shot, from each head that leaned forward.
+    fn fire_threepeater(&mut self, actions: &mut Vec<PlantAction>, effects: &EffectSystem) {
+        let shooting = |head: Option<ReanimationId>| {
+            head.and_then(|h| effects.get(h)).is_some_and(|h| h.loop_type == LoopType::PlayOnceAndHold)
+        };
+        let rows = [(self.head, self.row + 1), (self.extra_heads[0], self.row), (self.extra_heads[1], self.row - 1)];
+        for (head, row) in rows {
+            if shooting(head) {
+                self.fire(row, actions, effects);
+            }
+        }
     }
 
     /// `Plant::FindTargetAndFire`: starts the shooting animation if there's
@@ -991,7 +1225,7 @@ impl Plant {
                 _ => 29,
             };
         } else {
-            self.fire(actions, effects);
+            self.fire(self.row, actions, effects);
         }
     }
 
@@ -1008,14 +1242,35 @@ impl Plant {
             actions.push(PlantAction::Particle { x: self.x + 85, y: self.y + 31, render_order: order, effect: ParticleEffect::Fumecloud });
         }
         if self.shooting_counter == 1 {
-            self.fire(actions, effects);
+            if self.seed == SeedType::Threepeater {
+                self.fire_threepeater(actions, effects);
+            } else {
+                self.fire(self.row, actions, effects);
+            }
             return;
         }
         if self.shooting_counter != 0 {
             return;
         }
         let (rate, time) = self.body.and_then(|b| effects.get(b)).map_or((0.0, 0.0), |b| (b.anim_rate, b.anim_time));
-        if let Some(head) = self.head.and_then(|h| effects.get_mut(h))
+        if self.seed == SeedType::Threepeater {
+            let done = self.extra_heads[0].and_then(|h| effects.get(h)).is_some_and(|h| h.loop_count > 0);
+            if done {
+                let heads = [self.head, self.extra_heads[0], self.extra_heads[1]];
+                for (i, head) in heads.into_iter().enumerate() {
+                    if let Some(head) = head.and_then(|h| effects.get_mut(h))
+                        && (i == 1 || head.loop_type == LoopType::PlayOnceAndHold)
+                    {
+                        head.start_blend(20);
+                        head.loop_type = LoopType::Loop;
+                        head.set_frames_for_layer(&format!("anim_head_idle{}", i + 1));
+                        head.anim_rate = rate;
+                        head.anim_time = time;
+                    }
+                }
+                return;
+            }
+        } else if let Some(head) = self.head.and_then(|h| effects.get_mut(h))
             && head.loop_count > 0
         {
             head.start_blend(20);
@@ -1046,7 +1301,7 @@ impl Plant {
     }
 
     /// `Plant::Fire`, for peashooters and the mushrooms.
-    fn fire(&mut self, actions: &mut Vec<PlantAction>, effects: &EffectSystem) {
+    fn fire(&mut self, row: i32, actions: &mut Vec<PlantAction>, effects: &EffectSystem) {
         if self.seed == SeedType::Fumeshroom {
             let rect = self.attack_rect();
             actions.push(PlantAction::RowAreaDamage { row: self.row, rect, damage: 20, flags: damage::HITS_SHIELD_AND_BODY });
@@ -1056,6 +1311,7 @@ impl Plant {
         let (x, y) = match self.seed {
             SeedType::Puffshroom => (self.x + 40, self.y + 40),
             SeedType::Scaredyshroom => (self.x + 29, self.y + 21),
+            SeedType::Threepeater => (self.x + 45, self.y + 10),
             _ => {
                 let (offset_x, offset_y) = self.pea_head_offset(effects);
                 (self.x + offset_x + 24, self.y + offset_y - 33)
@@ -1081,7 +1337,14 @@ impl Plant {
         };
         // Only the puff-shroom's puffs fade out after a short way (`MOTION_PUFF`).
         let short_range = self.seed == SeedType::Puffshroom;
-        actions.push(PlantAction::Shoot { x, y, row: self.row, render_order: self.render_order - 1, projectile, short_range });
+        // The threepeater's side peas change lanes (`MOTION_THREEPEATER`).
+        let drift = match row.cmp(&self.row) {
+            _ if self.seed != SeedType::Threepeater => 0.0,
+            std::cmp::Ordering::Less => -3.0,
+            std::cmp::Ordering::Greater => 3.0,
+            std::cmp::Ordering::Equal => 0.0,
+        };
+        actions.push(PlantAction::Shoot { x, y, row, render_order: self.render_order - 1, projectile, short_range, drift });
     }
 
     /// `Plant::UpdateReanim`.
@@ -1211,7 +1474,9 @@ impl Plant {
     /// `Plant::Die`.
     pub fn die(&mut self, effects: &mut EffectSystem) {
         self.dead = true;
-        for id in [self.body.take(), self.head.take(), self.blink.take(), self.sleeping.take()].into_iter().flatten() {
+        let extra_heads = std::mem::take(&mut self.extra_heads);
+        let owned = [self.body.take(), self.head.take(), self.blink.take(), self.sleeping.take(), extra_heads[0], extra_heads[1]];
+        for id in owned.into_iter().flatten() {
             effects.kill(id);
         }
     }
@@ -1222,7 +1487,11 @@ impl Plant {
         g.push_state();
         g.translate(self.x as f32, self.y as f32);
         let offset_y = plant_draw_height_offset(self.seed);
-        self.draw_shadow(g, 0.0, offset_y, stage_is_night, res);
+        // The squash's shadow stays on the ground as it jumps.
+        let airborne = self.seed == SeedType::Squash
+            && matches!(self.state, PlantState::SquashRising | PlantState::SquashFalling | PlantState::SquashDoneFalling);
+        let (shadow_x, shadow_y) = if airborne { ((self.home.0 - self.x) as f32, (self.home.1 - self.y) as f32) } else { (0.0, 0.0) };
+        self.draw_shadow(g, shadow_x, shadow_y + offset_y, stage_is_night, res);
         if let Some(body) = self.body {
             effects.draw(g, body, res);
         }
@@ -1254,7 +1523,6 @@ impl Plant {
             GiantWallnut => (-33.0, 56.0, 1.7),
             _ => (-3.0, 51.0, 1.0),
         };
-        // TODO: the squash's shadow stays on the ground as it jumps.
         let id = if night { "IMAGE_PLANTSHADOW2" } else { "IMAGE_PLANTSHADOW" };
         if let Some(shadow) = res.image(id) {
             g.draw_image_cel_center_scaled(shadow, x + dx, y + dy, 0, scale, scale);

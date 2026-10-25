@@ -314,6 +314,10 @@ pub struct Board {
     projectiles: DataArray<Projectile>,
     /// `mGridItems`: the night levels' graves.
     grid_items: DataArray<GridItem>,
+    /// `mFwooshID`: the jalapeno's flames, a dozen along each row, and
+    /// `mFwooshCountDown` until they die down.
+    fwoosh: [[Option<crate::reanim::ReanimationId>; 12]; MAX_GRID_SIZE_Y],
+    fwoosh_countdown: i32,
     grid_cels: GridCels,
     /// `mBoardRandSeed`, part of the level's random seed (`GetLevelRandSeed`).
     board_rand_seed: u32,
@@ -439,6 +443,8 @@ impl Board {
             zombies: DataArray::default(),
             projectiles: DataArray::default(),
             grid_items: DataArray::default(),
+            fwoosh: [[None; 12]; MAX_GRID_SIZE_Y],
+            fwoosh_countdown: 0,
             grid_cels: GridCels::new(rng),
             board_rand_seed: rng.next_u31(),
             enable_grave_stones: false,
@@ -954,6 +960,7 @@ impl Board {
 
         effects.update(sounds.rng());
         self.update_shake(sounds.rng());
+        self.update_fwoosh(effects);
         self.coin_bank_fade_count = (self.coin_bank_fade_count - 1).max(0);
         outcome.money = std::mem::take(&mut self.pending_money);
         self.advice.update();
@@ -1045,8 +1052,9 @@ impl Board {
         // Plants wait for the level to start, except the lawn's on the bowling level.
         if playing || (self.scene == GameScene::LevelIntro && self.is_wallnut_bowling_level()) {
             let row_y: [i32; MAX_GRID_SIZE_Y] = std::array::from_fn(|row| self.grid_to_pixel_y(0, row as i32));
+            let open_rows: [bool; MAX_GRID_SIZE_Y] = std::array::from_fn(|row| self.row_can_have_zombies(row as i32));
             for (_, plant) in self.plants.iter_mut() {
-                plant.update(&self.zombies, &mut self.plant_actions, effects, res, images, &row_y, sounds.rng());
+                plant.update(&self.zombies, &mut self.plant_actions, effects, res, images, &row_y, &open_rows, sounds.rng());
             }
         }
         if playing {
@@ -1071,6 +1079,7 @@ impl Board {
                 }
             }
             if playing {
+                self.update_torchwoods(&mut fx);
                 for (_, projectile) in self.projectiles.iter_mut() {
                     projectile.update(&mut self.zombies, &env, &mut fx);
                 }
@@ -1125,6 +1134,72 @@ impl Board {
     }
 
     /// The shake part of `Board::Update`: the board jolts for a moment.
+    /// `Plant::UpdateTorchwood`: peas that pass a torchwood catch fire and
+    /// snow peas thaw.
+    fn update_torchwoods(&mut self, fx: &mut Fx) {
+        use projectile::ProjectileType;
+        for (_, plant) in self.plants.iter() {
+            if plant.seed != SeedType::Torchwood || plant.dead {
+                continue;
+            }
+            let reach = plant.attack_rect();
+            for (_, shot) in self.projectiles.iter_mut() {
+                if shot.row == plant.row && zombie::rect_overlap(reach, shot.rect()) >= 10 {
+                    match shot.ty {
+                        ProjectileType::Pea => shot.convert_to_fireball(plant.col, fx),
+                        ProjectileType::Snowpea => shot.convert_to_pea(plant.col, fx),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// `Board::DoFwoosh`: flames sweep along `row`.
+    fn do_fwoosh(&mut self, row: i32, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, rng: &mut sexy::rand::MtRand) {
+        use sexy::reanim::LoopType;
+        let render_order = make_render_order(render_layer::PARTICLE, row, 1);
+        for i in 0..12 {
+            if let Some(old) = self.fwoosh[row as usize][i].take() {
+                effects.kill(old);
+            }
+            let x = 750.0 * i as f32 / 11.0 + 10.0;
+            let y = self.pos_y_based_on_row(x + 10.0, row) - 10.0;
+            if let Ok((id, flame)) = effects.add_reanimation(x, y, ReanimationType::JalapenoFire, res, images) {
+                flame.set_frames_for_layer("anim_flame");
+                flame.loop_type = LoopType::LoopFullLastFrame;
+                flame.anim_rate *= rng.range_f32(0.7, 1.3);
+                flame.render_order = render_order;
+                let flip = if rng.next_range(2) != 0 { 1.0 } else { -1.0 };
+                flame.override_scale(rng.range_f32(0.9, 1.1) * flip, 1.0);
+                self.fwoosh[row as usize][i] = Some(id);
+            }
+        }
+        self.fwoosh_countdown = 100;
+    }
+
+    /// `Board::UpdateFwoosh`: the flames die down from the left.
+    fn update_fwoosh(&mut self, effects: &mut EffectSystem) {
+        use sexy::reanim::LoopType;
+        use sexy::tod::{TodCurve, animate_curve};
+        if self.fwoosh_countdown == 0 {
+            return;
+        }
+        self.fwoosh_countdown -= 1;
+        let remaining = animate_curve(50, 0, self.fwoosh_countdown, 12, 0, TodCurve::Linear);
+        for row in &mut self.fwoosh {
+            for flame in row.iter_mut().take((12 - remaining).max(0) as usize) {
+                if let Some(id) = flame.take()
+                    && let Some(flame) = effects.get_mut(id)
+                {
+                    flame.set_frames_for_layer("anim_done");
+                    flame.anim_rate = 15.0;
+                    flame.loop_type = LoopType::PlayOnceFullLastFrame;
+                }
+            }
+        }
+    }
+
     fn update_shake(&mut self, rng: &mut sexy::rand::MtRand) {
         if self.shake_counter == 0 {
             return;
@@ -1183,13 +1258,16 @@ impl Board {
         sounds: &mut Sounds,
     ) {
         match action {
-            PlantAction::Shoot { x, y, row, render_order, projectile, short_range } => {
+            PlantAction::Shoot { x, y, row, render_order, projectile, short_range, drift } => {
                 sounds.play_foley(FoleyType::Throw);
                 let grid_x = self.pixel_to_grid_x(x).max(0);
                 let shadow_y = self.grid_to_pixel_y(grid_x, row) as f32 + 67.0;
                 // TODO: shadows sit 12 pixels higher on the roof's left side.
                 let mut shot = Projectile::new(x, y, render_order, row, shadow_y, projectile);
                 shot.short_range = short_range;
+                if drift != 0.0 {
+                    shot.set_lane_drift(drift);
+                }
                 if let Some((effect, dx, dy)) = Projectile::trail_effect(projectile)
                     && let Some(trail) = effects.add_particle(x as f32 + dx, y as f32 + dy, 400000, effect, res, images, sounds.rng())
                 {
@@ -1214,6 +1292,31 @@ impl Board {
                     }
                 }
             }
+            PlantAction::Jalapeno { row } => {
+                let env = self.zombie_env();
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                for (_, zombie) in self.zombies.iter_mut() {
+                    if zombie.row == row && zombie.effected_by_damage(zombie::damage_range::EXPLOSION) {
+                        zombie.remove_cold_effects(fx.effects);
+                        zombie.apply_burn(&env, &mut fx);
+                    }
+                }
+                self.do_fwoosh(row, effects, res, images, sounds.rng());
+                self.shake_board(3, -4);
+            }
+            PlantAction::Squash { row, rect } => {
+                let env = self.zombie_env();
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                for (_, zombie) in self.zombies.iter_mut() {
+                    if zombie.row == row && zombie.effected_by_damage(13) {
+                        let reach = if zombie.zombie_type == crate::zombie::ZombieType::Football { -20 } else { 0 };
+                        if zombie::rect_overlap(rect, zombie.zombie_rect()) > reach {
+                            zombie.take_damage(1800, 18, &env, &mut fx);
+                        }
+                    }
+                }
+            }
+            PlantAction::ShakeBoard { x, y } => self.shake_board(x, y),
             PlantAction::DoomShroom { x, y, col, row } => {
                 sounds.play_sample("SOUND_DOOMSHROOM");
                 let env = self.zombie_env();
