@@ -159,3 +159,59 @@ fn the_roof_levels_run_their_waves_without_incident() {
         drop(t);
     }
 }
+
+
+#[test]
+fn peas_climb_the_roofs_slope_with_the_zombies() {
+    let mut t = test_board!("5-2");
+    t.plant(SeedType::Flowerpot, 0, 2);
+    t.plant(SeedType::Peashooter, 0, 2);
+    t.zombie(ZombieType::Newspaper, 2, 780.0);
+    assert!(t.run_until(600, |b| !b.projectiles.is_empty()));
+    let (x0, y0) = t.board.projectiles.iter().next().unwrap().1.position();
+    let mut rose = false;
+    for _ in 0..30 {
+        t.tick();
+        if let Some((_, p)) = t.board.projectiles.iter().next() {
+            let (x, y) = p.position();
+            if x > x0 + 40.0 && x < 430.0 && y < y0 - 5.0 {
+                rose = true;
+            }
+        }
+    }
+    assert!(rose, "a pea starting low on the slope rises as it flies right (started at {x0}, {y0})");
+}
+
+#[test]
+fn butter_sits_on_the_zombies_head_anywhere_on_the_slope() {
+    let mut t = test_board!("5-4");
+    for x in [300.0, 520.0, 700.0] {
+        let id = t.zombie(ZombieType::Normal, 0, x);
+        t.board.zombies.get_mut(id).unwrap().set_buttered_counter(400);
+    }
+    t.ticks(5);
+    t.with(|board, effects, res, _, _| {
+        let butter = res.image("IMAGE_REANIM_CORNPULT_BUTTER_SPLAT").unwrap();
+        let (butter_w, butter_h) = (butter.cel_width() as f32, butter.cel_height() as f32);
+        let mut offsets = Vec::new();
+        for (_, z) in board.zombies.iter() {
+            let (bx, by) = z.butter_position(effects, res).expect("buttered");
+            // Where the head image is drawn, in the zombie's own coordinates.
+            let body = effects.get(z.body_reanim().unwrap()).unwrap();
+            let track = body.definition.find_track("anim_head1").unwrap();
+            let head_id = body.current_transform(track).image.unwrap();
+            let head = res.image(&head_id).unwrap();
+            let m = body.track_matrix(track);
+            let (head_cx, head_cy) = (m.m02 + head.cel_width() as f32 / 2.0, m.m12 + head.cel_height() as f32 / 2.0);
+            let (butter_cx, butter_cy) = (bx + butter_w / 2.0, by + butter_h / 2.0);
+            // DrawButter puts it on the crown, a little towards the face.
+            assert!(
+                (butter_cx - head_cx).abs() < 12.0 && (butter_cy - head_cy).abs() < 20.0,
+                "butter centred at ({butter_cx}, {butter_cy}), head at ({head_cx}, {head_cy}) for a zombie at x {}",
+                z.pos_x
+            );
+            offsets.push((butter_cx - head_cx, butter_cy - head_cy));
+        }
+        assert!(offsets.windows(2).all(|w| (w[0].0 - w[1].0).abs() < 2.0 && (w[0].1 - w[1].1).abs() < 2.0), "the same offset all along the slope (give or take the head bobbing): {offsets:?}");
+    });
+}

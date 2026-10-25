@@ -158,6 +158,12 @@ impl Projectile {
         self.trail = Some((trail, dx, dy));
     }
 
+    /// Where it is (`mPosX`, `mPosY`).
+    #[cfg(test)]
+    pub(super) fn position(&self) -> (f32, f32) {
+        (self.pos_x, self.pos_y)
+    }
+
     /// `Projectile::GetProjectileRect`.
     pub(super) fn rect(&self) -> IRect {
         match self.ty {
@@ -255,6 +261,11 @@ impl Projectile {
         if self.lobbed {
             self.pos_y += slope;
             self.pos_z -= slope;
+        } else {
+            // The original lets straight shots fly level and moves only their
+            // shadow, which on the sloped roof looks as if they hit the wrong
+            // row; here they climb the slope with the zombies.
+            self.pos_y += slope;
         }
         self.shadow_y += slope;
         self.x = self.pos_x as i32;

@@ -3209,14 +3209,46 @@ impl Zombie {
         {
             g.draw_image(front, 46.0, ice_y);
         }
-        // DrawButter: a pat of butter on its head.
-        if self.buttered_counter > 0
+        if let Some((x, y)) = self.butter_position(effects, res)
             && let Some(butter) = res.image("IMAGE_REANIM_CORNPULT_BUTTER_SPLAT")
         {
-            let (head_x, head_y) = self.track_position(effects, "anim_head1");
-            g.draw_image(butter, head_x - self.pos_x - 29.0 - self.x as f32 + self.pos_x, head_y - self.pos_y - 36.0 - self.y as f32 + self.pos_y + self.draw_pos().body_y);
+            g.draw_image(butter, x, y);
         }
         g.pop_state();
+    }
+
+    /// `DrawButter`: where a pat of butter on its head is drawn, in the
+    /// zombie's own coordinates (its `mX`, `mY`).
+    pub(super) fn butter_position(&self, effects: &EffectSystem, res: &GameResources) -> Option<(f32, f32)> {
+        // Behaviour per ruslan831 decomp, Zombie::DrawButter.
+        if self.buttered_counter <= 0 {
+            return None;
+        }
+        let body = self.body.and_then(|b| effects.get(b))?;
+        let track = if self.phase == ZombiePhase::NewspaperMaddening { "anim_head_look" } else { "anim_head1" };
+        let head = body.definition.find_track(track)?;
+        // GetTrackMatrix measures from the middle of the track's image, and
+        // the body's overlay already holds where the zombie is drawn.
+        let (cel_w, cel_h) = body
+            .current_transform(head)
+            .image
+            .as_deref()
+            .and_then(|id| res.image(id))
+            .map_or((0.0, 0.0), |image| (image.cel_width() as f32, image.cel_height() as f32));
+        let m = body.track_matrix(head) * sexy::matrix::Matrix3::translation(cel_w * 0.5, cel_h * 0.5);
+        Some((m.m02 - 29.0, m.m12 - 36.0))
+    }
+
+    /// Its body reanimation.
+    #[cfg(test)]
+    pub(super) fn body_reanim(&self) -> Option<ReanimationId> {
+        self.body
+    }
+
+    /// Ticks left stuck in butter, set directly.
+    #[cfg(test)]
+    pub(super) fn set_buttered_counter(&mut self, ticks: i32) {
+        self.buttered_counter = ticks;
     }
 
     /// `DrawDancerReanim`'s spotlight: dancers dance under a colored light
