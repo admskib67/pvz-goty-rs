@@ -4,7 +4,8 @@
 //!
 //! Behaviour per ruslan831 decomp: `NewLawnButton`, `LawnStoneButton` and
 //! `DrawStoneButton` (`Lawn/Widget/GameButton.cpp`), `ButtonWidget`'s mouse
-//! handling, `EditWidget`/`LawnEditWidget` and `ListWidget`.
+//! handling, `EditWidget`/`LawnEditWidget`, `ListWidget`, `Slider` and
+//! `Checkbox` (`SexyAppFramework/Slider.cpp`, `Checkbox.cpp`).
 
 use bevy::prelude::*;
 use sexy::font::Font;
@@ -168,8 +169,10 @@ pub fn update_buttons<Id: Copy>(
     MouseResult { events, background_press }
 }
 
-/// A `LawnStoneButton` (`MakeButton`): a stone slab stretched to its width,
-/// with a centered green label. Coordinates are relative to its parent.
+/// A dialog's labelled button: a `LawnStoneButton` (`MakeButton`), a stone
+/// slab stretched to its width with a centered green label, or, with an
+/// [`ImageLook`], a labelled `NewLawnButton` (`MakeNewButton`). Coordinates
+/// are relative to its parent.
 #[derive(Debug, Clone)]
 pub struct StoneButton<Id> {
     pub id: Id,
@@ -179,14 +182,132 @@ pub struct StoneButton<Id> {
     pub height: i32,
     pub label: String,
     pub disabled: bool,
+    /// Hidden buttons are neither drawn nor clickable (`SetVisible(false)`).
+    pub visible: bool,
+    /// Drawn as a `NewLawnButton` instead of a stone slab.
+    pub image_look: Option<Box<ImageLook>>,
     pub is_over: bool,
     pub is_down: bool,
+}
+
+/// How a labelled `NewLawnButton` looks: its images and label fonts.
+#[derive(Debug, Clone)]
+pub struct ImageLook {
+    pub normal: &'static str,
+    pub over: &'static str,
+    pub down: &'static str,
+    pub font: &'static str,
+    pub hilite_font: &'static str,
+    /// `mTranslateX/Y`: how far the image moves while held down.
+    pub translate: (i32, i32),
+    pub text_offset: (i32, i32),
+    pub text_down_offset: (i32, i32),
 }
 
 impl<Id> StoneButton<Id> {
     /// `MakeButton`. `label` is already translated.
     pub fn new(id: Id, label: String) -> Self {
-        Self { id, x: 0, y: 0, width: 0, height: 33, label, disabled: false, is_over: false, is_down: false }
+        Self {
+            id,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 33,
+            label,
+            disabled: false,
+            visible: true,
+            image_look: None,
+            is_over: false,
+            is_down: false,
+        }
+    }
+
+    /// `MakeNewButton`: sized to its normal image.
+    pub fn new_image(id: Id, label: String, look: ImageLook, resources: &GameResources) -> Self {
+        let (width, height) = resources.image(look.normal).map_or((0, 0), |i| (i.width as i32, i.height as i32));
+        Self { width, height, image_look: Some(Box::new(look)), ..Self::new(id, label) }
+    }
+
+    pub fn resize(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        (self.x, self.y, self.width, self.height) = (x, y, width, height);
+    }
+
+    pub fn contains(&self, p: IVec2) -> bool {
+        self.visible && p.x >= self.x && p.y >= self.y && p.x < self.x + self.width && p.y < self.y + self.height
+    }
+
+    /// `LawnStoneButton::Draw`, or `NewLawnButton::Draw` with an image look.
+    pub fn draw(&self, g: &mut Graphics, resources: &GameResources) {
+        if !self.visible {
+            return;
+        }
+        let is_down = self.is_down && self.is_over && !self.disabled;
+        match &self.image_look {
+            None => {
+                draw_stone_button(g, resources, self.x, self.y, self.width, self.height, is_down, self.is_over, &self.label)
+            }
+            Some(look) => self.draw_image_look(g, resources, look, is_down),
+        }
+    }
+
+    /// `NewLawnButton::Draw` with a centered label.
+    fn draw_image_look(&self, g: &mut Graphics, resources: &GameResources, look: &ImageLook, is_down: bool) {
+        let (image, offset) = if is_down {
+            (look.down, look.translate)
+        } else if self.is_over || self.is_down {
+            (look.over, (0, 0))
+        } else {
+            (look.normal, (0, 0))
+        };
+        if let Some(image) = resources.image(image) {
+            g.draw_image(image, (self.x + offset.0) as f32, (self.y + offset.1) as f32);
+        }
+        let Some(metrics) = resources.font(look.font) else { return };
+        let ascent = metrics.font.ascent;
+        let mut font_x = self.x + look.text_offset.0 + look.translate.0;
+        let mut font_y = self.y + look.text_offset.1 + look.translate.1;
+        font_x += (self.width - metrics.font.string_width(&self.label)) / 2;
+        font_y += (self.height - ascent / 6 + ascent - 1) / 2;
+        if is_down {
+            font_x += look.text_down_offset.0;
+            font_y += look.text_down_offset.1;
+        }
+        let font = if is_down || self.is_over { resources.font(look.hilite_font).unwrap_or(metrics) } else { metrics };
+        g.push_state();
+        g.set_color(SexyColor::WHITE);
+        g.draw_string(font, font_x, font_y, &self.label);
+        g.pop_state();
+    }
+}
+
+/// A horizontal `Slider`: a track image in three cels (left end, middle
+/// tiled, right end) and a thumb to drag. `value` runs from 0 to 1.
+/// Coordinates are relative to its parent. Not ported: vertical sliders and
+/// the dragging cursor.
+#[derive(Debug, Clone)]
+pub struct Slider {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub value: f32,
+    /// `mDragging`: the thumb is held.
+    pub dragging: bool,
+    /// Where on the thumb the mouse holds it (`mRelX`).
+    rel_x: i32,
+    track_image: &'static str,
+    thumb_image: &'static str,
+    thumb_width: i32,
+}
+
+impl Slider {
+    pub fn new(track_image: &'static str, thumb_image: &'static str, resources: &GameResources) -> Self {
+        let thumb_width = resources.image(thumb_image).map_or(0, |i| i.width as i32);
+        Self::with_thumb_width(track_image, thumb_image, thumb_width)
+    }
+
+    fn with_thumb_width(track_image: &'static str, thumb_image: &'static str, thumb_width: i32) -> Self {
+        Self { x: 0, y: 0, width: 0, height: 0, value: 0.0, dragging: false, rel_x: 0, track_image, thumb_image, thumb_width }
     }
 
     pub fn resize(&mut self, x: i32, y: i32, width: i32, height: i32) {
@@ -197,10 +318,104 @@ impl<Id> StoneButton<Id> {
         p.x >= self.x && p.y >= self.y && p.x < self.x + self.width && p.y < self.y + self.height
     }
 
-    /// `LawnStoneButton::Draw`.
+    /// `SetValue`, clamped to 0..1.
+    pub fn set_value(&mut self, value: f32) {
+        self.value = value.clamp(0.0, 1.0);
+    }
+
+    fn thumb_x(&self) -> i32 {
+        (self.value * (self.width - self.thumb_width) as f32) as i32
+    }
+
+    /// `MouseDown` at `local` (relative to the slider): grabs the thumb, or
+    /// jumps to where the track was clicked. Neither tells the listener yet;
+    /// the release does.
+    pub fn mouse_down(&mut self, local: IVec2) {
+        let thumb_x = self.thumb_x();
+        if local.x >= thumb_x && local.x < thumb_x + self.thumb_width {
+            self.dragging = true;
+            self.rel_x = local.x - thumb_x;
+        } else {
+            self.set_value(local.x as f32 / self.width as f32);
+        }
+    }
+
+    /// `MouseDrag`: moves a held thumb. Returns the new value when it changed.
+    pub fn mouse_drag(&mut self, local: IVec2) -> Option<f32> {
+        if !self.dragging {
+            return None;
+        }
+        let old = self.value;
+        self.set_value((local.x - self.rel_x) as f32 / (self.width - self.thumb_width) as f32);
+        (self.value != old).then_some(self.value)
+    }
+
+    /// `MouseUp`: lets go. The listener always hears the value now.
+    pub fn mouse_up(&mut self) -> f32 {
+        self.dragging = false;
+        self.value
+    }
+
+    /// `Slider::Draw`.
     pub fn draw(&self, g: &mut Graphics, resources: &GameResources) {
-        let is_down = self.is_down && self.is_over && !self.disabled;
-        draw_stone_button(g, resources, self.x, self.y, self.width, self.height, is_down, self.is_over, &self.label);
+        if let Some(track) = resources.image(self.track_image) {
+            let (cw, ch) = (track.width as i32 / 3, track.height as i32);
+            let ty = (self.height - ch) / 2;
+            let cel = |i: i32| SexyRect::new((cw * i) as f32, 0.0, cw as f32, ch as f32);
+            g.draw_image_src(track, self.x as f32, (self.y + ty) as f32, cel(0));
+            g.push_state();
+            g.clip_rect((self.x + cw) as f32, (self.y + ty) as f32, (self.width - cw * 2) as f32, ch as f32);
+            for i in 0..(self.width - cw * 2 + cw - 1) / cw.max(1) {
+                g.draw_image_src(track, (self.x + cw + i * cw) as f32, (self.y + ty) as f32, cel(1));
+            }
+            g.pop_state();
+            g.draw_image_src(track, (self.x + self.width - cw) as f32, (self.y + ty) as f32, cel(2));
+        }
+        if let Some(thumb) = resources.image(self.thumb_image) {
+            let y = self.y + (self.height - thumb.height as i32) / 2;
+            g.draw_image(thumb, (self.x + self.thumb_x()) as f32, y as f32);
+        }
+    }
+}
+
+/// A `Checkbox` drawn with a checked and an unchecked image (`MakeNewCheckbox`).
+/// Coordinates are relative to its parent.
+#[derive(Debug, Clone)]
+pub struct Checkbox {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub checked: bool,
+    unchecked_image: &'static str,
+    checked_image: &'static str,
+}
+
+impl Checkbox {
+    pub fn new(unchecked_image: &'static str, checked_image: &'static str, checked: bool) -> Self {
+        Self { x: 0, y: 0, width: 0, height: 0, checked, unchecked_image, checked_image }
+    }
+
+    pub fn resize(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        (self.x, self.y, self.width, self.height) = (x, y, width, height);
+    }
+
+    pub fn contains(&self, p: IVec2) -> bool {
+        p.x >= self.x && p.y >= self.y && p.x < self.x + self.width && p.y < self.y + self.height
+    }
+
+    /// `MouseDown`: flips the box. Returns whether it's now checked.
+    pub fn mouse_down(&mut self) -> bool {
+        self.checked = !self.checked;
+        self.checked
+    }
+
+    /// `Checkbox::Draw`.
+    pub fn draw(&self, g: &mut Graphics, resources: &GameResources) {
+        let id = if self.checked { self.checked_image } else { self.unchecked_image };
+        if let Some(image) = resources.image(id) {
+            g.draw_image(image, self.x as f32, self.y as f32);
+        }
     }
 }
 
@@ -765,6 +980,55 @@ pub fn draw_edit_box(g: &mut Graphics, resources: &GameResources, edit: &EditWid
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn slider() -> Slider {
+        let mut slider = Slider::with_thumb_width("TRACK", "THUMB", 20);
+        slider.resize(199, 116, 135, 40);
+        slider
+    }
+
+    #[test]
+    fn slider_jumps_to_a_click_on_the_track() {
+        let mut s = slider();
+        s.set_value(0.0);
+        s.mouse_down(IVec2::new(108, 20));
+        assert!(!s.dragging);
+        assert!((s.value - 0.8).abs() < 1e-6);
+        assert_eq!(s.mouse_up(), s.value);
+    }
+
+    #[test]
+    fn slider_thumb_drags_and_clamps() {
+        let mut s = slider();
+        s.set_value(0.4);
+        // The thumb sits at 0.4 * (135 - 20) = 46; grab it 5 px in.
+        s.mouse_down(IVec2::new(51, 20));
+        assert!(s.dragging);
+        assert_eq!(s.mouse_drag(IVec2::new(51, 20)), None);
+        let v = s.mouse_drag(IVec2::new(28, 20)).unwrap();
+        assert!((v - 23.0 / 115.0).abs() < 1e-6);
+        assert_eq!(s.mouse_drag(IVec2::new(-50, 20)), Some(0.0));
+        assert_eq!(s.mouse_drag(IVec2::new(500, 20)), Some(1.0));
+        assert_eq!(s.mouse_up(), 1.0);
+        assert!(!s.dragging);
+        assert_eq!(s.mouse_drag(IVec2::new(0, 20)), None);
+    }
+
+    #[test]
+    fn checkbox_flips_on_click() {
+        let mut c = Checkbox::new("OFF", "ON", false);
+        assert!(c.mouse_down());
+        assert!(!c.mouse_down());
+    }
+
+    #[test]
+    fn hidden_buttons_take_no_clicks() {
+        let mut b = StoneButton::new(0, "Hi".into());
+        b.resize(10, 10, 50, 30);
+        assert!(b.contains(IVec2::new(20, 20)));
+        b.visible = false;
+        assert!(!b.contains(IVec2::new(20, 20)));
+    }
 
     #[test]
     fn polygon_hit_test_matches_adventure_button_shape() {

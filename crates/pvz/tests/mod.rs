@@ -14,6 +14,7 @@
 mod butter;
 mod fog;
 mod levels;
+mod options;
 mod plants;
 mod roof;
 mod roof_zombies;

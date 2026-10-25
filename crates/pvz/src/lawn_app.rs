@@ -5,13 +5,17 @@
 //! Behaviour per ruslan831 decomp, `LawnApp.cpp`: `Init` (picking the
 //! player), `LawnMessageBox`, `ConfirmQuit`, `DoUserDialog`,
 //! `DoCreateUserDialog`, `DoRenameUserDialog`, `DoConfirmDeleteUserDialog`,
-//! their `Finish…` counterparts, `FinishNameError`, `ButtonDepress` and
+//! their `Finish…` counterparts, `FinishNameError`, `ButtonDepress`,
+//! `KillNewOptionsDialog`, `NewOptionsDialog::ButtonDepress`/`SliderVal` and
 //! `WriteToRegistry`.
 
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 
-use crate::dialog::{ButtonMode, DialogButton, DialogEvent, DialogId, Dialogs, LawnDialog};
+use crate::audio::{Music, Sounds};
+use crate::dialog::{ButtonMode, DialogButton, DialogEvent, DialogId, DialogSlider, Dialogs, LawnDialog};
 use crate::install::{self, Config};
+use crate::options::Settings;
 use crate::player::ProfileMgr;
 use crate::resources::GameResources;
 use crate::{AppState, UiSet};
@@ -308,6 +312,74 @@ impl DialogActions<'_, '_, '_> {
     }
 }
 
+/// `LawnApp::KillNewOptionsDialog`: closes the options, switching the screen
+/// mode to what they ask for, and saves the settings.
+fn kill_new_options_dialog(dialogs: &mut Dialogs, settings: &mut Settings, windows: &mut Query<&mut Window, With<PrimaryWindow>>) {
+    let Some(options) = dialogs.get(DialogId::NewOptions).and_then(|d| d.options()) else { return };
+    settings.fullscreen = options.fullscreen.checked;
+    settings.hardware_acceleration = options.hardware_acceleration.checked;
+    for mut window in windows.iter_mut() {
+        window.mode = settings.window_mode();
+    }
+    dialogs.kill_dialog(DialogId::NewOptions);
+    settings.save();
+}
+
+/// The options dialog's sliders, checkboxes and buttons.
+#[allow(clippy::too_many_arguments)]
+fn options_event(
+    event: DialogEvent,
+    app: &mut DialogActions,
+    settings: &mut Settings,
+    music: Option<&mut Music>,
+    sounds: &mut Sounds,
+    windows: &mut Query<&mut Window, With<PrimaryWindow>>,
+) {
+    match event {
+        // NewOptionsDialog::SliderVal: the volume changes as the thumb moves.
+        DialogEvent::SliderVal(_, slider, value, dragging) => {
+            settings.set_slider(slider, value);
+            match slider {
+                DialogSlider::Music => {
+                    if let Some(music) = music {
+                        music.set_volume(settings.music_volume);
+                    }
+                }
+                DialogSlider::Sfx => {
+                    sounds.set_sfx_volume(settings.sfx_volume);
+                    if !dragging {
+                        sounds.play_sample("SOUND_BUTTONCLICK");
+                    }
+                }
+            }
+        }
+        // The checkboxes only take effect when the dialog closes. The
+        // original's warnings (no windowed mode, unsupported 3D) can't happen.
+        DialogEvent::CheckboxChecked(..) => {}
+        DialogEvent::Button(_, DialogButton::Yes) => kill_new_options_dialog(app.dialogs, settings, windows),
+        // Escape (ID_CANCEL) closes it without switching the screen mode.
+        DialogEvent::Button(_, DialogButton::No) => {
+            app.dialogs.kill_dialog(DialogId::NewOptions);
+            settings.save();
+        }
+        DialogEvent::Button(_, DialogButton::MainMenu) => {
+            let from_game_selector =
+                app.dialogs.get(DialogId::NewOptions).and_then(|d| d.options()).is_some_and(|o| o.from_game_selector);
+            kill_new_options_dialog(app.dialogs, settings, windows);
+            if from_game_selector {
+                // TODO: ShowAwardScreen(AWARD_CREDITS_ZOMBIENOTE) once the credits exist.
+                info!("the credits aren't ported yet");
+            } else {
+                app.do_back_to_main();
+            }
+        }
+        // TODO: the almanac, and restarting the level once the options open from the board.
+        DialogEvent::Button(_, button) => info!("options {button:?} isn't ported yet"),
+        DialogEvent::ListClicked(..) => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn handle_dialog_events(
     mut dialogs: ResMut<Dialogs>,
     res: Option<Res<GameResources>>,
@@ -316,6 +388,10 @@ fn handle_dialog_events(
     mut exit: MessageWriter<AppExit>,
     mut next_state: ResMut<NextState<AppState>>,
     mut board: Option<ResMut<crate::board::Board>>,
+    mut settings: ResMut<Settings>,
+    mut music: Option<ResMut<Music>>,
+    mut sounds: Sounds,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
     let events = dialogs.take_events();
     let (Some(res), Some(mut profiles)) = (res, profiles) else { return };
@@ -329,6 +405,11 @@ fn handle_dialog_events(
     };
     for event in events {
         match event {
+            DialogEvent::Button(DialogId::NewOptions, _)
+            | DialogEvent::SliderVal(DialogId::NewOptions, ..)
+            | DialogEvent::CheckboxChecked(DialogId::NewOptions, ..) => {
+                options_event(event, &mut app, &mut settings, music.as_deref_mut(), &mut sounds, &mut windows)
+            }
             DialogEvent::Button(DialogId::PurchasePacketSlot, button) => {
                 let yes = button == DialogButton::Yes;
                 app.finish_purchase_packet_slot(yes);

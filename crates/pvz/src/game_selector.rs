@@ -1,9 +1,10 @@
 //! The main menu: the tombstone with its game-mode buttons, clouds, flowers
 //! and the wooden name sign.
 //!
-//! Behaviour per ruslan831 decomp, `Lawn/Widget/GameSelector.cpp`. Not yet
-//! ported: the options and help screens, tooltips, the trophy, zen garden
-//! needs, and the screens the other buttons lead to.
+//! Behaviour per ruslan831 decomp, `Lawn/Widget/GameSelector.cpp`. Options
+//! opens the options dialog (`options`), Help the zombies' help note (the
+//! award screen). Not yet ported: tooltips, the trophy, zen garden needs,
+//! and the screens the other buttons lead to.
 
 use bevy::math::Affine2;
 use bevy::prelude::*;
@@ -14,7 +15,9 @@ use crate::audio::{FoleyType, Music, MusicTune, Sounds};
 use crate::dialog::{ButtonMode, DialogId, Dialogs};
 use crate::graphics::{Graphics, SexyColor};
 use crate::input::GameCursor;
+use crate::award::AwardScreen;
 use crate::lawn_app::{PlayerChanged, confirm_quit, do_create_user_dialog, do_user_dialog, lawn_message_box};
+use crate::options::{Settings, do_new_options};
 use crate::player::{PlayerInfo, ProfileMgr};
 use crate::reanim::{EffectSystem, ReanimationId, ReanimationType, draw_reanimation, draw_render_group};
 use crate::resources::GameResources;
@@ -512,8 +515,11 @@ impl GameSelector {
         images: &mut Assets<Image>,
         dialogs: &mut Dialogs,
         profiles: &ProfileMgr,
+        settings: &Settings,
         music: &mut Music,
         sounds: &mut Sounds,
+        commands: &mut Commands,
+        next_state: &mut NextState<AppState>,
     ) {
         let locked = match id {
             ButtonId::Minigame if self.minigames_locked => Some("[MINIGAME_LOCKED_MESSAGE]"),
@@ -530,6 +536,17 @@ impl GameSelector {
             ButtonId::Adventure => self.clicked_adventure(effects, resources, images, music, sounds),
             ButtonId::Quit => confirm_quit(dialogs, resources),
             ButtonId::ChangeUser => do_user_dialog(dialogs, resources, profiles),
+            ButtonId::Options => {
+                let player = profiles.player();
+                let finished = player.is_some_and(PlayerInfo::has_finished_adventure);
+                let almanac = player.is_some_and(PlayerInfo::can_show_almanac);
+                do_new_options(dialogs, resources, settings, true, finished, almanac);
+            }
+            // KillGameSelector + ShowAwardScreen(AWARD_HELP_ZOMBIENOTE).
+            ButtonId::Help => {
+                commands.insert_resource(AwardScreen::help(profiles.player().map_or(1, |p| p.level)));
+                next_state.set(AppState::Award);
+            }
             other => info!("{other:?} isn't ported yet"),
         }
     }
@@ -662,6 +679,7 @@ fn update_selector(
 /// Mouse handling: buttons first, then the screen itself (`MouseDown`).
 #[allow(clippy::too_many_arguments)]
 fn selector_input(
+    mut commands: Commands,
     mut selector: ResMut<GameSelector>,
     mut effects: ResMut<EffectSystem>,
     mut resources: ResMut<GameResources>,
@@ -670,13 +688,26 @@ fn selector_input(
     mouse: Res<ButtonInput<MouseButton>>,
     mut dialogs: ResMut<Dialogs>,
     profiles: Res<ProfileMgr>,
+    settings: Res<Settings>,
     mut music: ResMut<Music>,
     mut sounds: Sounds,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut auto_pressed: Local<bool>,
 ) {
     let gs = &mut *selector;
     // A dialog takes the mouse: to the screen it's as if it left the window.
     let cursor = if dialogs.is_modal() { GameCursor(None) } else { *cursor };
-    let result = update_buttons(&mut gs.buttons.front_to_back(), &cursor, &mouse);
+    let mut result = update_buttons(&mut gs.buttons.front_to_back(), &cursor, &mouse);
+    // Development aid: `PVZ_AUTO_START=options` or `help` presses that button
+    // once the menu is up.
+    if gs.state == SelectorState::Idle && !*auto_pressed {
+        *auto_pressed = true;
+        match std::env::var("PVZ_AUTO_START").as_deref() {
+            Ok("options") => result.events.push(ButtonEvent::Depress(ButtonId::Options)),
+            Ok("help") => result.events.push(ButtonEvent::Depress(ButtonId::Help)),
+            _ => {}
+        }
+    }
     for event in result.events {
         match event {
             // ButtonMouseEnter: locked modes stay quiet.
@@ -702,8 +733,11 @@ fn selector_input(
                 &mut images,
                 &mut dialogs,
                 &profiles,
+                &settings,
                 &mut music,
                 &mut sounds,
+                &mut commands,
+                &mut next_state,
             ),
         }
     }

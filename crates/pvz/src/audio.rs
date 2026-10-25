@@ -42,8 +42,8 @@ impl Plugin for AudioPlugin {
 pub struct UpdateCount(pub u64);
 
 /// The original's default volumes (`LawnApp::LawnApp`).
-const MUSIC_VOLUME: f32 = 0.85;
-const SFX_VOLUME: f32 = 0.5525;
+pub const MUSIC_VOLUME: f32 = 0.85;
+pub const SFX_VOLUME: f32 = 0.5525;
 
 const SAMPLE_RATE: u32 = 44_100;
 /// Frames rendered per lock of the music mixer.
@@ -95,10 +95,17 @@ struct Track {
 }
 
 /// Renders the playing tracks into one stereo stream.
-#[derive(Default)]
 struct Mixer {
     tracks: [Option<Track>; 3],
     scratch: Vec<f32>,
+    /// The player's music volume (`SexyAppBase::mMusicVolume`), over every track.
+    volume: f32,
+}
+
+impl Default for Mixer {
+    fn default() -> Self {
+        Self { tracks: Default::default(), scratch: Vec::new(), volume: MUSIC_VOLUME }
+    }
 }
 
 impl Mixer {
@@ -109,7 +116,7 @@ impl Mixer {
             // Silent tracks still advance, so the drums stay in step with the main tune.
             let frames = track.module.read_stereo(SAMPLE_RATE as i32, &mut self.scratch);
             for (o, s) in out.iter_mut().zip(&self.scratch[..frames * 2]) {
-                *o += s * track.volume;
+                *o += s * track.volume * self.volume;
             }
         }
     }
@@ -188,7 +195,6 @@ pub struct Music {
     music_disabled: bool,
     fade_out_counter: i32,
     fade_out_duration: i32,
-    volume_cap: f32,
 }
 
 impl Music {
@@ -202,7 +208,6 @@ impl Music {
             music_disabled: false,
             fade_out_counter: 0,
             fade_out_duration: 0,
-            volume_cap: MUSIC_VOLUME,
         }
     }
 
@@ -225,6 +230,16 @@ impl Music {
         }
     }
 
+    /// `SexyAppBase::SetMusicVolume`: the player's music volume, 0 to 1.
+    pub fn set_volume(&mut self, volume: f32) {
+        self.mixer.lock().unwrap().volume = volume.clamp(0.0, 1.0);
+    }
+
+    #[cfg(test)]
+    pub fn volume(&self) -> f32 {
+        self.mixer.lock().unwrap().volume
+    }
+
     /// `PlayFromOffset`: restarts a file at an order with its channels set up
     /// for the current tune.
     fn play_from_offset(&mut self, file: MusicFile, order: i32, volume: f32) {
@@ -233,7 +248,7 @@ impl Music {
         let Some(track) = &mut mixer.tracks[file.index()] else { return };
         setup_music_file_for_tune(&mut track.module, file, tune);
         track.module.set_position_order_row(order, 0);
-        track.volume = self.volume_cap * volume;
+        track.volume = volume;
         track.playing = true;
     }
 
@@ -313,7 +328,7 @@ impl Music {
                 let level =
                     animate_curve_float(self.fade_out_duration, 0, self.fade_out_counter, 1.0, 0.0, TodCurve::Linear);
                 if let Some(track) = &mut self.mixer.lock().unwrap().tracks[main.index()] {
-                    track.volume = self.volume_cap * level;
+                    track.volume = level;
                 }
             }
         }
@@ -628,10 +643,19 @@ struct FoleyTypeData {
 }
 
 /// Loaded sound effects and the foley bookkeeping.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct SoundSystem {
     sounds: HashMap<String, Handle<AudioSource>>,
     foley: HashMap<FoleyType, FoleyTypeData>,
+    /// The player's sound effects volume (`SexyAppBase::mSfxVolume`), for
+    /// sounds started from now on.
+    pub sfx_volume: f32,
+}
+
+impl Default for SoundSystem {
+    fn default() -> Self {
+        Self { sounds: HashMap::new(), foley: HashMap::new(), sfx_volume: SFX_VOLUME }
+    }
 }
 
 /// Formats Bevy can decode here; anything else would panic the audio thread.
@@ -670,8 +694,13 @@ impl Sounds<'_, '_> {
     fn spawn(&mut self, id: &str, speed: f32, looping: bool) -> Option<Entity> {
         let handle = self.system.sounds.get(id)?.clone();
         let mode = if looping { PlaybackSettings::LOOP } else { PlaybackSettings::DESPAWN };
-        let settings = mode.with_volume(Volume::Linear(SFX_VOLUME)).with_speed(speed);
+        let settings = mode.with_volume(Volume::Linear(self.system.sfx_volume)).with_speed(speed);
         Some(self.commands.spawn((AudioPlayer(handle), settings)).id())
+    }
+
+    /// `SexyAppBase::SetSfxVolume`, for sounds started from now on.
+    pub fn set_sfx_volume(&mut self, volume: f32) {
+        self.system.sfx_volume = volume;
     }
 
     /// `PlaySample`: plays a sound once.
@@ -753,6 +782,16 @@ mod tests {
         assert!(playable(b"OggS\0\x02rest"));
         assert!(playable(b"RIFF....WAVE"));
         assert!(!playable(b".snd\0\0\0\x18"));
+    }
+
+    #[test]
+    fn music_volume_is_clamped() {
+        let mut music = Music::silent();
+        assert_eq!(music.volume(), MUSIC_VOLUME);
+        music.set_volume(1.5);
+        assert_eq!(music.volume(), 1.0);
+        music.set_volume(0.25);
+        assert_eq!(music.volume(), 0.25);
     }
 
     #[test]

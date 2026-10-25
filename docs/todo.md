@@ -1,6 +1,6 @@
 # TODO: what is left of the game
 
-Snapshot of branch `core` on 2026-10-25. Status comes from the code (`plant.rs`, `zombie.rs`, `board/`, `game_selector.rs`, the `TODO` comments) and from `agents.md`. Verify an item against the code before starting it. Each line is a candidate slice: follow the usual loop (read the decompilation, reimplement, add a `TestBoard` test, credit comment).
+Snapshot of branch `core` on 2026-10-25 (main menu options and help added the same day). Status comes from the code (`plant.rs`, `zombie.rs`, `board/`, `game_selector.rs`, the `TODO` comments) and from `agents.md`. Verify an item against the code before starting it. Each line is a candidate slice: follow the usual loop (read the decompilation, reimplement, add a `TestBoard` test, credit comment).
 
 Legend: `[x]` done, `[~]` partly done, `[ ]` not started.
 
@@ -125,8 +125,8 @@ All of these start from `AppState::GameSelector` and `GameMode` (only `Adventure
 
 ## 6. Main menu pieces
 
-- [ ] Help: the Help dialog (`ButtonId::Help`, how-to-play text and illustrations from `properties/` and `LawnStrings`).
-- [ ] Options dialog: music / sound volume sliders, 3D acceleration, full-screen, "always show seed packets" and such; mirrored in the pause menu (Menu button currently only offers "Leave Game?").
+- [x] Help: the zombies' help note (`AwardScreen::help`, as the original's `AWARD_HELP_ZOMBIENOTE`), back to the main menu.
+- [~] Options dialog (`DialogKind::Options`, `options::Settings`): music / sound volume sliders, 3D acceleration (remembered only) and full screen from the main menu, saved in `config.toml`. Still to do: open it from the board's Menu button as the pause menu (Back To Game, Restart with its confirmation, Main Menu, the almanac; it's built for this, but nothing pauses yet and the Menu button still offers "Leave Game?"), and the Credits button shown once adventure is finished.
 - [ ] Almanac: index with plants and zombies, detail pages with animated portrait, stats, descriptions; opens from menu, from the seed chooser and after unlock. Unlock rules per seed / zombie seen.
 - [ ] Zombatar: zombie avatar editor (face, hair, eyes, mouth, clothing, accessories, background, colours), saved in the player profile, shown on the main menu sign / achievements, import image.
 - [ ] Achievements (Steam GOTY list: Home Lawn Security, Nobel Peas Prize, Better Off Dead, ...): tracking, popup banner, achievements screen. Needs a per-achievement trigger audit.
@@ -166,7 +166,8 @@ Done: 1-5 (shovel lesson), 2-1 and 2-2 talks, 2-3+ seed-slot offers.
 - [ ] Pause behaviour for sounds (MUTE_ON_PAUSE foley).
 - [ ] `.au` decoder for the Windows pak (sounds like `SOUND_DIAMOND`).
 - [ ] New foley types for each new plant and zombie (`FoleyType` lists only types used so far).
-- [ ] Volume sliders hooked to the options dialog.
+- [x] Volume sliders hooked to the options dialog (music live through the mixer's master volume, sounds for new plays).
+- [ ] Changing the sound volume for sounds already playing (loops), and `RehookupSoundWithMusicVolume`'s foley that follows the music volume.
 
 ## 10. Platform, tooling, quality
 

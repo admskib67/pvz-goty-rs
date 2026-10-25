@@ -90,7 +90,8 @@ impl Default for TitleScreen {
 }
 
 /// Development aid: continue past the title screen as soon as loading is
-/// done; `adventure` goes straight on into the player's next adventure level.
+/// done; `adventure` goes straight on into the player's next adventure level,
+/// and `options` or `help` presses that main menu button.
 const AUTO_START_ENV: &str = "PVZ_AUTO_START";
 
 const WIDTH: i32 = GAME_WIDTH as i32;

@@ -8,6 +8,7 @@ mod graphics;
 mod input;
 mod install;
 mod lawn_app;
+mod options;
 mod pak_source;
 mod particle;
 mod plant;
@@ -140,6 +141,7 @@ fn main() {
             award::AwardPlugin,
             dialog::DialogPlugin,
             lawn_app::LawnAppPlugin,
+            options::OptionsPlugin,
             devshot::DevShotPlugin,
         ))
         .add_systems(Startup, spawn_camera)

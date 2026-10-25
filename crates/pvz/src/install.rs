@@ -14,6 +14,12 @@ pub struct Config {
     pub game_path: Option<PathBuf>,
     /// The last player (the original's `CurUser` registry value).
     pub cur_user: Option<String>,
+    /// The options dialog's settings (the registry's `MusicVolume`,
+    /// `SfxVolume`, `ScreenMode` and `Is3D`); unset means the original's default.
+    pub music_volume: Option<f32>,
+    pub sfx_volume: Option<f32>,
+    pub fullscreen: Option<bool>,
+    pub hardware_acceleration: Option<bool>,
 }
 
 fn project_dirs() -> Option<directories::ProjectDirs> {

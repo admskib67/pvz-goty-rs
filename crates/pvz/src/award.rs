@@ -1,5 +1,6 @@
 //! The award screen shown between adventure levels: the new plant (or the
 //! shovel, a note, ...) the player just won, with the button to carry on.
+//! The main menu's Help button shows it too, as the zombies' help note.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Widget/AwardScreen.cpp`:
 //! `AwardScreen`, `DrawBottom`, `DrawAwardSeed`, `Draw`, `Update`,
@@ -41,6 +42,8 @@ enum AwardKind {
     Keys,
     Taco,
     WateringCan,
+    /// `AWARD_HELP_ZOMBIENOTE`: the main menu's help, a note on how to play.
+    HelpNote,
 }
 
 impl AwardKind {
@@ -58,7 +61,7 @@ impl AwardKind {
     }
 
     fn is_paper_note(self) -> bool {
-        matches!(self, Self::Note(_))
+        matches!(self, Self::Note(_) | Self::HelpNote)
     }
 }
 
@@ -81,9 +84,14 @@ impl AwardScreen {
         Some(Self { level, kind, fade_in: 180, start_over: false, menu_over: false })
     }
 
+    /// The help note from the main menu (`ShowAwardScreen(AWARD_HELP_ZOMBIENOTE)`).
+    pub fn help(level: i32) -> Self {
+        Self { level, kind: AwardKind::HelpNote, fade_in: 180, start_over: false, menu_over: false }
+    }
+
     fn menu_visible(&self) -> bool {
-        // Hidden for the first few levels.
-        self.level > 3
+        // Hidden for the first few levels, and on the help note.
+        self.level > 3 && self.kind != AwardKind::HelpNote
     }
 
     /// `mStartButton`: x, y, width, height.
@@ -94,6 +102,9 @@ impl AwardScreen {
     const MENU_RECT: (f32, f32, f32, f32) = (677.0, 16.0, 111.0, 26.0);
 
     fn start_label(&self) -> &'static str {
+        if self.kind == AwardKind::HelpNote {
+            return "[MAIN_MENU_BUTTON]";
+        }
         match self.level {
             15 => "[VIEW_ALMANAC_BUTTON]",
             25 | 35 | 45 => "[CONTINUE_BUTTON]",
@@ -115,6 +126,9 @@ fn start_award(
         groups.push(if n % 2 == 1 { "DelayLoad_Background1" } else { "DelayLoad_Background2" }.to_owned());
         groups.push("DelayLoad_ZombieNote".to_owned());
         groups.push(if n == 5 { "DelayLoad_ZombieFinalNote".to_owned() } else { format!("DelayLoad_ZombieNote{n}") });
+    }
+    if screen.kind == AwardKind::HelpNote {
+        groups.extend(["DelayLoad_Background1", "DelayLoad_ZombieNote", "DelayLoad_ZombieNoteHelp"].map(str::to_owned));
     }
     for group in groups {
         if let Err(e) = resources.load_group_now(&group, &mut images) {
@@ -144,6 +158,12 @@ fn in_rect(p: Vec2, (x, y, w, h): (f32, f32, f32, f32)) -> bool {
     p.x >= x && p.x < x + w && p.y >= y && p.y < y + h
 }
 
+/// `AwardScreen::StartButtonPressed`: the help note goes back to the main
+/// menu, the others on to the next level.
+fn start_pressed(screen: &AwardScreen, next_state: &mut NextState<AppState>) {
+    next_state.set(if screen.kind == AwardKind::HelpNote { AppState::GameSelector } else { AppState::Board });
+}
+
 /// `AwardScreen::MouseDown`, `MouseUp` and `KeyChar`.
 fn award_input(
     mut screen: ResMut<AwardScreen>,
@@ -161,13 +181,13 @@ fn award_input(
     }
     if mouse.just_released(MouseButton::Left) {
         if screen.start_over {
-            next_state.set(AppState::Board);
+            start_pressed(&screen, &mut next_state);
         } else if screen.menu_over {
             next_state.set(AppState::GameSelector);
         }
     }
     if keys.any_just_pressed([KeyCode::Space, KeyCode::Enter, KeyCode::Escape]) {
-        next_state.set(AppState::Board);
+        start_pressed(&screen, &mut next_state);
     }
 }
 
@@ -257,6 +277,15 @@ fn draw_award(screen: Res<AwardScreen>, resources: Res<GameResources>, mut g: Re
             }
             if let Some(font) = res.font("FONT_DWARVENTODCRAFT24") {
                 g.tod_draw_string(font, 400, 70, &tr("[FOUND_NOTE]"), SexyColor::rgba(255, 200, 0, 255), Justify::Center);
+            }
+        }
+        AwardKind::HelpNote => {
+            draw_stretched(g, res, "IMAGE_BACKGROUND1", -700.0, -300.0, 2800.0, 1200.0);
+            if let Some(note) = res.image("IMAGE_ZOMBIE_NOTE") {
+                g.draw_image(note, 80.0, 80.0);
+            }
+            if let Some(help) = res.image("IMAGE_ZOMBIE_NOTE_HELP") {
+                g.draw_image(help, 131.0, 132.0);
             }
         }
     }

@@ -7,8 +7,9 @@
 //! clicks are queued as [`DialogEvent`]s for `lawn_app` to handle.
 //!
 //! Behaviour per ruslan831 decomp: `SexyAppFramework/Dialog.cpp`,
-//! `Lawn/Widget/LawnDialog.cpp`, `NewUserDialog.cpp`, `UserDialog.cpp`, and
-//! `SexyAppBase`'s dialog list (`DoDialog`, `AddDialog`, `KillDialog`).
+//! `Lawn/Widget/LawnDialog.cpp`, `NewUserDialog.cpp`, `UserDialog.cpp`,
+//! `NewOptionsDialog.cpp`, and `SexyAppBase`'s dialog list (`DoDialog`,
+//! `AddDialog`, `KillDialog`).
 
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
@@ -18,7 +19,8 @@ use crate::audio::Sounds;
 use crate::graphics::{Graphics, SexyColor};
 use crate::input::GameCursor;
 use crate::resources::GameResources;
-use crate::widgets::{EditKey, EditWidget, ListColors, ListWidget, StoneButton, draw_edit_box};
+use crate::graphics::Justify;
+use crate::widgets::{Checkbox, EditKey, EditWidget, ImageLook, ListColors, ListWidget, Slider, StoneButton, draw_edit_box};
 use crate::{GAME_HEIGHT, GAME_WIDTH, UiSet};
 
 pub struct DialogPlugin;
@@ -49,6 +51,8 @@ pub enum DialogId {
     PurchasePacketSlot,
     /// The seed chooser's "are you sure, without ...?" before play.
     ChooserWarning,
+    /// `DIALOG_NEWOPTIONS`: volumes, full screen and 3D acceleration.
+    NewOptions,
 }
 
 /// `Dialog::BUTTONS_*`.
@@ -70,16 +74,69 @@ pub enum DialogButton {
     Rename,
     /// `UserDialog_DeleteUser`.
     Delete,
+    /// `NewOptionsDialog_Almanac`.
+    Almanac,
+    /// `NewOptionsDialog_MainMenu` (Credits, from the main menu).
+    MainMenu,
+    /// `NewOptionsDialog_Restart`.
+    Restart,
+}
+
+/// The options dialog's sliders (`NewOptionsDialog_MusicVolume`/`SoundVolume`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogSlider {
+    Music,
+    Sfx,
+}
+
+/// The options dialog's checkboxes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogCheckbox {
+    Fullscreen,
+    HardwareAcceleration,
 }
 
 /// Something the player did in a dialog, for the app to act on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DialogEvent {
     /// A button was clicked (or its key pressed).
     Button(DialogId, DialogButton),
     /// `ListListener::ListClicked`: a line of a dialog's list was clicked.
     ListClicked(DialogId, i32, u32),
+    /// `SliderListener::SliderVal`: the slider's new value, and whether its
+    /// thumb is still being dragged.
+    SliderVal(DialogId, DialogSlider, f32, bool),
+    /// `CheckboxListener::CheckboxChecked`.
+    CheckboxChecked(DialogId, DialogCheckbox, bool),
 }
+
+/// What the options dialog opens with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OptionsValues {
+    pub music_volume: f32,
+    pub sfx_volume: f32,
+    pub fullscreen: bool,
+    pub hardware_acceleration: bool,
+}
+
+/// `NewOptionsDialog`'s widgets. Its OK (or "Back To Game") button is the
+/// dialog's `yes_button`.
+#[derive(Debug, Clone)]
+pub struct OptionsWidgets {
+    pub music: Slider,
+    pub sfx: Slider,
+    pub fullscreen: Checkbox,
+    pub hardware_acceleration: Checkbox,
+    pub almanac: StoneButton<DialogButton>,
+    pub restart: StoneButton<DialogButton>,
+    pub main_menu: StoneButton<DialogButton>,
+    pub from_game_selector: bool,
+}
+
+/// `SetSfxVolume(theVal * 0.65)`: the sound slider tops out below full volume.
+pub const SFX_SLIDER_SCALE: f32 = 0.65;
+/// The options dialog's label colour.
+const OPTIONS_TEXT_COLOR: SexyColor = SexyColor::rgba(107, 109, 145, 255);
 
 /// `DIALOG_HEADER_OFFSET`: room above the frame for the skull header.
 const HEADER_OFFSET: i32 = 45;
@@ -117,6 +174,8 @@ pub enum DialogKind {
     NewUser { edit: EditWidget },
     /// `UserDialog`: pick, rename or delete a user, or create one.
     User { list: ListWidget, num_users: i32, rename: StoneButton<DialogButton>, delete: StoneButton<DialogButton> },
+    /// `NewOptionsDialog`: a picture instead of the stone frame.
+    Options(Box<OptionsWidgets>),
 }
 
 /// A `LawnDialog`. Its widgets' coordinates are relative to its top-left.
@@ -236,6 +295,79 @@ impl LawnDialog {
         dialog
     }
 
+    /// `NewOptionsDialog::NewOptionsDialog`, sized to its background and
+    /// centered (`LawnApp::DoNewOptions`). From the main menu there is no
+    /// restart or almanac, and Main Menu becomes Credits once adventure is
+    /// finished (otherwise it's hidden).
+    pub fn new_options(
+        res: &GameResources,
+        values: OptionsValues,
+        from_game_selector: bool,
+        finished_adventure: bool,
+        can_show_almanac: bool,
+    ) -> Self {
+        let mut dialog = Self::new(res, DialogId::NewOptions, "", "", "", ButtonMode::Footer);
+        let look = ImageLook {
+            normal: "IMAGE_OPTIONS_BACKTOGAMEBUTTON0",
+            over: "IMAGE_OPTIONS_BACKTOGAMEBUTTON0",
+            down: "IMAGE_OPTIONS_BACKTOGAMEBUTTON2",
+            font: "FONT_DWARVENTODCRAFT36GREENINSET",
+            hilite_font: "FONT_DWARVENTODCRAFT36BRIGHTGREENINSET",
+            translate: (0, 0),
+            text_offset: (-2, -5),
+            text_down_offset: (0, 1),
+        };
+        let back_label = if from_game_selector { "[DIALOG_BUTTON_OK]" } else { "[BACK_TO_GAME]" };
+        dialog.yes_button = Some(StoneButton::new_image(DialogButton::Yes, res.translate(back_label), look, res));
+
+        let slider = || Slider::new("IMAGE_OPTIONS_SLIDERSLOT", "IMAGE_OPTIONS_SLIDERKNOB2", res);
+        let (mut music, mut sfx) = (slider(), slider());
+        music.set_value(values.music_volume);
+        sfx.set_value(values.sfx_volume / SFX_SLIDER_SCALE);
+        let checkbox = |checked| Checkbox::new("IMAGE_OPTIONS_CHECKBOX0", "IMAGE_OPTIONS_CHECKBOX1", checked);
+        let button = |id, label: &str| StoneButton::new(id, res.translate(label));
+        let mut widgets = OptionsWidgets {
+            music,
+            sfx,
+            fullscreen: checkbox(values.fullscreen),
+            hardware_acceleration: checkbox(values.hardware_acceleration),
+            almanac: button(DialogButton::Almanac, "[VIEW_ALMANAC_BUTTON]"),
+            restart: button(DialogButton::Restart, "[RESTART_LEVEL_BUTTON]"),
+            main_menu: button(DialogButton::MainMenu, "[MAIN_MENU_BUTTON]"),
+            from_game_selector,
+        };
+        if from_game_selector {
+            widgets.restart.visible = false;
+            if finished_adventure {
+                widgets.main_menu.label = res.translate("[CREDITS]");
+            } else {
+                widgets.main_menu.visible = false;
+            }
+        }
+        // TODO: the level intro, zen garden and tree of wisdom also hide
+        // restart and the almanac, once the options open from the board.
+        widgets.almanac.visible = can_show_almanac && !from_game_selector;
+        dialog.kind = DialogKind::Options(Box::new(widgets));
+        let (w, h) = image_size(res, "IMAGE_OPTIONS_MENUBACK");
+        dialog.resize(res, (GAME_WIDTH as i32 - w) / 2, (GAME_HEIGHT as i32 - h) / 2, w, h);
+        dialog
+    }
+
+    /// The options dialog's widgets, if this is it.
+    pub fn options_mut(&mut self) -> Option<&mut OptionsWidgets> {
+        match &mut self.kind {
+            DialogKind::Options(widgets) => Some(widgets),
+            _ => None,
+        }
+    }
+
+    pub fn options(&self) -> Option<&OptionsWidgets> {
+        match &self.kind {
+            DialogKind::Options(widgets) => Some(widgets),
+            _ => None,
+        }
+    }
+
     fn bottom_left(&self) -> &'static str {
         if self.tall_bottom { "IMAGE_DIALOG_BIGBOTTOMLEFT" } else { "IMAGE_DIALOG_BOTTOMLEFT" }
     }
@@ -298,6 +430,26 @@ impl LawnDialog {
     /// the bottom, and the kind's widgets.
     fn resize(&mut self, res: &GameResources, x: i32, y: i32, width: i32, height: i32) {
         (self.x, self.y, self.width, self.height) = (x, y, width, height);
+        if let DialogKind::Options(o) = &mut self.kind {
+            // NewOptionsDialog::Resize.
+            o.music.resize(199, 116, 135, 40);
+            o.sfx.resize(199, 143, 135, 40);
+            o.hardware_acceleration.resize(283, 175, 46, 45);
+            o.fullscreen.resize(284, 206, 46, 45);
+            o.almanac.resize(107, 241, 209, 46);
+            o.restart.resize(o.almanac.x, o.almanac.y + 43, 209, 46);
+            o.main_menu.resize(o.restart.x, o.restart.y + 43, 209, 46);
+            if let Some(back) = &mut self.yes_button {
+                back.resize(30, 381, back.width, back.height);
+            }
+            if o.from_game_selector {
+                o.music.y += 5;
+                o.sfx.y += 10;
+                o.hardware_acceleration.y += 15;
+                o.fullscreen.y += 20;
+            }
+            return;
+        }
         let insets = self.content_insets;
         let (left_w, button_h) = image_size(res, "IMAGE_BUTTON_LEFT");
         let min_width = left_w + image_size(res, "IMAGE_BUTTON_RIGHT").0;
@@ -324,7 +476,7 @@ impl LawnDialog {
 
         let (content_left, content_top, content_width) = (self.content_left(), self.content_top(), self.content_width());
         match &mut self.kind {
-            DialogKind::Message => {}
+            DialogKind::Message | DialogKind::Options(_) => {}
             DialogKind::NewUser { edit } => {
                 if let Some(font) = res.font(EDIT_FONT) {
                     let w = width - insets.left - insets.right - 24;
@@ -439,16 +591,21 @@ impl LawnDialog {
     /// The stone buttons, back to front.
     fn buttons(&self) -> impl Iterator<Item = &StoneButton<DialogButton>> {
         let extra = match &self.kind {
-            DialogKind::User { delete, rename, .. } => [Some(delete), Some(rename)],
-            _ => [None, None],
+            DialogKind::User { delete, rename, .. } => [Some(delete), Some(rename), None],
+            DialogKind::Options(o) => [Some(&o.almanac), Some(&o.restart), Some(&o.main_menu)],
+            _ => [None, None, None],
         };
         self.yes_button.iter().chain(self.no_button.iter()).chain(extra.into_iter().flatten())
     }
 
     fn buttons_mut(&mut self) -> impl Iterator<Item = &mut StoneButton<DialogButton>> {
         let extra = match &mut self.kind {
-            DialogKind::User { delete, rename, .. } => [Some(delete), Some(rename)],
-            _ => [None, None],
+            DialogKind::User { delete, rename, .. } => [Some(delete), Some(rename), None],
+            DialogKind::Options(o) => {
+                let o = &mut **o;
+                [Some(&mut o.almanac), Some(&mut o.restart), Some(&mut o.main_menu)]
+            }
+            _ => [None, None, None],
         };
         self.yes_button.iter_mut().chain(self.no_button.iter_mut()).chain(extra.into_iter().flatten())
     }
@@ -461,6 +618,17 @@ impl LawnDialog {
         match &self.kind {
             DialogKind::NewUser { edit } if edit.contains(local) => return Some(Target::Edit),
             DialogKind::User { list, .. } if list.contains(local) => return Some(Target::List),
+            DialogKind::Options(o) => {
+                let widgets = [
+                    (o.music.contains(local), Target::Slider(DialogSlider::Music)),
+                    (o.sfx.contains(local), Target::Slider(DialogSlider::Sfx)),
+                    (o.hardware_acceleration.contains(local), Target::Checkbox(DialogCheckbox::HardwareAcceleration)),
+                    (o.fullscreen.contains(local), Target::Checkbox(DialogCheckbox::Fullscreen)),
+                ];
+                if let Some((_, target)) = widgets.into_iter().rev().find(|(hit, _)| *hit) {
+                    return Some(target);
+                }
+            }
             _ => {}
         }
         let inside = local.x >= 0 && local.y >= 0 && local.x < self.width && local.y < self.height;
@@ -471,6 +639,11 @@ impl LawnDialog {
     fn draw(&self, g: &mut Graphics, res: &GameResources) {
         g.push_state();
         g.translate(self.x as f32, self.y as f32);
+        if let DialogKind::Options(o) = &self.kind {
+            draw_options(g, res, o, self.yes_button.as_ref());
+            g.pop_state();
+            return;
+        }
         self.draw_frame(g, res);
         if let DialogKind::NewUser { edit } = &self.kind {
             draw_edit_box(g, res, edit);
@@ -479,7 +652,7 @@ impl LawnDialog {
             b.draw(g, res);
         }
         match &self.kind {
-            DialogKind::Message => {}
+            DialogKind::Message | DialogKind::Options(_) => {}
             DialogKind::NewUser { edit } => {
                 if let Some(font) = res.font(EDIT_FONT) {
                     edit.draw(g, font);
@@ -585,12 +758,50 @@ impl LawnDialog {
     }
 }
 
+impl OptionsWidgets {
+    pub fn slider_mut(&mut self, which: DialogSlider) -> &mut Slider {
+        match which {
+            DialogSlider::Music => &mut self.music,
+            DialogSlider::Sfx => &mut self.sfx,
+        }
+    }
+}
+
+/// `NewOptionsDialog::Draw` and its widgets, in the order they were added.
+fn draw_options(g: &mut Graphics, res: &GameResources, o: &OptionsWidgets, back: Option<&StoneButton<DialogButton>>) {
+    if let Some(back) = res.image("IMAGE_OPTIONS_MENUBACK") {
+        g.draw_image(back, 0.0, 0.0);
+    }
+    let offsets = if o.from_game_selector { [5, 10, 15, 20] } else { [0; 4] };
+    if let Some(font) = res.font("FONT_DWARVENTODCRAFT18") {
+        for ((text, x, y), offset) in
+            [("Music", 186, 140), ("Sound FX", 186, 167), ("3D Acceleration", 274, 197), ("Full Screen", 274, 229)]
+                .into_iter()
+                .zip(offsets)
+        {
+            g.tod_draw_string(font, x, y + offset, text, OPTIONS_TEXT_COLOR, Justify::Right);
+        }
+    }
+    o.almanac.draw(g, res);
+    o.restart.draw(g, res);
+    o.main_menu.draw(g, res);
+    o.music.draw(g, res);
+    o.sfx.draw(g, res);
+    o.hardware_acceleration.draw(g, res);
+    o.fullscreen.draw(g, res);
+    if let Some(back) = back {
+        back.draw(g, res);
+    }
+}
+
 /// A widget in a dialog that the mouse can be over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Target {
     Button(DialogButton),
     Edit,
     List,
+    Slider(DialogSlider),
+    Checkbox(DialogCheckbox),
     /// The dialog itself: dragging it moves it.
     Body,
 }
@@ -753,6 +964,20 @@ fn dialog_input(
                     events.push(DialogEvent::ListClicked(id, list.hilite_idx, click_count));
                 }
             }
+            Some(Target::Slider(which)) => {
+                if let Some(slider) = dialog.options_mut().map(|o| o.slider_mut(which)) {
+                    slider.mouse_down(local - IVec2::new(slider.x, slider.y));
+                }
+            }
+            Some(Target::Checkbox(which)) => {
+                if let Some(o) = dialog.options_mut() {
+                    let checkbox = match which {
+                        DialogCheckbox::Fullscreen => &mut o.fullscreen,
+                        DialogCheckbox::HardwareAcceleration => &mut o.hardware_acceleration,
+                    };
+                    events.push(DialogEvent::CheckboxChecked(id, which, checkbox.mouse_down()));
+                }
+            }
             Some(Target::Body) if click_count == 1 => dialog.drag = Some(local),
             _ => {}
         }
@@ -768,6 +993,13 @@ fn dialog_input(
                 }
             }
             Target::Body => dialog.drag_to(p),
+            Target::Slider(which) => {
+                if let Some(slider) = dialog.options_mut().map(|o| o.slider_mut(which))
+                    && let Some(value) = slider.mouse_drag(local - IVec2::new(slider.x, slider.y))
+                {
+                    events.push(DialogEvent::SliderVal(id, which, value, true));
+                }
+            }
             _ => {}
         }
     }
@@ -785,6 +1017,11 @@ fn dialog_input(
                 if let (DialogKind::NewUser { edit }, Some(font), Some(local)) = (&mut dialog.kind, &edit_font, local) {
                     let at = local - IVec2::new(edit.x, edit.y);
                     edit.mouse_up(at, font);
+                }
+            }
+            Some(Target::Slider(which)) => {
+                if let Some(o) = dialog.options_mut() {
+                    events.push(DialogEvent::SliderVal(id, which, o.slider_mut(which).mouse_up(), false));
                 }
             }
             _ => {}
@@ -831,6 +1068,14 @@ fn dialog_input(
                             edit.key_char(c, font, |c| c.is_ascii_alphanumeric() || c == ' ');
                         }
                     }
+                }
+            }
+            // NewOptionsDialog::KeyDown: Escape closes it like Cancel.
+            DialogKind::Options(_) => {
+                if matches!(k.logical_key, Key::Space | Key::Enter) {
+                    events.push(DialogEvent::Button(id, DialogButton::Yes));
+                } else if k.logical_key == Key::Escape {
+                    events.push(DialogEvent::Button(id, DialogButton::No));
                 }
             }
             _ => {
