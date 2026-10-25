@@ -175,6 +175,11 @@ impl SeedType {
         matches!(self, Gatlingpea | Wintermelon | Twinsunflower | Spikerock | Cobcannon | GoldMagnet | Gloomshroom | Cattail)
     }
 
+    /// `Plant::IsAquatic`: plants that live on the water itself.
+    pub fn is_aquatic(self) -> bool {
+        matches!(self, SeedType::Lilypad | SeedType::Tanglekelp | SeedType::Seashroom)
+    }
+
     /// `Plant::IsNocturnal`: the mushrooms, which sleep through the day.
     pub fn is_nocturnal(self) -> bool {
         use SeedType::*;

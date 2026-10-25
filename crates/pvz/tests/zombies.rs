@@ -38,7 +38,7 @@ fn each_zombie_starts_with_its_armour() {
 
 #[test]
 fn levels_only_send_their_own_zombies() {
-    for level in 1..=20 {
+    for level in 1..=30 {
         let stage = format!("{}-{}", (level - 1) / 10 + 1, (level - 1) % 10 + 1);
         let t = test_board!(&stage);
         // 2-5 is whack-a-zombie, with eight waves of its own.

@@ -73,6 +73,8 @@ pub enum PlantAction {
     Jalapeno { row: i32 },
     /// `Plant::DoSquashDamage`: the squash lands on `rect` in `row`.
     Squash { row: i32, rect: IRect },
+    /// `Plant::UpdateTanglekelp`: the kelp drags this zombie under the water.
+    TangleKelp(sexy::data_array::Id<Zombie>),
     /// The board jolts (`Board::ShakeBoard`).
     ShakeBoard { x: i32, y: i32 },
     /// A grave buster has eaten the grave on its square (`x`, `y` is the plant's spot).
@@ -109,6 +111,8 @@ pub(super) enum PlantState {
     SquashFalling,
     SquashDoneFalling,
     SpikeweedAttacking,
+    /// The tangle kelp has hold of a zombie and is pulling it under.
+    TanglekelpGrabbing,
     /// An instant plant counting down to going off.
     DoingSpecial,
 }
@@ -711,6 +715,7 @@ impl Plant {
             SeedType::Fumeshroom => IRect::new(self.x + 60, self.y, 340, PLANT_SIZE),
             SeedType::Squash => IRect::new(self.x + 20, self.y, PLANT_SIZE - 35, PLANT_SIZE),
             SeedType::Spikeweed => IRect::new(self.x + 20, self.y, PLANT_SIZE - 50, PLANT_SIZE),
+            SeedType::Tanglekelp => IRect::new(self.x + 20, self.y, PLANT_SIZE - 50, PLANT_SIZE),
             SeedType::Torchwood => IRect::new(self.x + 50, self.y, 30, PLANT_SIZE),
             _ => IRect::new(self.x + 60, self.y, super::BOARD_WIDTH, PLANT_SIZE),
         }
@@ -759,6 +764,9 @@ impl Plant {
         }
         if self.seed == SeedType::Spikeweed {
             self.update_spikeweed(zombies, actions, effects, rng);
+        }
+        if self.seed == SeedType::Tanglekelp {
+            self.update_tangle_kelp(zombies, actions, effects);
         }
         // UpdateIceShroom: it goes off as soon as it's awake.
         if self.seed == SeedType::Iceshroom && self.state != PlantState::DoingSpecial {
@@ -815,6 +823,26 @@ impl Plant {
             actions.push(PlantAction::Foley(FoleyType::Throw));
             self.state = PlantState::SpikeweedAttacking;
             self.state_countdown = 100;
+        }
+    }
+
+    /// `Plant::UpdateTanglekelp`: a zombie stepping onto its square is grabbed,
+    /// dragged under, and the kelp goes with it.
+    fn update_tangle_kelp(&mut self, zombies: &DataArray<Zombie>, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem) {
+        if self.state == PlantState::TanglekelpGrabbing {
+            if self.state_countdown == 50
+                && let Some(id) = self.target_zombie
+            {
+                actions.push(PlantAction::TangleKelp(id));
+            }
+            if self.state_countdown == 0 {
+                self.die(effects);
+            }
+        } else if let Some(id) = self.find_target_zombie(zombies) {
+            self.target_zombie = Some(id);
+            self.state = PlantState::TanglekelpGrabbing;
+            self.state_countdown = 100;
+            self.play_body_reanim(effects, "anim_grab", LoopType::PlayOnceAndHold, 0, 24.0);
         }
     }
 
@@ -1123,7 +1151,7 @@ impl Plant {
             if self.seed == SeedType::Threepeater {
                 self.launch_threepeater(zombies, effects, open_rows);
             } else if is_pea_shooter(self.seed)
-                || matches!(self.seed, SeedType::Puffshroom | SeedType::Fumeshroom | SeedType::Scaredyshroom)
+                || matches!(self.seed, SeedType::Puffshroom | SeedType::Seashroom | SeedType::Fumeshroom | SeedType::Scaredyshroom)
             {
                 self.find_target_and_fire(zombies, actions, effects);
             }
@@ -1309,7 +1337,7 @@ impl Plant {
             return;
         }
         let (x, y) = match self.seed {
-            SeedType::Puffshroom => (self.x + 40, self.y + 40),
+            SeedType::Puffshroom | SeedType::Seashroom => (self.x + 40, self.y + 40),
             SeedType::Scaredyshroom => (self.x + 29, self.y + 21),
             SeedType::Threepeater => (self.x + 45, self.y + 10),
             _ => {
@@ -1326,9 +1354,9 @@ impl Plant {
                 actions.push(PlantAction::Foley(FoleyType::SnowPeaSparkles));
                 ProjectileType::Snowpea
             }
-            SeedType::Puffshroom | SeedType::Scaredyshroom => {
+            SeedType::Puffshroom | SeedType::Seashroom | SeedType::Scaredyshroom => {
                 let effect = ParticleEffect::PuffshroomMuzzle;
-                let dx = if self.seed == SeedType::Puffshroom { 18 } else { 27 };
+                let dx = if self.seed == SeedType::Scaredyshroom { 27 } else { 18 };
                 actions.push(PlantAction::Particle { x: x + dx, y: y + 13, render_order: muzzle, effect });
                 actions.push(PlantAction::Foley(FoleyType::Puff));
                 ProjectileType::Puff
@@ -1336,7 +1364,7 @@ impl Plant {
             _ => ProjectileType::Pea,
         };
         // Only the puff-shroom's puffs fade out after a short way (`MOTION_PUFF`).
-        let short_range = self.seed == SeedType::Puffshroom;
+        let short_range = matches!(self.seed, SeedType::Puffshroom | SeedType::Seashroom);
         // The threepeater's side peas change lanes (`MOTION_THREEPEATER`).
         let drift = match row.cmp(&self.row) {
             _ if self.seed != SeedType::Threepeater => 0.0,

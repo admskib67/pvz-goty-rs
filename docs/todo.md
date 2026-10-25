@@ -15,7 +15,7 @@ Legend: `[x]` done, `[~]` partly done, `[ ]` not started.
 ## 1. Adventure content still to build
 
 ### World 3: pool (levels 3-1 to 3-10, `BackgroundType::Pool`)
-- [ ] Pool terrain: water rows 3-4 (`has_pool`), plant legality per tile (lily pad, tangle kelp, sea-shroom only on water; land plants need a lily pad), grid cell water flag.
+- [x] Pool terrain: water rows 3-4 (`has_pool`), plant legality per tile (lily pad, tangle kelp, sea-shroom only on water; land plants need a lily pad), grid cell water flag. Lily pad, tangle kelp and sea-shroom behave and are tested.
 - [ ] Pool rendering: animated water (the intro cinematic uses a static `IMAGE_POOL`), pool shimmer, ripples, plants bobbing on water (`plant.rs` TODO), `PlantingPool` particle splash.
 - [ ] Pool cleaner (lawn mower variant for water rows), its intro roll-in and trigger. Store item "Pool Cleaner" swaps it in.
 - [ ] Level intro for 3-x: pan, pool-cleaner roll-in, zombies on the street, Crazy Dave talk (message 501+; `cutscene.rs` TODO "3-1's (501) and the later levels' talks").

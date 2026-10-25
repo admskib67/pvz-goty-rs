@@ -1316,6 +1316,13 @@ impl Board {
                     }
                 }
             }
+            PlantAction::TangleKelp(id) => {
+                let env = self.zombie_env();
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                if let Some(zombie) = self.zombies.get_mut(id) {
+                    zombie.take_damage(1800, 0, &env, &mut fx);
+                }
+            }
             PlantAction::ShakeBoard { x, y } => self.shake_board(x, y),
             PlantAction::DoomShroom { x, y, col, row } => {
                 sounds.play_sample("SOUND_DOOMSHROOM");

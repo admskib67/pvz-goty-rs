@@ -522,3 +522,69 @@ fn zombies_cannot_eat_a_squash_that_is_about_to_jump() {
     t.ticks(100);
     assert_eq!(t.plant_ref(squash).unwrap().health, 300, "no bites while it looks and crouches");
 }
+
+/// The plant of this kind on a square (a lily pad shares its square).
+fn plant_of(t: &TestBoard, seed: SeedType, col: i32, row: i32) -> Option<Id<crate::board::plant::Plant>> {
+    t.board.plants.iter().find(|(_, p)| p.col == col && p.row == row && p.seed == seed && !p.dead).map(|(id, _)| id)
+}
+
+#[test]
+fn water_plants_go_on_water_and_the_rest_need_a_lily_pad() {
+    let mut t = test_board!("3-1");
+    // Rows 2 and 3 are the pool.
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Peashooter), PlantingReason::NotOnWater);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Lilypad), PlantingReason::Ok);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Tanglekelp), PlantingReason::Ok);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Seashroom), PlantingReason::Ok);
+    // On the grass it is the other way round.
+    assert_eq!(t.board.can_plant_at(3, 1, SeedType::Peashooter), PlantingReason::Ok);
+    for seed in [SeedType::Lilypad, SeedType::Tanglekelp, SeedType::Seashroom] {
+        assert_eq!(t.board.can_plant_at(3, 1, seed), PlantingReason::NotHere, "{seed:?} needs water");
+    }
+
+    t.plant(SeedType::Lilypad, 3, 2);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Lilypad), PlantingReason::NotHere, "one pad per square");
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Peashooter), PlantingReason::Ok, "a pad carries a plant");
+    t.plant(SeedType::Peashooter, 3, 2);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Wallnut), PlantingReason::NotHere, "but only one");
+}
+
+#[test]
+fn a_plant_on_a_lily_pad_shoots() {
+    let mut t = test_board!("3-1");
+    t.plant(SeedType::Lilypad, 1, 2);
+    let pea = t.plant(SeedType::Peashooter, 1, 2);
+    let zombie = t.zombie(ZombieType::Normal, 2, 700.0);
+    assert!(t.plant_ref(pea).is_some());
+    assert!(t.run_until(600, |b| b.zombies.get(zombie).is_some_and(|z| z.body_health < 270)), "the pea hits the zombie");
+    assert!(plant_of(&t, SeedType::Lilypad, 1, 2).is_some(), "the pad is still there");
+}
+
+#[test]
+fn tangle_kelp_drags_a_zombie_under() {
+    let mut t = test_board!("3-1");
+    let kelp = t.plant(SeedType::Tanglekelp, 3, 2);
+    let x = t.plant_ref(kelp).unwrap().x;
+    let other_row = t.zombie(ZombieType::Normal, 1, x as f32 + 20.0);
+    let zombie = t.zombie(ZombieType::Normal, 2, x as f32 + 20.0);
+    assert!(t.run_until(300, |b| b.zombies.get(zombie).is_none_or(|z| z.is_dead_or_dying())), "the zombie is pulled under");
+    assert!(t.run_until(200, |b| plant_of_gone(b, 3, 2)), "and the kelp is used up");
+    assert!(t.zombie_ref(other_row).is_some_and(|z| !z.is_dead_or_dying()), "other rows are safe");
+}
+
+fn plant_of_gone(b: &super::super::Board, col: i32, row: i32) -> bool {
+    !b.plants.iter().any(|(_, p)| p.col == col && p.row == row && !p.dead)
+}
+
+#[test]
+fn sea_shroom_shoots_from_the_water_at_night() {
+    let mut t = test_board!("3-1");
+    let shroom = t.plant(SeedType::Seashroom, 1, 2);
+    assert!(t.plant_ref(shroom).unwrap().is_asleep(), "asleep in the day");
+    drop(t);
+    let mut t = test_board!("4-1");
+    let shroom = t.plant(SeedType::Seashroom, 1, 2);
+    assert!(!t.plant_ref(shroom).unwrap().is_asleep());
+    let zombie = t.zombie(ZombieType::Normal, 2, 200.0);
+    assert!(t.run_until(400, |b| b.zombies.get(zombie).is_none_or(|z| z.body_health < 270)), "it spits at close zombies");
+}

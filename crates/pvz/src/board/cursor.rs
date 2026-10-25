@@ -137,9 +137,13 @@ impl Board {
         })
     }
 
+    /// Whether a lily pad floats on `(grid_x, grid_y)`.
+    pub(super) fn has_lily_pad_at(&self, grid_x: i32, grid_y: i32) -> bool {
+        self.plants.iter().any(|(_, p)| p.col == grid_x && p.row == grid_y && !p.dead && p.seed == SeedType::Lilypad)
+    }
+
     /// `Board::CanPlantAt`, for ordinary plants on grass, dirt and water.
-    /// TODO: lily pads, pots, pumpkins, upgrades, craters and the other
-    /// special cases.
+    /// TODO: pots, pumpkins and upgrades.
     pub fn can_plant_at(&self, grid_x: i32, grid_y: i32, seed: SeedType) -> PlantingReason {
         if !(0..MAX_GRID_SIZE_X as i32).contains(&grid_x) || !(0..MAX_GRID_SIZE_Y as i32).contains(&grid_y) {
             return PlantingReason::NotHere;
@@ -166,8 +170,24 @@ impl Board {
         if square == GridSquareType::Dirt {
             return PlantingReason::NotHere;
         }
-        if square == GridSquareType::Pool {
-            return PlantingReason::NotOnWater;
+        let on_water = square == GridSquareType::Pool;
+        // Behaviour per ruslan831 decomp, Board::CanPlantAt: water plants only
+        // go on water, and everything else on water needs a lily pad under it.
+        if seed == SeedType::Lilypad {
+            let free = on_water && !self.has_lily_pad_at(grid_x, grid_y) && self.normal_plant_at(grid_x, grid_y).is_none();
+            return if free { PlantingReason::Ok } else { PlantingReason::NotHere };
+        }
+        if on_water {
+            if self.normal_plant_at(grid_x, grid_y).is_some() {
+                return PlantingReason::NotHere;
+            }
+            if !seed.is_aquatic() && !self.has_lily_pad_at(grid_x, grid_y) {
+                return PlantingReason::NotOnWater;
+            }
+            return PlantingReason::Ok;
+        }
+        if seed.is_aquatic() {
+            return PlantingReason::NotHere;
         }
         if self.stage_has_roof() {
             return PlantingReason::NeedsPot;
