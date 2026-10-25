@@ -115,14 +115,32 @@ impl ZombieType {
     /// the types ported so far.
     pub fn reanim(self) -> Option<ReanimationType> {
         match self {
-            Self::Normal | Self::Flag | Self::TrafficCone | Self::Pail | Self::Door => Some(ReanimationType::Zombie),
+            Self::Normal | Self::Flag | Self::TrafficCone | Self::Pail | Self::Door | Self::DuckyTube => Some(ReanimationType::Zombie),
             Self::Polevaulter => Some(ReanimationType::Polevaulter),
+            Self::Snorkel => Some(ReanimationType::Snorkel),
+            Self::DolphinRider => Some(ReanimationType::ZombieDolphinrider),
+            Self::Zamboni => Some(ReanimationType::ZombieZamboni),
+            Self::Bobsled => Some(ReanimationType::Bobsled),
             Self::Newspaper => Some(ReanimationType::ZombieNewspaper),
             Self::Football => Some(ReanimationType::ZombieFootball),
             Self::Dancer => Some(ReanimationType::Dancer),
             Self::BackupDancer => Some(ReanimationType::BackupDancer),
             _ => None,
         }
+    }
+
+    /// `Zombie::ZombieTypeCanGoInPool`: who can wade into the water.
+    pub fn can_go_in_pool(self) -> bool {
+        matches!(
+            self,
+            Self::Normal | Self::TrafficCone | Self::Pail | Self::Flag | Self::Balloon | Self::Snorkel | Self::DolphinRider
+                | Self::PeaHead | Self::WallnutHead | Self::JalapenoHead | Self::GatlingHead | Self::TallnutHead
+        )
+    }
+
+    /// `Board::IsZombieTypePoolOnly`.
+    pub fn is_pool_only(self) -> bool {
+        matches!(self, Self::Snorkel | Self::DolphinRider)
     }
 
     /// Whether zombies of this type are ported. Until the rest are, waves
@@ -163,6 +181,30 @@ const CONE_LEVELS: [bool; 50] = bits(&[
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+]);
+/// `gZombieAllowedLevels` for the snorkel zombie.
+const SNORKEL_LEVELS: [bool; 50] = bits(&[
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 1, 1, 1, 0, 1, 0, 0, 1, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
+/// `gZombieAllowedLevels` for the dolphin rider.
+const DOLPHIN_LEVELS: [bool; 50] = bits(&[
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 1, 1, 1, //
+    0, 0, 0, 1, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
+/// `gZombieAllowedLevels` for the Zamboni.
+const ZAMBONI_LEVELS: [bool; 50] = bits(&[
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 1, 1, 0, 1, 1, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ]);
 const PAIL_LEVELS: [bool; 50] = bits(&[
     0, 0, 0, 0, 0, 0, 0, 1, 1, 1, //
@@ -236,6 +278,9 @@ pub fn can_spawn_on_level(ty: ZombieType, level: i32) -> bool {
         ZombieType::Door => DOOR_LEVELS[i],
         ZombieType::Football => FOOTBALL_LEVELS[i],
         ZombieType::Dancer | ZombieType::BackupDancer => DANCER_LEVELS[i],
+        ZombieType::Snorkel => SNORKEL_LEVELS[i],
+        ZombieType::DolphinRider => DOLPHIN_LEVELS[i],
+        ZombieType::Zamboni | ZombieType::Bobsled => ZAMBONI_LEVELS[i],
         _ => true,
     }
 }

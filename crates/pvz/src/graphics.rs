@@ -176,6 +176,11 @@ impl Graphics {
         self.state.clip = self.state.clip.intersect(SexyRect::new(x + t.x, y + t.y, w, h));
     }
 
+    /// Lifts the clip rectangle, for tracks that ignore it (`mIgnoreClipRect`).
+    pub fn reset_clip(&mut self) {
+        self.state.clip = GraphicsState::default().clip;
+    }
+
     /// Moves the origin of later draws by (dx, dy), like `Graphics::Translate`.
     pub fn translate(&mut self, dx: f32, dy: f32) {
         self.state.trans += Vec2::new(dx, dy);

@@ -59,11 +59,11 @@ Legend: `[x]` done, `[~]` partly done, `[ ]` not started.
 Ported: normal, flag, cone, bucket, screen door, newspaper, pole vaulter, football, dancer, backup dancer.
 
 Pool and fog:
-- [ ] Ducky tube zombie (normal / cone / bucket variants on water, `ZombieType::DuckyTube`).
-- [ ] Snorkel zombie (swims submerged, surfaces to eat).
-- [ ] Zamboni (crushes plants, leaves ice trail, 1 per lane, level-flavoured).
-- [ ] Bobsled team (four zombies on a sled, slides on ice trail).
-- [ ] Dolphin rider (jumps pool plants).
+- [x] Ducky tube zombie (normal / cone / bucket variants on water; any wading zombie wears the tube).
+- [x] Snorkel zombie (swims submerged, surfaces to eat).
+- [x] Zamboni (crushes plants, leaves ice trail).
+- [x] Bobsled team (four zombies on a sled, slides on ice trail).
+- [x] Dolphin rider (jumps pool plants).
 - [ ] Jack-in-the-box (explodes, music-box sound).
 - [ ] Balloon zombie (flies, popped by cactus / blover).
 - [ ] Digger zombie (tunnels left, pops out behind plants).

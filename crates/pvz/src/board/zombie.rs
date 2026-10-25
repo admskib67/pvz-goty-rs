@@ -124,6 +124,8 @@ pub enum HelmType {
     TrafficCone,
     Pail,
     Football,
+    /// The bobsled team's sled.
+    Bobsled,
 }
 
 /// `ShieldType`, for what's ported so far.
@@ -179,6 +181,29 @@ pub enum ZombiePhase {
     DancerRaiseRight2,
     /// A backup dancer coming up out of the ground.
     DancerRising,
+    /// The snorkel zombie walking on land, or diving in.
+    SnorkelWalking,
+    SnorkelIntoPool,
+    /// Submerged and swimming; surfaces to bite.
+    SnorkelWalkingInPool,
+    SnorkelUpToEat,
+    SnorkelEatingInPool,
+    SnorkelDownFromEat,
+    /// The dolphin rider running along the grass towards the pool.
+    DolphinWalking,
+    DolphinIntoPool,
+    /// Riding its dolphin through the water.
+    DolphinRiding,
+    /// Leaping over the first plant in its way.
+    DolphinInJump,
+    /// Landed with no dolphin under it: wades on foot.
+    DolphinWalkingInPool,
+    DolphinWalkingWithoutDolphin,
+    /// A bobsled team sliding in on the ice.
+    BobsledSliding,
+    BobsledBoarding,
+    /// The sled broke up: the team tumbles off and gets up to walk.
+    BobsledCrashing,
 }
 
 /// What the board tells its zombies each tick.
@@ -197,6 +222,26 @@ pub struct ZombieEnv {
     pub main_counter: i32,
     /// `HasLevelAwardDropped`: the level's won.
     pub award_dropped: bool,
+    /// Which rows are water (`mPlantRow == PLANTROW_POOL`).
+    pub pool_rows: [bool; super::MAX_GRID_SIZE_Y],
+    /// Where each row's ice trail starts (`mIceMinX`).
+    pub ice_min_x: [i32; super::MAX_GRID_SIZE_Y],
+}
+
+impl ZombieEnv {
+    /// `Board::IsPoolSquare` for the square under pixel column `x` in `row`.
+    pub fn is_pool_square(&self, x: i32, row: i32) -> bool {
+        x >= super::cursor::LAWN_XMIN && self.pool_rows.get(row as usize).copied().unwrap_or(false)
+    }
+}
+
+/// `ZombieHeight`, for the parts a pool lawn uses: a swimmer sinks in and
+/// climbs out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZombieHeight {
+    Normal,
+    IntoPool,
+    OutOfPool,
 }
 
 /// The things a zombie touches besides itself and the plants.
@@ -218,6 +263,21 @@ struct DrawPos {
     /// How much of the bottom is hidden (`mClipHeight`); `CLIP_HEIGHT_OFF` when nothing is.
     clip_height: f32,
 }
+
+/// `BOBSLED_CRASH_TIME`: how long the broken sled's team takes to get up.
+const BOBSLED_CRASH_TIME: i32 = 150;
+/// `NUM_BOBSLED_FOLLOWERS`.
+pub const NUM_BOBSLED_FOLLOWERS: usize = 3;
+
+/// What a bobsled follower needs to know about its leader to draw the sled.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SledInfo {
+    pos_x: f32,
+    damage_index: i32,
+}
+
+/// `DOLPHIN_JUMP_TIME`: how long the dolphin rider's leap lasts.
+const DOLPHIN_JUMP_TIME: i32 = 120;
 
 /// `CLIP_HEIGHT_LIMIT` and `CLIP_HEIGHT_OFF`: a draw position clips the
 /// zombie only when its clip height is above the limit.
@@ -247,6 +307,29 @@ pub struct Zombie {
     phase_counter: i32,
     /// How far above the ground it is (`mAltitude`); below it while rising from a grave.
     altitude: f32,
+    /// Sinking into or climbing out of the water (`mZombieHeight`).
+    height: ZombieHeight,
+    /// Swimming (`mInPool`).
+    in_pool: bool,
+    /// The Zamboni's tires are popped (`mFlatTires`).
+    flat_tires: bool,
+    /// 0 for a bobsled team's leader, 1 to 3 for the zombies behind it, -1 when
+    /// it isn't riding a sled (`GetBobsledPosition`).
+    pub bobsled_position: i32,
+    /// The sled's helmet broke: crash on the next update.
+    bobsled_crash_pending: bool,
+    /// The leader crashed this tick: the board tumbles the others off.
+    pub bobsled_crashed: bool,
+    /// The sled is on the ice: the board keeps the trail from melting.
+    pub ice_keep: bool,
+    /// A follower's view of its leader's sled, kept by the board.
+    pub sled: SledInfo,
+    /// Where the Zamboni's ice trail reaches this tick; the board lays it down.
+    pub ice_trail: Option<i32>,
+    /// The zombie's row is water (`mPlantRow == PLANTROW_POOL`).
+    water_row: bool,
+    /// Where the body animation is (`mAnimTime`), for the swimmers' waterline.
+    body_anim_time: f32,
     pub has_head: bool,
     has_arm: bool,
     /// The flag zombie still has its flag.
@@ -360,6 +443,17 @@ impl Zombie {
             ice_trap_counter: 0,
             phase_counter: 0,
             altitude: 0.0,
+            height: ZombieHeight::Normal,
+            in_pool: false,
+            flat_tires: false,
+            bobsled_position: -1,
+            bobsled_crash_pending: false,
+            bobsled_crashed: false,
+            ice_keep: false,
+            sled: SledInfo::default(),
+            ice_trail: None,
+            water_row: false,
+            body_anim_time: 0.0,
             has_head: true,
             has_arm: true,
             has_object: false,
@@ -413,7 +507,7 @@ impl Zombie {
             z.load_reanim(ty, env, fx);
         }
         match zombie_type {
-            ZombieType::Normal => z.load_plain_zombie_reanim(fx),
+            ZombieType::Normal | ZombieType::DuckyTube => z.load_plain_zombie_reanim(fx),
             ZombieType::TrafficCone => {
                 z.load_plain_zombie_reanim(fx);
                 z.reanim_show_prefix(fx, "anim_cone", RENDER_GROUP_NORMAL);
@@ -476,6 +570,56 @@ impl Zombie {
                 z.variant = false;
                 z.attach_shield(fx);
             }
+            ZombieType::Bobsled => {
+                z.zombie_rect = IRect::new(-50, 0, 275, 115);
+                z.helm_type = HelmType::Bobsled;
+                z.helm_health = 300;
+                z.pos_x = WIDE_BOARD_WIDTH + 80.0;
+                z.altitude = -10.0;
+                z.vel_x = 0.6;
+                z.phase = ZombiePhase::BobsledSliding;
+                z.phase_counter = 500;
+                z.variant = false;
+                if from_wave == ZOMBIE_WAVE_CUTSCENE {
+                    z.play_zombie_reanim(fx.effects, "anim_jump", LoopType::PlayOnceAndHold, 0, 20.0);
+                    if let Some(body) = z.body.and_then(|b| fx.effects.get_mut(b)) {
+                        body.anim_time = 1.0;
+                    }
+                    z.altitude = 18.0;
+                } else if z.is_on_board() {
+                    z.play_zombie_reanim(fx.effects, "anim_push", LoopType::Loop, 0, 30.0);
+                }
+            }
+            ZombieType::Zamboni => {
+                z.body_health = 1350;
+                z.anim_frames = 2;
+                z.anim_ticks_per_frame = 8;
+                z.pos_x = WIDE_BOARD_WIDTH + fx.sounds.rng().next_range(10) as f32;
+                z.play_zombie_reanim(fx.effects, "anim_drive", LoopType::Loop, 0, 12.0);
+                z.zombie_rect = IRect::new(0, -13, 153, 140);
+                z.attack_rect = IRect::new(10, -13, 133, 140);
+                z.variant = false;
+            }
+            ZombieType::DolphinRider => {
+                z.body_health = 500;
+                z.anim_ticks_per_frame = 6;
+                z.phase = ZombiePhase::DolphinWalking;
+                z.variant = false;
+                if z.is_on_board() {
+                    z.play_zombie_reanim(fx.effects, "anim_walkdolphin", LoopType::Loop, 0, 0.0);
+                    z.pick_random_speed(fx);
+                }
+                z.setup_water_track(fx, "zombie_dolphinrider_whitewater");
+                z.setup_water_track(fx, "zombie_dolphinrider_dolphininwater");
+            }
+            ZombieType::Snorkel => {
+                z.zombie_rect = IRect::new(12, 0, 62, 115);
+                z.attack_rect = IRect::new(-5, 0, 55, 115);
+                z.setup_water_track(fx, "Zombie_snorkle_whitewater");
+                z.setup_water_track(fx, "Zombie_snorkle_whitewater2");
+                z.variant = false;
+                z.phase = ZombiePhase::SnorkelWalking;
+            }
             ZombieType::Dancer => {
                 if z.is_on_board() {
                     z.phase = ZombiePhase::DancerDancingIn;
@@ -498,6 +642,19 @@ impl Zombie {
             _ => {}
         }
 
+        // Behaviour per ruslan831 decomp, Zombie::LoadPlainZombieReanim: a zombie
+        // in a pool row, or a ducky tube zombie, wears the tube.
+        if z.zombie_type.reanim() == Some(ReanimationType::Zombie)
+            && (zombie_type == ZombieType::DuckyTube || env.pool_rows.get(row as usize).copied().unwrap_or(false))
+        {
+            z.reanim_show_prefix(fx, "zombie_duckytube", RENDER_GROUP_NORMAL);
+            for track in ["Zombie_duckytube", "Zombie_outerarm_hand", "Zombie_innerarm3"] {
+                z.reanim_ignore_clip_rect(fx, track, true);
+            }
+            for track in ["Zombie_whitewater", "Zombie_whitewater2"] {
+                z.setup_water_track(fx, track);
+            }
+        }
         z.update_anim_speed(fx.effects);
         if z.variant {
             z.reanim_show_prefix(fx, "anim_tongue", RENDER_GROUP_NORMAL);
@@ -507,9 +664,142 @@ impl Zombie {
         z.shield_max_health = z.shield_health;
         z.x = z.pos_x as i32;
         z.y = z.pos_y as i32;
-        z.render_order = make_render_order(render_layer::ZOMBIE, row, 4);
+        let render_offset = match zombie_type {
+            ZombieType::Zamboni => 8,
+            ZombieType::Bobsled => 3,
+            _ => 4,
+        };
+        z.render_order = make_render_order(render_layer::ZOMBIE, row, render_offset);
         z.update_reanim(fx.effects);
         z
+    }
+
+    /// The leader of a bobsled team has its three followers (`ZombieInitialize`
+    /// with a parent zombie): they sit behind it on the sled.
+    pub fn lead_bobsled(&mut self, followers: [Id<Zombie>; NUM_BOBSLED_FOLLOWERS]) {
+        self.bobsled_position = 0;
+        for (slot, id) in self.followers.iter_mut().zip(followers) {
+            *slot = Some(id);
+        }
+    }
+
+    /// A follower takes its place on the sled behind `leader`.
+    pub fn join_bobsled(&mut self, leader: Id<Zombie>, leader_pos_x: f32, position: usize) {
+        self.helm_type = HelmType::None;
+        self.helm_health = 0;
+        self.helm_max_health = 0;
+        self.zombie_rect = IRect::new(36, 0, 42, 115);
+        self.leader = Some(leader);
+        self.bobsled_position = position as i32 + 1;
+        self.pos_x = leader_pos_x + (position as f32 + 1.0) * 50.0;
+        self.x = self.pos_x as i32;
+        let (offset, altitude) = match position {
+            0 => (1, 9.0),
+            1 => (2, -7.0),
+            _ => (0, 9.0),
+        };
+        self.altitude = altitude;
+        self.render_order = make_render_order(render_layer::ZOMBIE, self.row, offset);
+    }
+
+    /// `Zombie::ReanimIgnoreClipRect`.
+    fn reanim_ignore_clip_rect(&self, fx: &mut Fx, track: &str, ignore: bool) {
+        if let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b))
+            && let Some(i) = body.definition.find_track(track)
+        {
+            body.tracks[i].ignore_clip_rect = ignore;
+        }
+    }
+
+    /// `Zombie::SetupWaterTrack`: the foam isn't tinted or clipped.
+    fn setup_water_track(&self, fx: &mut Fx, track: &str) {
+        if let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b))
+            && let Some(i) = body.definition.find_track(track)
+        {
+            body.tracks[i].ignore_color_override = true;
+            body.tracks[i].ignore_clip_rect = true;
+        }
+    }
+
+    /// How fast it moves (`mVelX`).
+    pub fn velocity(&self) -> f32 {
+        self.vel_x
+    }
+
+    /// The body animation's rate (`mAnimRate`).
+    pub fn body_anim_rate(&self, effects: &EffectSystem) -> f32 {
+        self.body.and_then(|b| effects.get(b)).map_or(0.0, |b| b.anim_rate)
+    }
+
+    /// Swimming, or on the way in or out of the water.
+    #[cfg(test)]
+    pub(super) fn in_pool(&self) -> bool {
+        self.in_pool
+    }
+
+    #[cfg(test)]
+    pub(super) fn flat_tires(&self) -> bool {
+        self.flat_tires
+    }
+
+    #[cfg(test)]
+    pub(super) fn altitude(&self) -> f32 {
+        self.altitude
+    }
+
+    /// `Zombie::PoolSplash`: a splash and a sound where the zombie enters or leaves the water.
+    fn pool_splash(&self, into_pool: bool, fx: &mut Fx) {
+        let (x, y) = (self.pos_x + 23.0, self.pos_y + 78.0);
+        if let Ok((_, splash)) = fx.effects.add_reanimation(x, y, ReanimationType::Splash, fx.res, fx.images) {
+            splash.loop_type = LoopType::PlayOnce;
+            splash.render_order = self.render_order + 1;
+            splash.override_scale(0.8, 0.8);
+        }
+        let rng = fx.sounds.rng();
+        fx.effects.add_particle(x + 37.0, y + 42.0, self.render_order + 1, ParticleEffect::PlantingPool, fx.res, fx.images, rng);
+        fx.sounds.play_foley(if into_pool { FoleyType::ZombieSplash } else { FoleyType::PlantWater });
+    }
+
+    /// `Zombie::CheckForPool`: wading into water sinks the zombie, wading out lifts it.
+    fn check_for_pool(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::CheckForPool.
+        // The snorkel and dolphin rider dive in under their own control.
+        if !self.zombie_type.can_go_in_pool() || self.zombie_type.is_pool_only() || self.height != ZombieHeight::Normal {
+            return;
+        }
+        let on_water = env.is_pool_square(self.x + 75, self.row) && env.is_pool_square(self.x + 45, self.row) && self.x < 680;
+        if !self.in_pool && on_water {
+            self.height = ZombieHeight::IntoPool;
+            self.in_pool = true;
+            self.pool_splash(true, fx);
+        } else if self.in_pool && !on_water {
+            self.height = ZombieHeight::OutOfPool;
+            self.start_walk_anim(0, env, fx);
+            self.pool_splash(false, fx);
+        }
+    }
+
+    /// `Zombie::UpdateZombiePool`: the sinking and the climbing out.
+    fn update_zombie_pool(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        match self.height {
+            ZombieHeight::OutOfPool => {
+                self.altitude += if self.zombie_type == ZombieType::Snorkel { 2.0 } else { 1.0 };
+                if self.altitude >= 0.0 {
+                    self.altitude = 0.0;
+                    self.height = ZombieHeight::Normal;
+                    self.in_pool = false;
+                }
+            }
+            ZombieHeight::IntoPool => {
+                self.altitude -= 1.0;
+                if self.altitude <= -40.0 {
+                    self.altitude = -40.0;
+                    self.height = ZombieHeight::Normal;
+                    self.start_walk_anim(0, env, fx);
+                }
+            }
+            ZombieHeight::Normal => {}
+        }
     }
 
     /// `Zombie::GetPosYBasedOnRow`.
@@ -685,9 +975,9 @@ impl Zombie {
         let rng = fx.sounds.rng();
         if matches!(self.zombie_type, ZombieType::Flag | ZombieType::Dancer | ZombieType::BackupDancer) {
             self.vel_x = 0.45;
-        } else if self.phase == ZombiePhase::PolePreVault || self.zombie_type == ZombieType::Football {
+        } else if self.phase == ZombiePhase::PolePreVault || matches!(self.zombie_type, ZombieType::Football | ZombieType::Snorkel) {
             self.vel_x = rng.range_f32(0.66, 0.68);
-        } else if self.phase == ZombiePhase::NewspaperMad {
+        } else if matches!(self.phase, ZombiePhase::NewspaperMad | ZombiePhase::DolphinWalking | ZombiePhase::DolphinWalkingWithoutDolphin) {
             self.vel_x = rng.range_f32(0.89, 0.91);
         } else {
             self.vel_x = rng.range_f32(0.23, 0.37);
@@ -711,9 +1001,14 @@ impl Zombie {
         let Some(body) = self.body.and_then(|b| fx.effects.get(b)) else { return };
         let has_walk2 = body.definition.find_track("anim_walk2").is_some();
         let has_walk = body.definition.find_track("anim_walk").is_some();
+        let has_swim = body.definition.find_track("anim_swim").is_some();
         self.pick_random_speed(fx);
         if self.phase == ZombiePhase::NewspaperMad {
             self.play_zombie_reanim(fx.effects, "anim_walk_nopaper", LoopType::Loop, blend, 0.0);
+            return;
+        }
+        if self.in_pool && self.height == ZombieHeight::Normal && has_swim {
+            self.play_zombie_reanim(fx.effects, "anim_swim", LoopType::Loop, blend, 0.0);
             return;
         }
         // TODO: the dance mode's "anim_dance".
@@ -738,7 +1033,9 @@ impl Zombie {
             self.play_zombie_reanim(fx.effects, "anim_eat_nopaper", LoopType::Loop, 20, 0.0);
             return;
         }
-        self.play_zombie_reanim(fx.effects, "anim_eat", LoopType::Loop, 20, 0.0);
+        if self.zombie_type != ZombieType::Snorkel {
+            self.play_zombie_reanim(fx.effects, "anim_eat", LoopType::Loop, 20, 0.0);
+        }
         if self.shield_type == ShieldType::Door {
             self.show_door_arms(fx, false);
         }
@@ -750,7 +1047,7 @@ impl Zombie {
             return;
         }
         self.is_eating = false;
-        if self.body.is_some() {
+        if self.body.is_some() && self.zombie_type != ZombieType::Snorkel {
             self.start_walk_anim(20, env, fx);
         }
         if self.shield_type == ShieldType::Door {
@@ -794,7 +1091,10 @@ impl Zombie {
 
     /// `Zombie::CanBeChilled`.
     fn can_be_chilled(&self) -> bool {
-        !self.is_dead_or_dying() && !matches!(self.phase, ZombiePhase::RisingFromGrave | ZombiePhase::DancerRising)
+        self.zombie_type != ZombieType::Zamboni
+            && !self.is_bobsled_team_with_sled()
+            && !self.is_dead_or_dying()
+            && !matches!(self.phase, ZombiePhase::RisingFromGrave | ZombiePhase::DancerRising)
     }
 
     /// `Zombie::IsImmobilizied`: frozen solid (or, later, buttered).
@@ -845,6 +1145,14 @@ impl Zombie {
         if self.dead || self.phase == ZombiePhase::Burned {
             return;
         }
+        if self.zombie_type == ZombieType::Zamboni {
+            self.zamboni_explode(fx);
+            return;
+        }
+        if self.is_bobsled_team_with_sled() {
+            self.die_with_loot(fx);
+            return;
+        }
         if self.body_health >= 1800 {
             self.take_damage(1800, 18, env, fx);
             return;
@@ -890,7 +1198,7 @@ impl Zombie {
         } else if self.is_dead_or_dying() {
             self.apply_anim_rate(effects, self.original_anim_rate);
         } else if self.is_eating {
-            self.apply_anim_rate(effects, if self.zombie_type == ZombieType::Polevaulter { 20.0 } else { 36.0 });
+            self.apply_anim_rate(effects, if matches!(self.zombie_type, ZombieType::Polevaulter | ZombieType::Snorkel) { 20.0 } else { 36.0 });
         } else if self.zombie_not_walking() {
             self.apply_anim_rate(effects, self.original_anim_rate);
         } else if let Some(track) = body.definition.find_track("_ground") {
@@ -998,12 +1306,37 @@ impl Zombie {
                 image_offset_y -= 11.0;
             }
             ZombieType::Football => image_offset_y -= 16.0,
+            ZombieType::DolphinRider => match self.phase {
+                ZombiePhase::DolphinRiding => image_offset_x += 70.0,
+                ZombiePhase::DolphinInJump => image_offset_x += 70.0 + self.altitude,
+                ZombiePhase::DolphinWalkingInPool | ZombiePhase::Dying => image_offset_y += 50.0,
+                _ => {}
+            },
             _ => {}
         }
         let body_y = -self.altitude;
+        let t = self.body_anim_time;
+        let out_of_pool = self.height == ZombieHeight::OutOfPool;
+        let snorkel_diving = self.phase == ZombiePhase::SnorkelIntoPool;
         let clip_height = match self.phase {
+            // The snorkel's cut off at the water once it has dived (anim time 0.8 on).
+            _ if snorkel_diving => {
+                if self.body_anim_time >= 0.8 { -10.0 } else { CLIP_HEIGHT_OFF }
+            }
+            // The dolphin rider is cut off at the water for each part of its dive and leap.
+            ZombiePhase::DolphinIntoPool if (0.56..=0.65).contains(&t) => 0.0,
+            ZombiePhase::DolphinIntoPool if t >= 0.75 => -self.altitude - 10.0,
+            ZombiePhase::DolphinRiding => -self.altitude - 10.0,
+            ZombiePhase::DolphinInJump if t <= 0.06 => -self.altitude - 10.0,
+            ZombiePhase::DolphinInJump if (0.5..=0.76).contains(&t) => -13.0,
+            ZombiePhase::Dying if self.zombie_type == ZombieType::DolphinRider => -self.altitude + 44.0,
+            ZombiePhase::DolphinWalking | ZombiePhase::DolphinWalkingWithoutDolphin if out_of_pool => -self.altitude,
+            _ if self.zombie_type == ZombieType::DolphinRider => CLIP_HEIGHT_OFF,
+            _ if self.zombie_type == ZombieType::Snorkel && self.in_pool => -self.altitude - 5.0,
             ZombiePhase::RisingFromGrave => body_y + (self.phase_counter as f32).min(40.0),
             ZombiePhase::DancerRising => body_y,
+            // Swimmers are cut off at the waterline.
+            _ if self.in_pool => -self.altitude - 7.0 + if self.is_eating { 7.0 } else { 0.0 },
             _ => CLIP_HEIGHT_OFF,
         };
         DrawPos { head_x, head_y, body_y, image_offset_x, image_offset_y, clip_height }
@@ -1020,7 +1353,7 @@ impl Zombie {
 
     /// `Zombie::GetZombieAttackRect`.
     pub(super) fn attack_rect(&self) -> IRect {
-        let mut rect = self.attack_rect;
+        let mut rect = if self.phase == ZombiePhase::DolphinInJump { IRect::new(-40, 0, 100, 115) } else { self.attack_rect };
         if self.is_walking_backwards() {
             rect.x = self.width - rect.x - rect.w;
         }
@@ -1036,13 +1369,28 @@ impl Zombie {
         if (damage_range & damage_range::ONLY_MINDCONTROLLED != 0) != self.mind_controlled {
             return false;
         }
-        if self.zombie_rect().x > WIDE_BOARD_WIDTH as i32 {
+        if self.zombie_type == ZombieType::Bobsled && self.bobsled_position > 0 {
             return false;
         }
-        if matches!(self.phase, ZombiePhase::PoleInVault | ZombiePhase::RisingFromGrave | ZombiePhase::DancerRising) {
+        if self.zombie_type != ZombieType::Bobsled && self.zombie_rect().x > WIDE_BOARD_WIDTH as i32 {
+            return false;
+        }
+        if matches!(
+            self.phase,
+            ZombiePhase::PoleInVault
+                | ZombiePhase::RisingFromGrave
+                | ZombiePhase::DancerRising
+                | ZombiePhase::SnorkelIntoPool
+                | ZombiePhase::DolphinIntoPool
+                | ZombiePhase::DolphinInJump
+        ) {
             return damage_range & damage_range::OFF_GROUND != 0;
         }
-        // Nothing's flying, submerged or underground yet.
+        // A snorkel under the water can only be reached by things that go under it.
+        if self.zombie_type == ZombieType::Snorkel && self.in_pool && !self.is_eating {
+            return damage_range & damage_range::SUBMERGED != 0;
+        }
+        // Nothing's flying or underground yet.
         damage_range & damage_range::GROUND != 0
     }
 
@@ -1099,6 +1447,9 @@ impl Zombie {
         }
         self.x = self.pos_x as i32;
         self.y = self.pos_y as i32;
+        if let Some(body) = self.body.and_then(|b| fx.effects.get(b)) {
+            self.body_anim_time = body.anim_time;
+        }
         // AttachmentUpdateAndMove.
         for &(id, dx, dy) in &self.attached {
             if let Some(system) = fx.effects.particle_mut(id) {
@@ -1220,23 +1571,450 @@ impl Zombie {
             return;
         }
 
+        self.water_row = env.pool_rows.get(self.row as usize).copied().unwrap_or(false);
+        if self.height != ZombieHeight::Normal || self.in_pool {
+            self.update_zombie_pool(env, fx);
+        }
         if !self.is_immobilized() {
+            self.check_for_pool(env, fx);
             // UpdateActions.
             match self.zombie_type {
                 ZombieType::Polevaulter => self.update_zombie_polevaulter(plants, env, fx),
+                ZombieType::Snorkel => self.update_zombie_snorkel(env, fx),
+                ZombieType::Zamboni => self.update_zamboni(),
+                ZombieType::Bobsled => self.update_zombie_bobsled(env, fx),
+                ZombieType::DolphinRider => self.update_zombie_dolphin_rider(plants, env, fx),
                 ZombieType::Newspaper => self.update_zombie_newspaper(env, fx),
                 ZombieType::Dancer => self.update_zombie_dancer(env, fx),
                 ZombieType::BackupDancer => self.update_zombie_backup_dancer(env, fx),
                 _ => {}
             }
             self.update_zombie_position(fx, env);
-            self.check_if_prey_caught(plants, env, fx);
+            if self.zombie_type == ZombieType::Zamboni {
+                if !self.flat_tires {
+                    self.check_squish(plants, fx);
+                }
+            } else if !self.is_bobsled_team_with_sled() {
+                self.check_if_prey_caught(plants, env, fx);
+            }
         }
 
         // A zombie that's lost its head dies slowly.
-        if !self.is_dead_or_dying() && !self.has_head && fx.sounds.rng().next_range(5) == 0 {
+        let failing = !self.has_head || (self.zombie_type == ZombieType::Zamboni && self.body_health < 200);
+        if !self.is_dead_or_dying() && failing && fx.sounds.rng().next_range(5) == 0 {
             let damage = if self.body_max_health >= 500 { 3 } else { 1 };
             self.take_damage(damage, damage::HEADLESS, env, fx);
+        }
+    }
+
+    /// Whether the zombie is on a bobsled team that still has its sled (`IsBobsledTeamWithSled`).
+    pub fn is_bobsled_team_with_sled(&self) -> bool {
+        self.bobsled_position >= 0
+    }
+
+    /// `Zombie::BobsledCrash`, for the leader.
+    fn bobsled_crash(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        self.altitude = 0.0;
+        self.zombie_rect = IRect::new(36, 0, 42, 115);
+        self.phase = ZombiePhase::BobsledCrashing;
+        self.phase_counter = BOBSLED_CRASH_TIME;
+        self.start_walk_anim(0, env, fx);
+        self.bobsled_crashed = true;
+    }
+
+    /// `Zombie::BobsledCrash`, for the zombies behind the leader.
+    pub fn bobsled_crash_follower(&mut self, leader_vel_x: f32, leader_anim_rate: f32, env: &ZombieEnv, fx: &mut Fx) {
+        self.phase = ZombiePhase::BobsledCrashing;
+        self.phase_counter = BOBSLED_CRASH_TIME;
+        self.pos_y = self.pos_y_based_on_row(self.row, env);
+        self.altitude = 0.0;
+        self.start_walk_anim(0, env, fx);
+        self.vel_x = leader_vel_x;
+        let time = fx.sounds.rng().range_f32(0.0, 1.0);
+        if let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b)) {
+            body.anim_time = time;
+            body.anim_rate = leader_anim_rate;
+        }
+    }
+
+    /// `Zombie::UpdateZombieBobsled`: the team slides in, hops aboard, and
+    /// rides the ice until the sled breaks or runs off the end of it.
+    fn update_zombie_bobsled(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::UpdateZombieBobsled.
+        if self.bobsled_crash_pending {
+            self.bobsled_crash_pending = false;
+            self.bobsled_crash(env, fx);
+        }
+        match self.phase {
+            ZombiePhase::BobsledCrashing => {
+                if self.phase_counter == 0 {
+                    self.phase = ZombiePhase::Normal;
+                    self.bobsled_position = -1;
+                    self.leader = None;
+                    self.followers = [None; NUM_BACKUP_DANCERS];
+                    self.pick_random_speed(fx);
+                }
+                return;
+            }
+            ZombiePhase::BobsledSliding => {
+                if self.phase_counter == 0 {
+                    self.phase = ZombiePhase::BobsledBoarding;
+                    self.play_zombie_reanim(fx.effects, "anim_jump", LoopType::PlayOnceAndHold, 0, 20.0);
+                }
+            }
+            ZombiePhase::BobsledBoarding => {
+                let time = self.body.and_then(|b| fx.effects.get(b)).map_or(1.0, |b| b.anim_time);
+                let counter = (time * 50.0) as i32;
+                let from = if matches!(self.bobsled_position, 1 | 3) { 8.0 } else { -9.0 };
+                self.altitude = animate_curve_float(0, 50, counter, from, 18.0, TodCurve::Linear);
+            }
+            _ => return,
+        }
+        self.ice_keep = true;
+        // Off the end of the ice, the sled falls apart.
+        if self.bobsled_position == 0 && self.pos_x + 10.0 < env.ice_min_x[self.row as usize] as f32 {
+            self.take_damage(6, damage::DOESNT_CAUSE_FLASH, env, fx);
+        }
+    }
+
+    /// `Zombie::DrawBobsledReanim`: the sled itself, in two halves around the zombie.
+    fn draw_bobsled(&self, g: &mut Graphics, res: &GameResources, before_zombie: bool) {
+        let position = self.bobsled_position;
+        let (mut front, mut back) = (false, false);
+        let cutscene = self.from_wave == ZOMBIE_WAVE_CUTSCENE;
+        if !cutscene && position == -1 {
+            return;
+        }
+        if cutscene {
+            back = before_zombie;
+            front = !before_zombie;
+        } else {
+            let t = self.body_anim_time;
+            match self.phase {
+                ZombiePhase::BobsledCrashing => {
+                    if position == 0 && !before_zombie {
+                        front = true;
+                        back = true;
+                    }
+                }
+                ZombiePhase::BobsledSliding | ZombiePhase::Burned => {
+                    if position == 2 && before_zombie {
+                        front = true;
+                        back = true;
+                    }
+                }
+                ZombiePhase::BobsledBoarding => {
+                    if t < 0.5 {
+                        if position == 2 && before_zombie {
+                            front = true;
+                            back = true;
+                        }
+                    } else if position == 0 && !before_zombie {
+                        front = true;
+                    } else if position == 3 && before_zombie {
+                        back = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let (leader_x, damage_index) = if position <= 0 { (self.pos_x, self.helm_damage_index()) } else { (self.sled.pos_x, self.sled.damage_index) };
+        let draw_pos = self.draw_pos();
+        let mut x = leader_x + draw_pos.image_offset_x - self.pos_x - 76.0;
+        let mut y = 15.0;
+        let mut status = damage_index;
+        let mut alpha = 255u8;
+        if self.phase == ZombiePhase::BobsledCrashing {
+            status = 3;
+            let counter = self.phase_counter;
+            alpha = animate_curve(30, 0, counter, 255, 0, TodCurve::Linear).clamp(0, 255) as u8;
+            x += (BOBSLED_CRASH_TIME - counter) as f32 * self.vel_x / 0.4;
+            x -= animate_curve_float(BOBSLED_CRASH_TIME, 0, counter, 0.0, 50.0, TodCurve::EaseOut);
+            y += animate_curve_float(BOBSLED_CRASH_TIME, 75, counter, 5.0, 10.0, TodCurve::Linear);
+        }
+        let image = res.image(match status {
+            0 => "IMAGE_ZOMBIE_BOBSLED1",
+            1 => "IMAGE_ZOMBIE_BOBSLED2",
+            2 => "IMAGE_ZOMBIE_BOBSLED3",
+            _ => "IMAGE_ZOMBIE_BOBSLED4",
+        });
+        g.push_state();
+        if alpha != 255 {
+            g.set_colorize_images(true);
+            g.set_color(SexyColor::rgba(255, 255, 255, alpha));
+        }
+        if self.phase == ZombiePhase::Burned {
+            g.set_colorize_images(true);
+            g.set_color(SexyColor::BLACK);
+        }
+        if back
+            && status != 3
+            && let Some(inside) = res.image("IMAGE_ZOMBIE_BOBSLED_INSIDE")
+        {
+            g.draw_image(inside, x, y);
+        }
+        if front && let Some(image) = image {
+            g.draw_image(image, x, y);
+        }
+        g.pop_state();
+    }
+
+    /// What the board shows a follower of its leader's sled.
+    pub fn sled_info(&self) -> SledInfo {
+        SledInfo { pos_x: self.pos_x, damage_index: self.helm_damage_index() }
+    }
+
+    /// `Zombie::UpdateZamboni`: it speeds up on its way in, and its ice trail
+    /// grows with it.
+    fn update_zamboni(&mut self) {
+        // Behaviour per ruslan831 decomp, Zombie::UpdateZamboni.
+        if self.pos_x > 400.0 && !self.flat_tires {
+            self.vel_x = animate_curve_float(700, 300, self.pos_x as i32, 0.25, 0.05, TodCurve::Linear);
+        } else if self.flat_tires && self.vel_x > 0.0005 {
+            self.vel_x -= 0.0005;
+        }
+        let ice_x = (self.pos_x as i32 + 118).max(25);
+        if ice_x < 800 {
+            self.ice_trail = Some(ice_x);
+        }
+    }
+
+    /// `Zombie::CheckSquish` for driving over: the first plant in reach is
+    /// flattened, with everything else in its square.
+    fn check_squish(&mut self, plants: &mut DataArray<Plant>, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::CheckSquish.
+        use crate::plant::SeedType;
+        let attack = self.attack_rect();
+        let squishable = |p: &Plant| {
+            !p.dead
+                && !p.not_on_ground()
+                && !matches!(p.seed, SeedType::Spikeweed | SeedType::Spikerock)
+                && match p.seed {
+                    SeedType::Cherrybomb | SeedType::Jalapeno | SeedType::Blover | SeedType::Squash => false,
+                    SeedType::Doomshroom | SeedType::Iceshroom => p.is_asleep(),
+                    _ => true,
+                }
+        };
+        let target = plants
+            .iter()
+            .find(|(_, p)| p.row == self.row && rect_overlap(attack, p.rect()) >= 20 && squishable(p))
+            .map(|(_, p)| (p.col, p.row));
+        if let Some((col, row)) = target {
+            for (_, plant) in plants.iter_mut() {
+                if plant.col == col && plant.row == row && !plant.dead {
+                    plant.die(fx.effects);
+                    fx.sounds.play_sample("SOUND_CHOMP");
+                }
+            }
+        }
+    }
+
+    /// `Zombie::ZamboniDeath`: spikes pop its tires and leave it to coast
+    /// and die; anything else blows it up.
+    fn zamboni_death(&mut self, flags: u32, fx: &mut Fx) {
+        if flags & damage::SPIKE != 0 {
+            self.flat_tires = true;
+            fx.sounds.play_sample("SOUND_BALLOON_POP");
+            self.phase = ZombiePhase::Dying;
+            let rng = fx.sounds.rng();
+            let (x, y, order) = (self.pos_x + 29.0, self.pos_y + 114.0, self.render_order + 1);
+            fx.effects.add_particle(x, y, order, ParticleEffect::ZamboniTire, fx.res, fx.images, rng);
+            self.vel_x = 0.0;
+            self.drop_loot();
+            if fx.sounds.rng().next_range(4) == 0 && self.pos_x < 600.0 {
+                self.play_zombie_reanim(fx.effects, "anim_wheelie2", LoopType::PlayOnceAndHold, 10, 10.0);
+                self.phase_counter = 280;
+            } else {
+                self.add_attached_particle(35.0, 85.0, ParticleEffect::ZamboniSmoke, fx);
+                self.phase_counter = 280;
+                self.play_zombie_reanim(fx.effects, "anim_wheelie1", LoopType::PlayOnceAndHold, 10, 12.0);
+            }
+        } else {
+            self.zamboni_explode(fx);
+        }
+    }
+
+    fn zamboni_explode(&mut self, fx: &mut Fx) {
+        let rng = fx.sounds.rng();
+        let (x, y, order) = (self.pos_x + 80.0, self.pos_y + 60.0, self.render_order + 1);
+        fx.effects.add_particle(x, y, order, ParticleEffect::ZamboniExplosion, fx.res, fx.images, rng);
+        fx.sounds.play_sample("SOUND_EXPLOSION");
+        self.die_with_loot(fx);
+    }
+
+    /// `Zombie::UpdateZombieDolphinRider`: rides through the water and leaps
+    /// the first plant in its way, then wades on foot.
+    fn update_zombie_dolphin_rider(&mut self, plants: &DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::UpdateZombieDolphinRider.
+        use crate::plant::SeedType;
+        let backwards = self.is_walking_backwards();
+        let anim = self.body.and_then(|b| fx.effects.get(b)).map(|b| (b.anim_time, b.loop_count > 0, b));
+        let triggered = |t: f32| anim.as_ref().is_some_and(|(_, _, b)| b.should_trigger_timed_event(t));
+        let (time, done) = anim.as_ref().map_or((1.0, true), |(t, d, _)| (*t, *d));
+        let splash = |this: &Self, dx: f32, fx: &mut Fx| {
+            if let Ok((_, splash)) = fx.effects.add_reanimation(this.pos_x + dx, this.pos_y + 73.0, ReanimationType::Splash, fx.res, fx.images) {
+                splash.loop_type = LoopType::PlayOnce;
+                splash.render_order = this.render_order + 1;
+                splash.override_scale(1.2, 0.8);
+            }
+            let rng = fx.sounds.rng();
+            let effect = ParticleEffect::PlantingPool;
+            fx.effects.add_particle(this.pos_x + dx + 37.0, this.pos_y + 115.0, this.render_order + 1, effect, fx.res, fx.images, rng);
+            fx.sounds.play_foley(FoleyType::ZombieEnteringWater);
+        };
+        let (into_splash, jump_splash) = (triggered(0.56), triggered(0.49));
+        let block_check = triggered(0.3);
+        match self.phase {
+            ZombiePhase::DolphinWalking if !backwards => {
+                if self.x > 700 && self.x <= 720 {
+                    self.phase = ZombiePhase::DolphinIntoPool;
+                    self.play_zombie_reanim(fx.effects, "anim_jumpinpool", LoopType::PlayOnceAndHold, 20, 16.0);
+                }
+            }
+            ZombiePhase::DolphinIntoPool => {
+                if into_splash {
+                    splash(self, -83.0, fx);
+                }
+                if done {
+                    self.pos_x -= 70.0;
+                    self.phase = ZombiePhase::DolphinRiding;
+                    self.in_pool = true;
+                    self.attack_rect = IRect::new(-29, 0, 70, 115);
+                    self.play_zombie_reanim(fx.effects, "anim_ride", LoopType::LoopFullLastFrame, 0, 12.0);
+                }
+            }
+            ZombiePhase::DolphinRiding => {
+                if self.x <= 10 {
+                    self.altitude = -40.0;
+                    self.height = ZombieHeight::OutOfPool;
+                    self.phase = ZombiePhase::DolphinWalking;
+                    self.pool_splash(false, fx);
+                    self.play_zombie_reanim(fx.effects, "anim_walkdolphin", LoopType::Loop, 0, 0.0);
+                    self.pick_random_speed(fx);
+                    return;
+                }
+                if self.has_head && self.find_plant_target(plants).is_some() {
+                    fx.sounds.play_foley(FoleyType::DolphinBeforeJumping);
+                    fx.sounds.play_foley(FoleyType::PlantWater);
+                    self.vel_x = 0.5;
+                    self.phase = ZombiePhase::DolphinInJump;
+                    self.phase_counter = DOLPHIN_JUMP_TIME;
+                    self.play_zombie_reanim(fx.effects, "anim_dolphinjump", LoopType::PlayOnceAndHold, 0, 10.0);
+                }
+            }
+            ZombiePhase::DolphinInJump => {
+                self.altitude = animate_curve_float(DOLPHIN_JUMP_TIME, 0, self.phase_counter, 0.0, 10.0, TodCurve::Linear);
+                let mut ended = false;
+                if block_check {
+                    // A tall-nut is too high to leap: the jump ends against it.
+                    if let Some(plant) = self.find_plant_target(plants).and_then(|id| plants.get(id)).filter(|p| p.seed == SeedType::Tallnut) {
+                        fx.sounds.play_foley(FoleyType::Bonk);
+                        let order = self.render_order + 1;
+                        let rng = fx.sounds.rng();
+                        fx.effects.add_particle((plant.x + 60) as f32, (plant.y - 20) as f32, order, ParticleEffect::TallNutBlock, fx.res, fx.images, rng);
+                        ended = true;
+                        self.pos_x = plant.x as f32 + 25.0;
+                        self.altitude = 0.0;
+                    }
+                } else if jump_splash {
+                    splash(self, -63.0, fx);
+                    self.vel_x = 0.0;
+                } else if done {
+                    ended = true;
+                    self.pos_x -= 94.0;
+                    self.altitude = 0.0;
+                }
+                if ended {
+                    self.attack_rect = IRect::new(30, 0, 30, 115);
+                    self.zombie_rect = IRect::new(20, 0, 42, 115);
+                    self.phase = ZombiePhase::DolphinWalkingInPool;
+                    self.start_walk_anim(0, env, fx);
+                }
+            }
+            ZombiePhase::DolphinWalkingInPool if (self.x <= 10 && !backwards) || (self.x > 680 && backwards) => {
+                self.altitude = -40.0;
+                self.height = ZombieHeight::OutOfPool;
+                self.phase = ZombiePhase::DolphinWalkingWithoutDolphin;
+                self.pool_splash(false, fx);
+                self.play_zombie_reanim(fx.effects, "anim_walk", LoopType::Loop, 0, 0.0);
+                self.pick_random_speed(fx);
+            }
+            _ => {}
+        }
+        let _ = time;
+    }
+
+    /// `Zombie::UpdateZombieSnorkel`: walks to the water, dives in, swims
+    /// submerged, and surfaces to eat whatever blocks the way.
+    fn update_zombie_snorkel(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::UpdateZombieSnorkel.
+        let backwards = self.is_walking_backwards();
+        match self.phase {
+            ZombiePhase::SnorkelWalking if !backwards => {
+                if self.x > 700 && self.x <= 720 {
+                    self.vel_x = 0.2;
+                    self.phase = ZombiePhase::SnorkelIntoPool;
+                    self.play_zombie_reanim(fx.effects, "anim_jumpinpool", LoopType::PlayOnceAndHold, 20, 16.0);
+                }
+            }
+            ZombiePhase::SnorkelIntoPool => {
+                let (time, done) = self.body.and_then(|b| fx.effects.get(b)).map_or((1.0, true), |b| (b.anim_time, b.loop_count > 0));
+                self.altitude = time * 10.0;
+                if self.body.and_then(|b| fx.effects.get(b)).is_some_and(|b| b.should_trigger_timed_event(0.83)) {
+                    let (x, y) = (self.pos_x - 47.0, self.pos_y + 73.0);
+                    if let Ok((_, splash)) = fx.effects.add_reanimation(x, y, ReanimationType::Splash, fx.res, fx.images) {
+                        splash.loop_type = LoopType::PlayOnce;
+                        splash.render_order = self.render_order + 1;
+                        splash.override_scale(1.2, 0.8);
+                    }
+                    let rng = fx.sounds.rng();
+                    let effect = ParticleEffect::PlantingPool;
+                    fx.effects.add_particle(self.pos_x - 10.0, self.pos_y + 115.0, self.render_order + 1, effect, fx.res, fx.images, rng);
+                    fx.sounds.play_foley(FoleyType::ZombieEnteringWater);
+                }
+                if done {
+                    self.phase = ZombiePhase::SnorkelWalkingInPool;
+                    self.in_pool = true;
+                    self.play_zombie_reanim(fx.effects, "anim_swim", LoopType::LoopFullLastFrame, 0, 12.0);
+                }
+            }
+            ZombiePhase::SnorkelWalkingInPool => {
+                if !self.has_head {
+                    self.take_damage(1800, damage::HEADLESS, env, fx);
+                } else if (self.x <= 25 && !backwards) || (self.x > 640 && backwards) {
+                    self.altitude = -90.0;
+                    self.pos_x += if backwards { 15.0 } else { -15.0 };
+                    self.phase = ZombiePhase::SnorkelWalking;
+                    self.height = ZombieHeight::OutOfPool;
+                    self.pool_splash(false, fx);
+                    self.start_walk_anim(0, env, fx);
+                } else if self.is_eating {
+                    self.phase = ZombiePhase::SnorkelUpToEat;
+                    self.play_zombie_reanim(fx.effects, "anim_uptoeat", LoopType::PlayOnceAndHold, 0, 24.0);
+                }
+            }
+            ZombiePhase::SnorkelUpToEat => {
+                let done = self.body.and_then(|b| fx.effects.get(b)).is_some_and(|b| b.loop_count > 0);
+                if !self.is_eating {
+                    self.phase = ZombiePhase::SnorkelDownFromEat;
+                    self.play_zombie_reanim(fx.effects, "anim_uptoeat", LoopType::PlayOnceAndHold, 0, -24.0);
+                } else if done {
+                    self.phase = ZombiePhase::SnorkelEatingInPool;
+                    self.play_zombie_reanim(fx.effects, "anim_eat", LoopType::Loop, 0, 0.0);
+                }
+            }
+            ZombiePhase::SnorkelEatingInPool => {
+                if !self.is_eating {
+                    self.phase = ZombiePhase::SnorkelDownFromEat;
+                    self.play_zombie_reanim(fx.effects, "anim_uptoeat", LoopType::PlayOnceAndHold, 0, -24.0);
+                }
+            }
+            ZombiePhase::SnorkelDownFromEat if self.body.and_then(|b| fx.effects.get(b)).is_some_and(|b| b.loop_count > 0) => {
+                self.phase = ZombiePhase::SnorkelWalkingInPool;
+                self.play_zombie_reanim(fx.effects, "anim_swim", LoopType::LoopFullLastFrame, 0, 0.0);
+                self.pick_random_speed(fx);
+            }
+            _ => {}
         }
     }
 
@@ -1532,7 +2310,11 @@ impl Zombie {
         }
         let body = self.body.and_then(|b| fx.effects.get(b));
         let speed = match body {
-            _ if self.phase == ZombiePhase::PoleInVault => self.vel_x,
+            _ if self.zombie_type == ZombieType::Zamboni || self.is_bobsled_team_with_sled() => self.vel_x,
+            _ if matches!(self.phase, ZombiePhase::PoleInVault | ZombiePhase::SnorkelIntoPool | ZombiePhase::DolphinInJump) => self.vel_x,
+            _ if matches!(self.phase, ZombiePhase::SnorkelWalkingInPool | ZombiePhase::DolphinRiding) => {
+                if self.is_moving_at_chilled_speed() { self.vel_x * 0.4 } else { self.vel_x }
+            }
             Some(body) if body.definition.find_track("_ground").is_some() => body.track_velocity("_ground"),
             _ if self.is_moving_at_chilled_speed() => self.vel_x * 0.4,
             _ => self.vel_x,
@@ -1575,8 +2357,16 @@ impl Zombie {
                 | DancerSnappingFingers
                 | DancerSnappingFingersWithLight
                 | DancerSnappingFingersHold
+                | SnorkelWalking
+                | SnorkelIntoPool
+                | DolphinWalking
+                | DolphinWalkingWithoutDolphin
+                | DolphinIntoPool
+                | DolphinRiding
+                | DolphinInJump
         );
-        if !self.has_head || self.age % ticks_between_eats != 0 || self.is_vaulting() || busy {
+        let wading = self.height != ZombieHeight::Normal;
+        if !self.has_head || self.age % ticks_between_eats != 0 || self.is_vaulting() || busy || wading {
             return;
         }
         // Zombies on opposite sides eat each other first (EatZombie).
@@ -1597,11 +2387,25 @@ impl Zombie {
 
     /// `Zombie::FindPlantTarget`, for chewing.
     fn find_plant_target(&self, plants: &DataArray<Plant>) -> Option<sexy::data_array::Id<Plant>> {
+        // Behaviour per ruslan831 decomp, Zombie::CanTargetPlant: a zombie that
+        // isn't swimming can't bite plants on the water.
+        if self.water_row && !self.in_pool {
+            return None;
+        }
         let attack = self.attack_rect();
+        let is_under = |p: &Plant| matches!(p.seed, crate::plant::SeedType::Lilypad | crate::plant::SeedType::Flowerpot);
         plants
             .iter()
             .find(|(_, plant)| {
-                plant.row == self.row && !plant.dead && rect_overlap(attack, plant.rect()) >= 20 && can_target(plant)
+                plant.row == self.row
+                    && !plant.dead
+                    && rect_overlap(attack, plant.rect()) >= 20
+                    && can_target(plant)
+                    // A lily pad or pot is eaten last: the plant on it goes first (GetTopPlantAt).
+                    && !(is_under(plant)
+                        && plants.iter().any(|(_, other)| {
+                            other.col == plant.col && other.row == plant.row && !other.dead && !is_under(other) && can_target(other)
+                        }))
             })
             .map(|(id, _)| id)
     }
@@ -1784,7 +2588,7 @@ impl Zombie {
                 fx.sounds.play_foley(FoleyType::PlasticHit);
                 self.take_helm_damage(900, 0, fx);
             }
-            HelmType::None => self.take_damage(1800, 0, env, fx),
+            HelmType::None | HelmType::Bobsled => self.take_damage(1800, 0, env, fx),
         }
     }
 
@@ -1920,7 +2724,7 @@ impl Zombie {
                     "zombie_football_helmet",
                     ["IMAGE_REANIM_ZOMBIE_FOOTBALL_HELMET2", "IMAGE_REANIM_ZOMBIE_FOOTBALL_HELMET3"],
                 ),
-                HelmType::None => return remaining,
+                HelmType::None | HelmType::Bobsled => return remaining,
             };
             if index_after >= 1 {
                 body.set_image_override(track, Some(images[index_after as usize - 1]));
@@ -1935,6 +2739,14 @@ impl Zombie {
             HelmType::TrafficCone => ("anim_cone", ParticleEffect::ZombieTrafficCone),
             HelmType::Pail => ("anim_bucket", ParticleEffect::ZombiePail),
             HelmType::Football => ("zombie_football_helmet", ParticleEffect::ZombieHelmet),
+            HelmType::Bobsled => {
+                // The broken sled tips its team off (BobsledCrash, on the next update).
+                if flags & damage::DOESNT_LEAVE_BODY == 0 {
+                    self.bobsled_crash_pending = true;
+                }
+                self.helm_type = HelmType::None;
+                return;
+            }
             HelmType::None => return,
         };
         let (x, y) = self.track_position(fx.effects, track);
@@ -1955,12 +2767,44 @@ impl Zombie {
         if flags & damage::FREEZE != 0 {
             self.apply_chill(false, fx);
         }
+        let index_before = self.body_damage_index();
         self.body_health -= damage;
+        if self.zombie_type == ZombieType::Zamboni {
+            self.zamboni_damage(index_before, flags, fx);
+            return;
+        }
         self.update_damage_states(flags, env, fx);
         if self.body_health <= 0 {
             self.body_health = 0;
             self.play_death_anim(flags, env, fx);
             self.drop_loot();
+        }
+    }
+
+    /// The Zamboni's part of `Zombie::TakeBodyDamage`: it dents and smokes as
+    /// it's hurt, and meets its end with `zamboni_death`.
+    fn zamboni_damage(&mut self, index_before: i32, flags: u32, fx: &mut Fx) {
+        let index = self.body_damage_index();
+        let set = |this: &Self, fx: &mut Fx, level: u32| {
+            if let Some(body) = this.body.and_then(|b| fx.effects.get_mut(b)) {
+                body.set_image_override("Zombie_zamboni_1", Some(&format!("IMAGE_REANIM_ZOMBIE_ZAMBONI_1_DAMAGE{level}")));
+                body.set_image_override("Zombie_zamboni_2", Some(&format!("IMAGE_REANIM_ZOMBIE_ZAMBONI_2_DAMAGE{level}")));
+            }
+        };
+        if flags & damage::DOESNT_CAUSE_FLASH == 0 {
+            fx.sounds.play_foley(FoleyType::ShieldHit);
+        }
+        if flags & damage::SPIKE != 0 {
+            set(self, fx, 2);
+            self.zamboni_death(flags, fx);
+        } else if self.body_health <= 0 {
+            self.body_health = 0;
+            self.zamboni_death(flags, fx);
+        } else if index != index_before {
+            set(self, fx, index as u32);
+            if index == 2 {
+                self.add_attached_particle(27.0, 72.0, ParticleEffect::ZamboniSmoke, fx);
+            }
         }
     }
 
@@ -2145,7 +2989,10 @@ impl Zombie {
             self.die_no_loot(fx.effects);
             return;
         }
-        if flags & damage::DOESNT_LEAVE_BODY != 0 {
+        if flags & damage::DOESNT_LEAVE_BODY != 0
+            || (self.zombie_type == ZombieType::DolphinRider && self.phase != ZombiePhase::DolphinWalkingInPool)
+            || matches!(self.phase, ZombiePhase::SnorkelIntoPool | ZombiePhase::SnorkelWalking)
+        {
             self.die_no_loot(fx.effects);
             return;
         }
@@ -2237,7 +3084,7 @@ impl Zombie {
         let edge = match self.zombie_type {
             ZombieType::Polevaulter => -150,
             ZombieType::Football => -175,
-            ZombieType::Dancer | ZombieType::BackupDancer => -130,
+            ZombieType::Dancer | ZombieType::BackupDancer | ZombieType::Snorkel => -130,
             _ => BOARD_EDGE,
         };
         self.has_head && self.x <= edge && !self.is_dead_or_dying() && !self.mind_controlled
@@ -2264,7 +3111,7 @@ impl Zombie {
     /// Running up to a plant, or in mid-jump: plants that bite or explode
     /// under a zombie can't get it now.
     pub fn is_vaulting(&self) -> bool {
-        matches!(self.phase, ZombiePhase::PolePreVault | ZombiePhase::PoleInVault)
+        matches!(self.phase, ZombiePhase::PolePreVault | ZombiePhase::PoleInVault | ZombiePhase::DolphinIntoPool | ZombiePhase::DolphinInJump)
     }
 
     /// `Zombie::Draw`: the body (with its flag), in the zombie's own
@@ -2295,8 +3142,14 @@ impl Zombie {
         {
             draw_spotlight(g, light, -30.0, 60.0, color);
         }
+        if self.zombie_type == ZombieType::Bobsled {
+            self.draw_bobsled(g, res, true);
+        }
         if let Some(body) = self.body {
             effects.draw(g, body, res);
+        }
+        if self.zombie_type == ZombieType::Bobsled {
+            self.draw_bobsled(g, res, false);
         }
         if let Some(color) = spotlight
             && let Some(light) = res.image("IMAGE_SPOTLIGHT")

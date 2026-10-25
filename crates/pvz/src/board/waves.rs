@@ -193,7 +193,7 @@ impl Board {
         }
         (0..NUM_ZOMBIE_TYPES)
             .map(ZombieType::from_index)
-            .find(|ty| *ty != ZombieType::Yeti && ty.definition().starting_level == self.level)
+            .find(|ty| *ty != ZombieType::Yeti && *ty != ZombieType::DuckyTube && ty.definition().starting_level == self.level)
             .filter(|ty| ty.is_implemented())
     }
 
@@ -287,10 +287,33 @@ impl Board {
         (0..MAX_GRID_SIZE_Y as i32).contains(&row) && self.plant_row[row as usize] != PlantRowType::Dirt
     }
 
+    /// `Board::RowCanHaveZombieType`: water rows take only swimmers (and
+    /// only the pool-only kinds in the first five waves), grass rows never
+    /// take those.
+    pub fn row_can_have_zombie_type(&self, row: i32, ty: ZombieType) -> bool {
+        // Behaviour per ruslan831 decomp, Board::RowCanHaveZombieType.
+        if !self.row_can_have_zombies(row) {
+            return false;
+        }
+        if self.plant_row[row as usize] == PlantRowType::Pool {
+            if !ty.can_go_in_pool() || (self.waves.current_wave < 5 && !ty.is_pool_only()) {
+                return false;
+            }
+        } else if ty.is_pool_only() {
+            return false;
+        }
+        // The bobsled team only rides on ice.
+        if ty == ZombieType::Bobsled && self.ice_timer[row as usize] == 0 {
+            return false;
+        }
+        // Dancers need rows either side for their backup, unless the lawn has a pool.
+        ty != ZombieType::Dancer || self.stage_has_pool() || (self.row_can_have_zombies(row - 1) && self.row_can_have_zombies(row + 1))
+    }
+
     /// `Board::PickRowForNewZombie`.
-    fn pick_row_for_new_zombie(&mut self, rng: &mut MtRand) -> i32 {
+    fn pick_row_for_new_zombie(&mut self, ty: ZombieType, rng: &mut MtRand) -> i32 {
         for row in 0..MAX_GRID_SIZE_Y {
-            self.waves.row_picking[row].weight = if !self.row_can_have_zombies(row as i32) {
+            self.waves.row_picking[row].weight = if !self.row_can_have_zombie_type(row as i32, ty) {
                 0.0
             } else {
                 let mowered = self.waves.current_wave - self.waves.wave_row_got_lawn_mowered[row];
@@ -306,7 +329,7 @@ impl Board {
 
     /// `Board::AddZombie`.
     pub(super) fn add_zombie(&mut self, ty: ZombieType, from_wave: i32, fx: &mut Fx) -> Id<Zombie> {
-        let row = self.pick_row_for_new_zombie(fx.sounds.rng());
+        let row = self.pick_row_for_new_zombie(ty, fx.sounds.rng());
         self.add_zombie_in_row(ty, row, from_wave, fx)
     }
 
@@ -316,7 +339,80 @@ impl Board {
         let env = self.zombie_env();
         let is_flag_wave = self.is_flag_wave(from_wave);
         let zombie = Zombie::new(row, ty, variant, from_wave, is_flag_wave, &env, fx);
-        self.zombies.alloc(zombie)
+        let on_board = zombie.is_on_board();
+        let leader = self.zombies.alloc(zombie);
+        // A bobsled team is a leader and three zombies behind it on the sled.
+        if ty == ZombieType::Bobsled && on_board {
+            let leader_x = self.zombies.get(leader).map_or(0.0, |z| z.pos_x);
+            let ids: [Id<Zombie>; super::zombie::NUM_BOBSLED_FOLLOWERS] = std::array::from_fn(|position| {
+                let mut follower = Zombie::new(row, ty, false, from_wave, is_flag_wave, &env, fx);
+                follower.join_bobsled(leader, leader_x, position);
+                self.zombies.alloc(follower)
+            });
+            if let Some(leader) = self.zombies.get_mut(leader) {
+                leader.lead_bobsled(ids);
+            }
+        }
+        leader
+    }
+
+    /// `Board::CanAddBobSled`: some row has ice for it to ride.
+    fn can_add_bobsled(&self) -> bool {
+        (0..MAX_GRID_SIZE_Y).any(|row| self.ice_timer[row] > 0 && self.ice_min_x[row] < 700)
+    }
+
+    /// Keeps the bobsled teams together: followers see their leader's sled, a
+    /// crash tumbles the whole team off, and losing one rider loses the lot.
+    pub(super) fn update_bobsleds(&mut self, fx: &mut Fx) {
+        let env = self.zombie_env();
+        // The leaders' sleds, and who crashed.
+        let leaders: Vec<_> = self.zombies.iter().filter(|(_, z)| z.bobsled_position == 0).map(|(id, z)| (id, z.sled_info())).collect();
+        for (leader_id, info) in leaders {
+            let (crashed, vel_x, rate) = match self.zombies.get_mut(leader_id) {
+                Some(leader) => {
+                    let crashed = std::mem::take(&mut leader.bobsled_crashed);
+                    let rate = leader.body_anim_rate(fx.effects);
+                    (crashed, leader.velocity(), rate)
+                }
+                None => continue,
+            };
+            let followers: Vec<_> = self.zombies.iter().filter(|(_, z)| z.leader == Some(leader_id) && z.bobsled_position > 0).map(|(id, _)| id).collect();
+            for id in followers {
+                if let Some(follower) = self.zombies.get_mut(id) {
+                    follower.sled = info;
+                    if crashed {
+                        follower.bobsled_crash_follower(vel_x, rate, &env, fx);
+                    }
+                }
+            }
+        }
+        // A follower whose leader is gone has lost its sled (BobsledDie).
+        let orphans: Vec<_> = self
+            .zombies
+            .iter()
+            .filter(|(_, z)| z.bobsled_position > 0 && !z.dead && z.leader.is_none_or(|l| self.zombies.get(l).is_none_or(|leader| leader.dead)))
+            .map(|(id, _)| id)
+            .collect();
+        for id in orphans {
+            if let Some(zombie) = self.zombies.get_mut(id) {
+                zombie.die_no_loot(fx.effects);
+            }
+        }
+        // One rider gone takes the whole team (BobsledDie).
+        let gone: Vec<_> = self
+            .zombies
+            .iter()
+            .filter(|(_, z)| z.dead && z.bobsled_position >= 0)
+            .map(|(id, z)| if z.bobsled_position == 0 { id } else { z.leader.unwrap_or(id) })
+            .collect();
+        for leader_id in gone {
+            for (id, zombie) in self.zombies.iter_mut() {
+                let on_team = id == leader_id || zombie.leader == Some(leader_id);
+                if on_team && !zombie.dead && zombie.bobsled_position >= 0 {
+                    zombie.die_no_loot(fx.effects);
+                }
+            }
+        }
     }
 
     /// `CutScene::PlaceStreetZombies`: a few zombies shuffling about on the
@@ -326,7 +422,13 @@ impl Board {
         let count = (2 + self.level / 3).min(8);
         for _ in 0..count {
             let ty = self.pick_zombie_type(10, self.waves.num_waves - 1, fx.sounds.rng());
-            let row = fx.sounds.rng().next_range(MAX_GRID_SIZE_Y as u32) as i32;
+            let mut row = fx.sounds.rng().next_range(MAX_GRID_SIZE_Y as u32) as i32;
+            for _ in 0..MAX_GRID_SIZE_Y {
+                if self.row_can_have_zombie_type(row, ty) {
+                    break;
+                }
+                row = (row + 1) % MAX_GRID_SIZE_Y as i32;
+            }
             self.add_zombie_in_row(ty, row, super::zombie::ZOMBIE_WAVE_CUTSCENE, fx);
             let rng = fx.sounds.rng();
             let (x, jitter) = (rng.range_f32(900.0, 1050.0), rng.range_f32(-15.0, 15.0));
@@ -497,6 +599,8 @@ impl Board {
             bowling: self.is_wallnut_bowling_level(),
             main_counter: self.main_counter,
             award_dropped: self.has_level_award_dropped(),
+            pool_rows: self.plant_row.map(|r| r == PlantRowType::Pool),
+            ice_min_x: self.ice_min_x,
             zombies_on_screen: self
                 .zombies
                 .iter()
@@ -519,7 +623,14 @@ impl Board {
         let wave = self.waves.current_wave;
         let types = self.waves.zombies_in_wave[wave as usize].clone();
         for ty in types {
-            self.add_zombie(ty, wave, fx);
+            if ty == ZombieType::Bobsled && !self.can_add_bobsled() {
+                // No ice to ride: four ordinary zombies come instead of the team.
+                for _ in 0..4 {
+                    self.add_zombie(ZombieType::Normal, wave, fx);
+                }
+            } else {
+                self.add_zombie(ty, wave, fx);
+            }
         }
         // The last wave brings zombies out of the graves.
         if wave == self.waves.num_waves - 1 {

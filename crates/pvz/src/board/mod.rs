@@ -81,6 +81,8 @@ impl Plugin for BoardPlugin {
 }
 
 pub const BOARD_WIDTH: i32 = 800;
+/// `BOARD_ICE_START`: where an empty ice trail begins.
+const BOARD_ICE_START: i32 = 800;
 pub const BOARD_HEIGHT: i32 = 600;
 /// How far left of the lawn the backgrounds start (they include the house).
 pub const BOARD_OFFSET: i32 = 220;
@@ -328,6 +330,10 @@ pub struct Board {
     /// `mRiseFromGraveCounter`: counts down from the last wave to zombies
     /// climbing out of the graves.
     rise_from_grave_counter: i32,
+    /// Where each row's ice trail starts (`mIceMinX`) and how long it lasts
+    /// (`mIceTimer`): the Zamboni lays it, the bobsled team rides it.
+    ice_min_x: [i32; MAX_GRID_SIZE_Y],
+    ice_timer: [i32; MAX_GRID_SIZE_Y],
     waves: WaveState,
     /// `mPlantsEaten`.
     plants_eaten: i32,
@@ -450,6 +456,8 @@ impl Board {
             enable_grave_stones: false,
             graves_cleared: 0,
             rise_from_grave_counter: 0,
+            ice_min_x: [BOARD_ICE_START; MAX_GRID_SIZE_Y],
+            ice_timer: [0; MAX_GRID_SIZE_Y],
             waves: WaveState::default(),
             plants_eaten: 0,
             whack: Default::default(),
@@ -1058,6 +1066,7 @@ impl Board {
             }
         }
         if playing {
+            self.update_ice();
             self.update_dancer_troupes();
             self.find_zombie_targets();
         }
@@ -1068,6 +1077,17 @@ impl Board {
             for (id, zombie) in self.zombies.iter_mut() {
                 if playing {
                     zombie.update(&mut self.plants, &env, &mut fx);
+                    if zombie.ice_keep {
+                        zombie.ice_keep = false;
+                        let row = zombie.row as usize;
+                        self.ice_timer[row] = self.ice_timer[row].max(500);
+                    }
+                    if let Some(x) = zombie.ice_trail.take() {
+                        // Behaviour per ruslan831 decomp, Zombie::UpdateZamboni.
+                        let row = zombie.row as usize;
+                        self.ice_min_x[row] = self.ice_min_x[row].min(x);
+                        self.ice_timer[row] = 3000;
+                    }
                     if zombie.reached_house() {
                         self.zombies_won_trigger.get_or_insert(id);
                     }
@@ -1099,6 +1119,7 @@ impl Board {
         if playing {
             let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
             self.summon_backup_dancers(&mut fx);
+            self.update_bobsleds(&mut fx);
             self.update_hypnotized_zombies(&mut fx);
             self.after_plants_eaten(res);
             for action in std::mem::take(&mut self.plant_actions) {
@@ -1125,6 +1146,45 @@ impl Board {
                 self.flash_if_ready(res, i);
             }
         }
+    }
+
+    /// `Board::UpdateIce`: the trail melts away when its timer runs out.
+    fn update_ice(&mut self) {
+        for row in 0..MAX_GRID_SIZE_Y {
+            if self.ice_timer[row] > 0 {
+                self.ice_timer[row] -= 1;
+                if self.ice_timer[row] == 0 {
+                    self.ice_min_x[row] = BOARD_ICE_START;
+                }
+            }
+        }
+    }
+
+    /// `Board::DrawIce`: a strip of ice from the trail's start to the right edge.
+    fn draw_ice(&self, row: usize, res: &GameResources, g: &mut Graphics) {
+        let (Some(ice), Some(cap)) = (res.image("IMAGE_ICE"), res.image("IMAGE_ICE_CAP")) else { return };
+        let y = self.grid_to_pixel_y(8, row as i32) as f32 + 20.0;
+        let (w, h) = (ice.width as i32, ice.height as i32);
+        let alpha = (255 * self.ice_timer[row] / 10).clamp(0, 255) as u8;
+        g.push_state();
+        if alpha < 255 {
+            g.set_colorize_images(true);
+            g.set_color(SexyColor::rgba(255, 255, 255, alpha));
+        }
+        let start = self.ice_min_x[row] + 13;
+        let mut x = start;
+        while x < BOARD_WIDTH {
+            let dx = if x == start {
+                let rest = (BOARD_WIDTH - start) % w;
+                if rest == 0 { w } else { rest }
+            } else {
+                w
+            };
+            g.draw_image_src(ice, x as f32, y, SexyRect::new((w - dx) as f32, 0.0, dx as f32, h as f32));
+            x += dx;
+        }
+        g.draw_image(cap, self.ice_min_x[row] as f32, y);
+        g.pop_state();
     }
 
     /// `Board::ShakeBoard`.
@@ -1612,6 +1672,7 @@ enum RenderItem {
     FadeOut,
     Coin(sexy::data_array::Id<Coin>),
     CursorPreview,
+    Ice(usize),
 }
 
 /// `Board::Draw` / `DrawGameObjects`.
@@ -1653,6 +1714,11 @@ fn draw_board(
     for (id, system) in effects.particle_ids() {
         if !system.is_attachment {
             items.push((system.render_order, RenderItem::Particle(id)));
+        }
+    }
+    for row in 0..MAX_GRID_SIZE_Y {
+        if board.ice_timer[row] > 0 {
+            items.push((make_render_order(render_layer::GROUND, row as i32, 2), RenderItem::Ice(row)));
         }
     }
     items.push((CursorPreview::RENDER_ORDER, RenderItem::CursorPreview));
@@ -1707,6 +1773,7 @@ fn draw_board(
                 }
             }
             RenderItem::FadeOut => board.draw_fade_out(&mut g),
+            RenderItem::Ice(row) => board.draw_ice(row, &resources, &mut g),
             RenderItem::Zombie(id) => {
                 if let Some(zombie) = board.zombies.get(id).filter(|z| !z.is_winner() || board.cut_scene.show_zombie_walking()) {
                     zombie.draw(&mut g, &effects, &resources);

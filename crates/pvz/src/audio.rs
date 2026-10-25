@@ -427,6 +427,15 @@ pub enum FoleyType {
     SquashHmm,
     /// The squash landing.
     Thump,
+    /// `FOLEY_ZOMBIESPLASH`: a zombie falls into the water.
+    ZombieSplash,
+    /// `FOLEY_PLANT_WATER`: something climbs out of the water.
+    PlantWater,
+    /// `FOLEY_DOLPHIN_BEFORE_JUMPING`.
+    DolphinBeforeJumping,
+    /// `FOLEY_ZOMBIE_ENTERING_WATER`: a snorkel or dolphin rider dives in.
+    #[allow(dead_code, reason = "used once the snorkel and dolphin rider are ported")]
+    ZombieEnteringWater,
     /// A jalapeno going off.
     JalapenoIgnite,
     /// A pea passing a torchwood, and a fire pea hitting.
@@ -544,6 +553,10 @@ impl FoleyType {
             },
             Self::JalapenoIgnite => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_JALAPENO"], flags: 0 },
             Self::Thump => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_GARGANTUAR_THUMP"], flags: 0 },
+            Self::ZombieSplash => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_PLANT_WATER", "SOUND_ZOMBIE_ENTERING_WATER"], flags: 0 },
+            Self::DolphinBeforeJumping => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_DOLPHIN_BEFORE_JUMPING"], flags: 0 },
+            Self::PlantWater => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_PLANT_WATER"], flags: 0 },
+            Self::ZombieEnteringWater => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_ZOMBIE_ENTERING_WATER"], flags: 0 },
             Self::Floop => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_FLOOP"], flags: 0 },
             Self::Fume => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_FUME"], flags: 0 },
             Self::NewspaperRip => FoleyParams { pitch_range: -2.0, sounds: &["SOUND_NEWSPAPER_RIP"], flags: 0 },

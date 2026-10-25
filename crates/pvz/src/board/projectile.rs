@@ -254,7 +254,7 @@ impl Projectile {
                 splat = false;
             }
             HelmType::TrafficCone | HelmType::Football => fx.sounds.play_foley(FoleyType::PlasticHit),
-            HelmType::None => {}
+            HelmType::None | HelmType::Bobsled => {}
         }
         if splat {
             fx.sounds.play_foley(FoleyType::Splat);

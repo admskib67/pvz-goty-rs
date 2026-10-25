@@ -278,3 +278,285 @@ fn zombies_climb_out_of_the_graves_on_the_last_wave() {
     );
 }
 
+
+#[test]
+fn a_zombie_sinks_into_the_pool_and_climbs_out() {
+    let mut t = test_board!("3-1");
+    let id = t.zombie(ZombieType::Normal, 2, 700.0);
+    assert!(!t.zombie_ref(id).unwrap().in_pool(), "dry at the right edge");
+    assert!(t.run_until(600, |b| b.zombies.get(id).is_some_and(|z| z.in_pool())), "it wades in once it is over the water");
+    assert!(t.run_until(100, |b| b.zombies.get(id).is_some_and(|z| z.altitude() <= -40.0)), "and sinks to its chest");
+    // Leaving the water on the far side: it rises again (no mower to stop it).
+    t.board.lawn_mowers.retain(|m| m.row != 2);
+    t.board.zombies.get_mut(id).unwrap().place_x(-20.0);
+    assert!(t.run_until(100, |b| b.zombies.get(id).is_some_and(|z| !z.in_pool() && z.altitude() == 0.0)), "it climbs out");
+}
+
+#[test]
+fn land_only_zombies_do_not_swim() {
+    assert!(ZombieType::Normal.can_go_in_pool() && ZombieType::Pail.can_go_in_pool());
+    assert!(!ZombieType::Newspaper.can_go_in_pool() && !ZombieType::Football.can_go_in_pool());
+    let mut t = test_board!("3-1");
+    let id = t.zombie(ZombieType::Newspaper, 2, 500.0);
+    t.ticks(100);
+    assert!(!t.zombie_ref(id).unwrap().in_pool());
+}
+
+#[test]
+fn zombies_in_the_grass_rows_stay_dry() {
+    let mut t = test_board!("3-1");
+    let id = t.zombie(ZombieType::Normal, 1, 500.0);
+    t.ticks(300);
+    assert!(!t.zombie_ref(id).unwrap().in_pool());
+    assert_eq!(t.zombie_ref(id).unwrap().altitude(), 0.0);
+}
+
+#[test]
+fn water_rows_only_take_swimmers_and_only_late_for_land_swimmers() {
+    let mut t = test_board!("3-1");
+    t.board.waves.current_wave = 0;
+    assert!(t.board.row_can_have_zombie_type(1, ZombieType::Normal), "grass");
+    assert!(!t.board.row_can_have_zombie_type(2, ZombieType::Normal), "no wading zombies in the first waves");
+    assert!(!t.board.row_can_have_zombie_type(1, ZombieType::Snorkel), "pool-only types stay in the water");
+    t.board.waves.current_wave = 5;
+    assert!(t.board.row_can_have_zombie_type(2, ZombieType::Normal), "from the fifth wave they wade in");
+    assert!(t.board.row_can_have_zombie_type(3, ZombieType::Pail));
+    assert!(!t.board.row_can_have_zombie_type(2, ZombieType::Newspaper), "but newspaper zombies can't swim");
+    assert!(!t.board.row_can_have_zombie_type(2, ZombieType::Football));
+    assert!(t.board.row_can_have_zombie_type(2, ZombieType::Snorkel));
+}
+
+#[test]
+fn early_waves_never_send_land_zombies_into_the_pool() {
+    let mut t = test_board!("3-1").with_waves();
+    let mut seen = 0;
+    for _ in 0..6000 {
+        t.tick();
+        for (_, z) in t.board.zombies.iter() {
+            assert!(z.row != 2 && z.row != 3, "row {} is water", z.row);
+            seen += 1;
+        }
+    }
+    assert!(seen > 0, "zombies came");
+}
+
+#[test]
+fn snorkel_dives_in_and_cannot_be_shot_while_swimming() {
+    use crate::board::zombie::ZombiePhase::*;
+    let mut t = test_board!("3-1");
+    t.plant(SeedType::Lilypad, 0, 2);
+    t.plant(SeedType::Peashooter, 0, 2);
+    let snorkel = t.zombie(ZombieType::Snorkel, 2, 760.0);
+    assert!(t.run_until(500, |b| b.zombies.get(snorkel).is_some_and(|z| z.phase == SnorkelWalkingInPool)), "it dives in");
+    assert!(t.zombie_ref(snorkel).unwrap().in_pool());
+    // Peas fired as it dived are still in the air for a moment.
+    t.ticks(150);
+    let health = t.zombie_ref(snorkel).unwrap().body_health;
+    t.ticks(300);
+    assert_eq!(t.zombie_ref(snorkel).unwrap().body_health, health, "peas can't reach it under the water");
+    assert!(t.board.projectiles.is_empty(), "so the peashooter doesn't even fire");
+}
+
+#[test]
+fn snorkel_surfaces_to_eat_the_plant_on_the_pad() {
+    use crate::board::zombie::ZombiePhase::*;
+    let mut t = test_board!("3-1");
+    t.plant(SeedType::Lilypad, 0, 2);
+    t.plant(SeedType::Peashooter, 0, 2);
+    let pad = t.plant(SeedType::Lilypad, 4, 2);
+    let nut = t.plant(SeedType::Wallnut, 4, 2);
+    let snorkel = t.zombie(ZombieType::Snorkel, 2, 760.0);
+    assert!(t.run_until(2500, |b| b.zombies.get(snorkel).is_some_and(|z| z.phase == SnorkelEatingInPool)), "it comes up to bite");
+    t.ticks(100);
+    assert!(t.plant_ref(nut).is_some_and(|p| p.health < 4000), "the wall-nut on the pad is bitten first");
+    assert_eq!(t.plant_ref(pad).unwrap().health, 300, "the pad is spared");
+    assert!(t.run_until(600, |b| b.zombies.get(snorkel).is_none_or(|z| z.body_health < 270)), "and now the peas can hit it");
+}
+
+/// The plant of this kind on a square (a lily pad shares its square).
+fn plant_of(t: &super::TestBoard, seed: SeedType, col: i32, row: i32) -> sexy::data_array::Id<super::super::plant::Plant> {
+    t.board.plants.iter().find(|(_, p)| p.col == col && p.row == row && p.seed == seed && !p.dead).map(|(id, _)| id).unwrap()
+}
+
+#[test]
+fn dolphin_rider_rides_the_pool_and_jumps_the_first_plant() {
+    use crate::board::zombie::ZombiePhase::*;
+    let mut t = test_board!("3-1");
+    t.plant(SeedType::Lilypad, 3, 2);
+    t.plant(SeedType::Wallnut, 3, 2);
+    let nut = plant_of(&t, SeedType::Wallnut, 3, 2);
+    let nut_x = t.plant_ref(nut).unwrap().x;
+    let dolphin = t.zombie(ZombieType::DolphinRider, 2, 760.0);
+    assert!(t.run_until(600, |b| b.zombies.get(dolphin).is_some_and(|z| z.phase == DolphinRiding)), "it dives in and rides");
+    assert!(t.run_until(1500, |b| b.zombies.get(dolphin).is_some_and(|z| z.phase == DolphinInJump)), "and leaps at the plant");
+    assert!(t.run_until(300, |b| b.zombies.get(dolphin).is_some_and(|z| z.phase == DolphinWalkingInPool)), "then lands");
+    assert!(t.zombie_ref(dolphin).unwrap().x < nut_x, "on the other side");
+    assert_eq!(t.plant_ref(nut).unwrap().health, 4000, "without biting it");
+}
+
+#[test]
+fn dolphin_rider_is_stopped_by_a_tall_nut() {
+    use crate::board::zombie::ZombiePhase::*;
+    let mut t = test_board!("3-1");
+    t.plant(SeedType::Lilypad, 3, 2);
+    t.plant(SeedType::Tallnut, 3, 2);
+    let nut = plant_of(&t, SeedType::Tallnut, 3, 2);
+    let nut_x = t.plant_ref(nut).unwrap().x;
+    let dolphin = t.zombie(ZombieType::DolphinRider, 2, 760.0);
+    assert!(t.run_until(2000, |b| b.zombies.get(dolphin).is_some_and(|z| z.phase == DolphinWalkingInPool)), "the jump ends");
+    assert!(t.zombie_ref(dolphin).unwrap().x >= nut_x, "against the tall-nut, not over it");
+    assert!(t.run_until(600, |b| b.plants.get(nut).is_some_and(|p| p.health < 8000)), "so it has to bite through");
+}
+
+#[test]
+fn zamboni_drives_over_plants_and_leaves_ice() {
+    let mut t = test_board!("3-6");
+    let nut = t.plant(SeedType::Wallnut, 5, 1);
+    let zamboni = t.zombie(ZombieType::Zamboni, 1, 760.0);
+    assert!(t.run_until(4000, |b| b.plants.get(nut).is_none_or(|p| p.dead)), "the wall-nut is flattened, not eaten");
+    assert!(!t.zombie_ref(zamboni).unwrap().is_eating);
+    assert!(t.board.ice_timer[1] > 0, "it leaves a trail of ice in its row");
+    assert!(t.board.ice_min_x[1] < 800);
+    assert_eq!(t.board.ice_timer[0], 0, "and only in its row");
+}
+
+#[test]
+fn zamboni_pops_its_tires_on_spikeweed() {
+    use crate::board::zombie::ZombiePhase::*;
+    let mut t = test_board!("3-6");
+    t.plant(SeedType::Spikeweed, 5, 1);
+    let zamboni = t.zombie(ZombieType::Zamboni, 1, 760.0);
+    assert!(t.run_until(4000, |b| b.zombies.get(zamboni).is_some_and(|z| z.flat_tires())), "the spikes pop its tires");
+    assert_eq!(t.zombie_ref(zamboni).unwrap().phase, Dying);
+}
+
+#[test]
+fn a_cherry_bomb_blows_up_a_zamboni() {
+    let mut t = test_board!("3-6");
+    let zamboni = t.zombie(ZombieType::Zamboni, 1, 400.0);
+    t.plant(SeedType::Cherrybomb, 4, 1);
+    t.ticks(150);
+    assert!(t.zombie_ref(zamboni).is_none_or(|z| z.is_dead_or_dying()), "it goes up with the bomb");
+}
+
+#[test]
+fn zambonis_cannot_be_chilled_or_frozen() {
+    let mut t = test_board!("3-6");
+    t.plant(SeedType::Snowpea, 0, 1);
+    let zamboni = t.zombie(ZombieType::Zamboni, 1, 700.0);
+    t.ticks(600);
+    assert!(!t.zombie_ref(zamboni).unwrap().is_chilled(), "snow peas don't slow it");
+}
+
+fn bobsleds(t: &super::TestBoard) -> Vec<sexy::data_array::Id<super::super::zombie::Zombie>> {
+    t.board.zombies.iter().filter(|(_, z)| z.zombie_type == ZombieType::Bobsled).map(|(id, _)| id).collect()
+}
+
+#[test]
+fn a_bobsled_team_needs_ice_to_ride() {
+    let mut t = test_board!("3-6");
+    t.board.waves.current_wave = 5;
+    assert!(!t.board.row_can_have_zombie_type(1, ZombieType::Bobsled), "no ice, no sled");
+    t.board.ice_timer[1] = 3000;
+    t.board.ice_min_x[1] = 300;
+    assert!(t.board.row_can_have_zombie_type(1, ZombieType::Bobsled));
+    assert!(!t.board.row_can_have_zombie_type(0, ZombieType::Bobsled), "and only in the iced row");
+}
+
+#[test]
+fn a_bobsled_team_is_a_leader_and_three_riders() {
+    let mut t = test_board!("3-6");
+    t.board.ice_timer[1] = 100_000;
+    t.board.ice_min_x[1] = 0;
+    let leader = t.zombie(ZombieType::Bobsled, 1, 880.0);
+    let team = bobsleds(&t);
+    assert_eq!(team.len(), 4, "four zombies on the sled");
+    let mut positions: Vec<_> = team.iter().map(|&id| t.zombie_ref(id).unwrap().bobsled_position).collect();
+    positions.sort_unstable();
+    assert_eq!(positions, [0, 1, 2, 3]);
+    assert_eq!(t.zombie_ref(leader).unwrap().bobsled_position, 0);
+    // Only the leader can be hurt while they ride, and the sled takes the blows.
+    let follower = *team.iter().find(|&&id| t.zombie_ref(id).unwrap().bobsled_position == 2).unwrap();
+    assert!(!t.zombie_ref(follower).unwrap().effected_by_damage(1), "the riders behind are out of reach");
+    assert!(t.zombie_ref(leader).unwrap().effected_by_damage(1));
+}
+
+#[test]
+fn a_broken_sled_tips_the_team_off_and_they_walk() {
+    use crate::board::zombie::ZombiePhase::*;
+    let mut t = test_board!("3-6");
+    t.board.ice_timer[1] = 100_000;
+    t.board.ice_min_x[1] = 0;
+    let leader = t.zombie(ZombieType::Bobsled, 1, 880.0);
+    t.ticks(10);
+    let env = t.board.zombie_env();
+    t.with(|board, effects, res, images, sounds| {
+        let mut fx = super::super::zombie::Fx { effects, res, images, sounds };
+        board.zombies.get_mut(leader).unwrap().take_damage(300, 0, &env, &mut fx);
+    });
+    t.ticks(2);
+    for id in bobsleds(&t) {
+        assert_eq!(t.zombie_ref(id).unwrap().phase, BobsledCrashing, "the whole team crashes");
+    }
+    t.ticks(200);
+    for id in bobsleds(&t) {
+        let z = t.zombie_ref(id).unwrap();
+        assert_eq!(z.phase, Normal, "then they get up");
+        assert_eq!(z.bobsled_position, -1);
+        assert_eq!(z.body_health, 270);
+    }
+}
+
+#[test]
+fn a_sled_that_runs_off_the_ice_falls_apart() {
+    use crate::board::zombie::ZombiePhase::*;
+    let mut t = test_board!("3-6");
+    t.board.ice_timer[1] = 100_000;
+    t.board.ice_min_x[1] = 600;
+    let leader = t.zombie(ZombieType::Bobsled, 1, 880.0);
+    assert!(
+        t.run_until(3000, |b| b.zombies.get(leader).is_some_and(|z| z.phase == BobsledCrashing)),
+        "past the end of the ice the sled breaks up"
+    );
+}
+
+#[test]
+fn a_cherry_bomb_takes_a_whole_sled_team() {
+    let mut t = test_board!("3-6");
+    t.board.ice_timer[1] = 100_000;
+    t.board.ice_min_x[1] = 0;
+    t.zombie(ZombieType::Bobsled, 1, 880.0);
+    t.ticks(5);
+    for id in bobsleds(&t) {
+        t.board.zombies.get_mut(id).unwrap().place_x(400.0);
+    }
+    t.plant(SeedType::Cherrybomb, 4, 1);
+    t.ticks(200);
+    assert!(bobsleds(&t).iter().all(|&id| t.zombie_ref(id).is_none_or(|z| z.is_dead_or_dying())), "none of them survive");
+}
+
+#[test]
+fn the_pool_levels_run_their_waves_without_incident() {
+    // The stage, and the zombie that level brings in for the first time.
+    for (stage, new) in [("3-1", None), ("3-3", Some(ZombieType::Snorkel)), ("3-6", Some(ZombieType::Zamboni)), ("3-8", Some(ZombieType::DolphinRider))] {
+        let mut t = test_board!(stage).with_waves();
+        t.give_sun(9000);
+        // A wall of defences so the zombies have something to meet.
+        for row in [0, 1, 4, 5] {
+            t.plant(SeedType::Peashooter, 0, row);
+        }
+        let mut kinds = std::collections::HashSet::new();
+        for _ in 0..25_000 {
+            t.tick();
+            for (_, z) in t.board.zombies.iter() {
+                kinds.insert(z.zombie_type);
+                if z.zombie_type.is_pool_only() {
+                    assert!(z.row == 2 || z.row == 3, "{stage}: {:?} on a grass row", z.zombie_type);
+                }
+            }
+        }
+        if let Some(new) = new {
+            assert!(kinds.contains(&new), "{stage} should send {new:?}, sent {kinds:?}");
+        }
+    }
+}

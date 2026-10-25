@@ -633,6 +633,9 @@ fn draw_track_colored(
     let src = SexyRect::new(frame as f32 * cel_w, 0.0, cel_w, cel_h);
 
     g.push_state();
+    if inst.ignore_clip_rect {
+        g.reset_clip();
+    }
     g.set_colorize_images(true);
     g.set_color(color);
     g.draw_image_matrix_src(image, to_affine(matrix), src);
