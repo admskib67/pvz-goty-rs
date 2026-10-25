@@ -61,6 +61,11 @@ pub struct GridCels {
 }
 
 impl GridCels {
+    /// How a square's cel looks (`mGridCelLook`), 0 to 19.
+    pub(super) fn look(&self, x: usize, y: usize) -> i32 {
+        self.look[x][y]
+    }
+
     /// `Board::Board`'s loop over the squares.
     pub fn new(rng: &mut MtRand) -> Self {
         let mut cels = Self { look: [[0; MAX_GRID_SIZE_Y]; MAX_GRID_SIZE_X], offset: [[(0, 0); MAX_GRID_SIZE_Y]; MAX_GRID_SIZE_X] };

@@ -20,6 +20,7 @@ mod crazy_dave;
 mod conveyor;
 mod cursor;
 mod cutscene;
+mod fog;
 mod grid_item;
 mod lawn_mower;
 mod level_end;
@@ -334,6 +335,8 @@ pub struct Board {
     /// (`mIceTimer`): the Zamboni lays it, the bobsled team rides it.
     ice_min_x: [i32; MAX_GRID_SIZE_Y],
     ice_timer: [i32; MAX_GRID_SIZE_Y],
+    /// World 4's fog.
+    pub fog: fog::Fog,
     waves: WaveState,
     /// `mPlantsEaten`.
     plants_eaten: i32,
@@ -458,6 +461,7 @@ impl Board {
             rise_from_grave_counter: 0,
             ice_min_x: [BOARD_ICE_START; MAX_GRID_SIZE_Y],
             ice_timer: [0; MAX_GRID_SIZE_Y],
+            fog: fog::Fog::default(),
             waves: WaveState::default(),
             plants_eaten: 0,
             whack: Default::default(),
@@ -492,6 +496,7 @@ impl Board {
 
         // InitLevel.
         board.pick_background(resources, images);
+        board.init_fog();
         let level_seed = board.level_rand_seed(player.map_or(0, |p| p.id), player.map_or(0, |p| p.finished_adventure));
         board.add_level_grave_stones(&mut sexy::rand::MtRand::new(level_seed), rng);
         board.sun_money = if board.first_time_adventure && level == 1 { 150 } else { 50 };
@@ -605,10 +610,6 @@ impl Board {
 
     pub fn stage_has_roof(&self) -> bool {
         self.background.has_roof()
-    }
-
-    pub fn stage_has_fog(&self) -> bool {
-        self.background == BackgroundType::Fog
     }
 
     /// `ChooseSeedsOnCurrentLevel`: early adventure levels hand out the plants.
@@ -980,6 +981,7 @@ impl Board {
         }
         // UpdateGame.
         self.update_game_objects(effects, resources, images, sounds);
+        self.update_fog_offset();
         if let Some(zombie) = self.zombies_won_trigger.take() {
             self.zombies_won(zombie, music, sounds, resources);
         }
@@ -988,6 +990,7 @@ impl Board {
         }
         if self.scene == GameScene::Playing {
             self.main_counter += 1;
+            self.tick_fog_countdown();
             self.update_sun_spawning(effects, resources, images, sounds);
             if self.has_conveyor_belt_seed_bank() {
                 self.update_conveyor_belt(sounds.rng());
@@ -1140,6 +1143,7 @@ impl Board {
             }
             self.add_sun_money(scored);
         }
+        self.update_fog();
         self.update_cursor_preview();
         for i in 0..self.seed_bank.num_packets {
             if self.seed_bank.packets[i].update(self.scene, self.main_counter) {
@@ -1382,6 +1386,10 @@ impl Board {
                 if let Some(zombie) = self.zombies.get_mut(id) {
                     zombie.take_damage(1800, 0, &env, &mut fx);
                 }
+            }
+            PlantAction::BlowFog => {
+                sounds.play_sample("SOUND_BLOVER");
+                self.fog.blown_count_down = fog::BLOVER_BLOW_TIME;
             }
             PlantAction::ShakeBoard { x, y } => self.shake_board(x, y),
             PlantAction::DoomShroom { x, y, col, row } => {
@@ -1673,6 +1681,7 @@ enum RenderItem {
     Coin(sexy::data_array::Id<Coin>),
     CursorPreview,
     Ice(usize),
+    Fog,
 }
 
 /// `Board::Draw` / `DrawGameObjects`.
@@ -1720,6 +1729,9 @@ fn draw_board(
         if board.ice_timer[row] > 0 {
             items.push((make_render_order(render_layer::GROUND, row as i32, 2), RenderItem::Ice(row)));
         }
+    }
+    if board.stage_has_fog() {
+        items.push((make_render_order(render_layer::FOG, 0, 0), RenderItem::Fog));
     }
     items.push((CursorPreview::RENDER_ORDER, RenderItem::CursorPreview));
     items.push((make_render_order(render_layer::SCREEN_FADE, 0, 0), RenderItem::FadeOut));
@@ -1774,6 +1786,7 @@ fn draw_board(
             }
             RenderItem::FadeOut => board.draw_fade_out(&mut g),
             RenderItem::Ice(row) => board.draw_ice(row, &resources, &mut g),
+            RenderItem::Fog => board.draw_fog(&resources, &mut g),
             RenderItem::Zombie(id) => {
                 if let Some(zombie) = board.zombies.get(id).filter(|z| !z.is_winner() || board.cut_scene.show_zombie_walking()) {
                     zombie.draw(&mut g, &effects, &resources);
@@ -1860,7 +1873,7 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
         }
     }
     // PoolEffectDraw's fallback: a picture of the water (the animated caustics aren't ported).
-    if board.background == BackgroundType::Pool
+    if board.stage_has_pool()
         && let Some(pool) = image(if board.stage_is_night() { "IMAGE_POOL_NIGHT" } else { "IMAGE_POOL" })
     {
         g.draw_image(pool, 34.0, 278.0);

@@ -23,8 +23,8 @@ Legend: `[x]` done, `[~]` partly done, `[ ]` not started.
 - [ ] Level 3-5 (Wall-nut bowling again with pool rules), 3-10 (Zomboss-less mini boss belt), 3-x tutorials.
 
 ### World 4: fog (4-1 to 4-10, `BackgroundType::Fog`)
-- [ ] Night pool background with fog overlay, fog drawing and per-column fog coverage, fog fade as the level goes.
-- [ ] Fog interaction: Plantern clears fog in a radius, Blover blows it away for a time, fog hides zombies and plants beyond the line.
+- [x] Night pool background with fog overlay, fog drawing and per-column fog coverage, fog fade as the level goes.
+- [x] Fog interaction: Plantern clears fog in a radius, Blover blows it away for a time, fog hides zombies and plants beyond the line (balloon zombies still missing).
 - [ ] Night pool grave-less rules, sun from sky off, mushrooms awake.
 - [ ] Level intro for 4-x (fog descending, Crazy Dave talks), "fog" and "boss" TODOs in `cutscene.rs`.
 - [ ] Seed chooser pool and fog warnings (not yet in the chooser).

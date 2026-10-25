@@ -598,6 +598,9 @@ impl Board {
         if seed == SeedType::Gravebuster {
             sounds.play_foley(FoleyType::GravebusterChomp);
         }
+        if seed == SeedType::Plantern {
+            sounds.play_sample("SOUND_PLANTERN");
+        }
         // Mushrooms sleep through the day.
         if seed.is_nocturnal() && !self.stage_is_night()
             && let Some(plant) = self.plants.get_mut(id)

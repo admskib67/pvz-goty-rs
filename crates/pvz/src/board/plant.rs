@@ -28,7 +28,7 @@ use crate::audio::FoleyType;
 use crate::graphics::Graphics;
 use crate::particle::ParticleEffect;
 use crate::plant::{PlantSubClass, SeedType};
-use crate::reanim::{EffectSystem, ReanimationId, ReanimationType};
+use crate::reanim::{EffectSystem, ParticleSystemId, ReanimationId, ReanimationType};
 use crate::resources::GameResources;
 
 use super::projectile::ProjectileType;
@@ -75,6 +75,8 @@ pub enum PlantAction {
     Squash { row: i32, rect: IRect },
     /// `Plant::UpdateTanglekelp`: the kelp drags this zombie under the water.
     TangleKelp(sexy::data_array::Id<Zombie>),
+    /// `Plant::BlowAwayFliers`: a blover blows the fog away for a while.
+    BlowFog,
     /// The board jolts (`Board::ShakeBoard`).
     ShakeBoard { x: i32, y: i32 },
     /// A grave buster has eaten the grave on its square (`x`, `y` is the plant's spot).
@@ -173,6 +175,8 @@ pub struct Plant {
     /// The threepeater's other two heads (`mHeadReanimID2` and `3`); `head` is the first.
     extra_heads: [Option<ReanimationId>; 2],
     blink: Option<ReanimationId>,
+    /// The plantern's glow over the fog.
+    light: Option<ParticleSystemId>,
     /// The squash's square, where it jumps from (`mStartRow` and its column).
     home: (i32, i32),
     /// The zombie it's jumping on (`mTargetZombieID`) and the x it jumps to.
@@ -232,6 +236,7 @@ impl Plant {
             state: PlantState::NotReady,
             state_countdown: 0,
             do_special_countdown: 0,
+            light: None,
             blink_countdown: 0,
             launch_rate: def.launch_rate,
             launch_counter: 0,
@@ -331,6 +336,20 @@ impl Plant {
                 }
             }
             Chomper | Scaredyshroom => plant.state = PlantState::Ready,
+            Plantern => {
+                // Behaviour per ruslan831 decomp, Plant::PlantInitialize: its glow shows above the fog.
+                plant.state_countdown = 50;
+                let order = make_render_order(render_layer::FOG, 0, 1);
+                plant.light = effects.add_particle((x + 40) as f32, (y + 40) as f32, order, ParticleEffect::LanternShine, res, images, rng);
+            }
+            Blover => {
+                plant.do_special_countdown = 50;
+                if let Some(body) = plant.body.and_then(|b| effects.get_mut(b)) {
+                    body.set_frames_for_layer("anim_blow");
+                    body.loop_type = LoopType::PlayOnceAndHold;
+                    body.anim_rate = 20.0;
+                }
+            }
             Cherrybomb | Jalapeno => {
                 plant.do_special_countdown = 100;
                 if let Some(body) = plant.body.and_then(|b| effects.get_mut(b)) {
@@ -682,6 +701,13 @@ impl Plant {
                 actions.push(PlantAction::PotatoMine { x: x - 20, y, row: self.row });
                 self.die(effects);
             }
+            SeedType::Blover => {
+                if self.state != PlantState::DoingSpecial {
+                    self.state = PlantState::DoingSpecial;
+                    self.state_countdown = 200;
+                    actions.push(PlantAction::BlowFog);
+                }
+            }
             SeedType::Doomshroom => {
                 actions.push(PlantAction::DoomShroom { x, y, col: self.col, row: self.row });
                 self.die(effects);
@@ -768,6 +794,9 @@ impl Plant {
         if self.seed == SeedType::Tanglekelp {
             self.update_tangle_kelp(zombies, actions, effects);
         }
+        if self.seed == SeedType::Blover {
+            self.update_blover(effects);
+        }
         // UpdateIceShroom: it goes off as soon as it's awake.
         if self.seed == SeedType::Iceshroom && self.state != PlantState::DoingSpecial {
             self.state = PlantState::DoingSpecial;
@@ -823,6 +852,20 @@ impl Plant {
             actions.push(PlantAction::Foley(FoleyType::Throw));
             self.state = PlantState::SpikeweedAttacking;
             self.state_countdown = 100;
+        }
+    }
+
+    /// `Plant::UpdateBlover`: it blows once, then spins on its stalk until it fades.
+    fn update_blover(&mut self, effects: &mut EffectSystem) {
+        if let Some(body) = self.body.and_then(|b| effects.get_mut(b))
+            && body.loop_count > 0
+            && body.loop_type != LoopType::Loop
+        {
+            body.set_frames_for_layer("anim_loop");
+            body.loop_type = LoopType::Loop;
+        }
+        if self.state == PlantState::DoingSpecial && self.state_countdown == 0 {
+            self.die(effects);
         }
     }
 
@@ -1506,6 +1549,9 @@ impl Plant {
         let owned = [self.body.take(), self.head.take(), self.blink.take(), self.sleeping.take(), extra_heads[0], extra_heads[1]];
         for id in owned.into_iter().flatten() {
             effects.kill(id);
+        }
+        if let Some(light) = self.light.take() {
+            effects.remove_particle(light);
         }
     }
 

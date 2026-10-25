@@ -11,6 +11,7 @@
 //! (none are loaded) and the random generator has a fixed seed, so runs
 //! repeat exactly.
 
+mod fog;
 mod levels;
 mod plants;
 mod zombies;
