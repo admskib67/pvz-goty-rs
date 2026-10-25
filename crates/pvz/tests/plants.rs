@@ -588,3 +588,17 @@ fn sea_shroom_shoots_from_the_water_at_night() {
     let zombie = t.zombie(ZombieType::Normal, 2, 200.0);
     assert!(t.run_until(400, |b| b.zombies.get(zombie).is_none_or(|z| z.body_health < 270)), "it spits at close zombies");
 }
+
+#[test]
+fn a_coffee_bean_wakes_a_sleeping_mushroom() {
+    let mut t = test_board!("1-6");
+    let shroom = t.plant(SeedType::Puffshroom, 2, 2);
+    assert!(t.plant_ref(shroom).unwrap().is_asleep());
+    assert_eq!(t.board.can_plant_at(1, 2, SeedType::InstantCoffee), PlantingReason::NotHere, "nothing to wake");
+    assert_eq!(t.board.can_plant_at(2, 2, SeedType::InstantCoffee), PlantingReason::Ok);
+    t.with(|board, effects, res, images, sounds| board.add_plant(2, 2, SeedType::InstantCoffee, effects, res, images, sounds));
+    assert!(!t.plant_ref(shroom).unwrap().is_asleep(), "it wakes up");
+    assert_eq!(t.board.can_plant_at(2, 2, SeedType::InstantCoffee), PlantingReason::NotHere, "and needs no second bean");
+    let zombie = t.zombie(ZombieType::Normal, 2, 450.0);
+    assert!(t.run_until(500, |b| b.zombies.get(zombie).is_none_or(|z| z.body_health < 270)), "so it shoots in the day");
+}

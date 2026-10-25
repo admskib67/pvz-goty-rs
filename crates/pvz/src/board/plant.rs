@@ -473,7 +473,7 @@ impl Plant {
     }
 
     /// `Plant::SetSleeping`: a sleeping mushroom snores (a cloud of Zs) and
-    /// does nothing. TODO: waking up (coffee beans).
+    /// does nothing until a coffee bean wakes it.
     pub fn set_sleeping(
         &mut self,
         asleep: bool,

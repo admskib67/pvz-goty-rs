@@ -171,6 +171,11 @@ impl Board {
             return PlantingReason::NotHere;
         }
         let on_water = square == GridSquareType::Pool;
+        // Coffee beans only wake a mushroom that is asleep on the square.
+        if seed == SeedType::InstantCoffee {
+            let asleep = self.normal_plant_at(grid_x, grid_y).is_some_and(Plant::is_asleep);
+            return if asleep { PlantingReason::Ok } else { PlantingReason::NotHere };
+        }
         // Behaviour per ruslan831 decomp, Board::CanPlantAt: water plants only
         // go on water, and everything else on water needs a lily pad under it.
         if seed == SeedType::Lilypad {
@@ -572,6 +577,16 @@ impl Board {
         sounds: &mut Sounds,
     ) {
         let (x, y) = (self.grid_to_pixel_x(grid_x), self.grid_to_pixel_y(grid_x, grid_y));
+        // Behaviour per ruslan831 decomp, Plant::DoSpecial (coffee bean): it
+        // wakes the mushroom on its square. TODO: the bean's own animation.
+        if seed == SeedType::InstantCoffee {
+            let sleeper = self.plants.iter().find(|(_, p)| p.col == grid_x && p.row == grid_y && !p.dead && p.is_asleep()).map(|(id, _)| id);
+            if let Some(plant) = sleeper.and_then(|id| self.plants.get_mut(id)) {
+                plant.set_sleeping(false, effects, res, images, sounds.rng());
+            }
+            sounds.play_foley(FoleyType::Plant);
+            return;
+        }
         let bowling = self.is_wallnut_bowling_level();
         let plant = Plant::new(grid_x, grid_y, x, y, seed, bowling, effects, res, images, sounds.rng());
         let id = self.plants.alloc(plant);
