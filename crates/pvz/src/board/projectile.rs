@@ -1,12 +1,15 @@
 //! Things plants shoot (`Projectile`). So far the pea, the snow pea, the
-//! puff-shroom's short-range puff and the torchwood's fire pea.
+//! puff-shroom's short-range puff, the torchwood's fire pea, and the
+//! catapult plants' lobbed cabbages, kernels, butter and melons.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Projectile.cpp`:
 //! `ProjectileInitialize`, `Update`, `UpdateMotion`, `UpdateNormalMotion`,
 //! `CheckForCollision`, `FindCollisionTarget`, `PlayImpactSound`,
 //! `DoImpact`, `Draw`, `DrawShadow`, `Die` and `GetProjectileRect`.
 
+use bevy::math::{Affine2, Vec2};
 use sexy::data_array::DataArray;
+use sexy::rand::MtRand;
 use sexy::tod::{TodCurve, animate_curve_float};
 
 use crate::audio::FoleyType;
@@ -26,6 +29,12 @@ pub enum ProjectileType {
     Puff,
     /// A pea that has passed a torchwood (`PROJECTILE_FIREBALL`).
     Fire,
+    /// The cabbage-pult's cabbage, the kernel-pult's kernel and butter, the
+    /// melon-pult's melon: lobbed over the lawn.
+    Cabbage,
+    Kernel,
+    Butter,
+    Melon,
 }
 
 impl ProjectileType {
@@ -33,7 +42,9 @@ impl ProjectileType {
     fn damage(self) -> i32 {
         match self {
             Self::Pea | Self::Snowpea | Self::Puff => 20,
-            Self::Fire => 40,
+            Self::Fire | Self::Cabbage | Self::Butter => 40,
+            Self::Kernel => 20,
+            Self::Melon => 80,
         }
     }
 }
@@ -65,6 +76,14 @@ pub struct Projectile {
     /// The last torchwood column it passed (`mHitTorchwoodGridX`), so one
     /// torchwood changes it only once.
     hit_torchwood_col: Option<i32>,
+    /// Lobbed in an arc (`MOTION_LOBBED`): `vel_x` along, `vel_z` up and down
+    /// (negative is up), pulled by `acc_z` each tick.
+    lobbed: bool,
+    vel_x: f32,
+    vel_z: f32,
+    acc_z: f32,
+    rotation: f32,
+    rotation_speed: f32,
     pub dead: bool,
 }
 
@@ -91,8 +110,30 @@ impl Projectile {
             vel_y: 0.0,
             fire: None,
             hit_torchwood_col: None,
+            lobbed: false,
+            vel_x: 0.0,
+            vel_z: 0.0,
+            acc_z: 0.0,
+            rotation: 0.0,
+            rotation_speed: 0.0,
             dead: false,
         }
+    }
+
+    /// The plant throws it in an arc that lands `range_x` along and `range_y`
+    /// down in 120 ticks (`Plant::Fire`), reaching what `range_flags` allows.
+    pub fn launch_lob(&mut self, range_x: f32, range_y: f32, range_flags: u32, rng: &mut MtRand) {
+        self.lobbed = true;
+        self.vel_x = range_x / 120.0;
+        self.vel_z = range_y / 120.0 - 7.0;
+        self.acc_z = 0.115;
+        self.damage_range_flags = range_flags;
+        (self.rotation, self.rotation_speed) = match self.ty {
+            ProjectileType::Cabbage | ProjectileType::Butter => (-7.0 * std::f32::consts::PI / 25.0, rng.range_f32(-0.08, -0.02)),
+            ProjectileType::Melon => (-2.0 * std::f32::consts::PI / 5.0, rng.range_f32(-0.08, -0.02)),
+            ProjectileType::Kernel => (0.0, rng.range_f32(-0.2, -0.08)),
+            _ => (0.0, 0.0),
+        };
     }
 
     /// The trail particles a snow pea or puff leaves (`ProjectileInitialize`),
@@ -101,7 +142,7 @@ impl Projectile {
         match ty {
             ProjectileType::Snowpea => Some((ParticleEffect::SnowpeaTrail, 8.0, 13.0)),
             ProjectileType::Puff => Some((ParticleEffect::PuffshroomTrail, 13.0, 13.0)),
-            ProjectileType::Pea | ProjectileType::Fire => None,
+            ProjectileType::Pea | ProjectileType::Fire | ProjectileType::Cabbage | ProjectileType::Kernel | ProjectileType::Butter | ProjectileType::Melon => None,
         }
     }
 
@@ -122,7 +163,10 @@ impl Projectile {
         match self.ty {
             ProjectileType::Fire => IRect::new(self.x, self.y, self.width - 10, self.height),
             ProjectileType::Pea | ProjectileType::Snowpea => IRect::new(self.x - 15, self.y, self.width + 15, self.height),
-            ProjectileType::Puff => IRect::new(self.x, self.y, self.width, self.height),
+            ProjectileType::Melon => IRect::new(self.x + 20, self.y, 60, self.height),
+            ProjectileType::Puff | ProjectileType::Cabbage | ProjectileType::Kernel | ProjectileType::Butter => {
+                IRect::new(self.x, self.y, self.width, self.height)
+            }
         }
     }
 
@@ -182,6 +226,7 @@ impl Projectile {
         if self.age > 0 {
             self.render_order = make_render_order(render_layer::PROJECTILE, self.row, 0);
         }
+        self.rotation += self.rotation_speed;
         self.update_motion(zombies, env, fx);
         // AttachmentUpdateAndMove.
         if let Some((id, dx, dy)) = self.trail
@@ -197,8 +242,27 @@ impl Projectile {
         }
     }
 
-    /// `Projectile::UpdateMotion` + `UpdateNormalMotion`.
+    /// `Projectile::UpdateMotion`: moves, then follows the roof's slope.
     fn update_motion(&mut self, zombies: &mut DataArray<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
+        let old_row = self.row;
+        let old_y = super::pos_y_based_on_row(env.background, self.pos_x, self.row);
+        if self.lobbed {
+            self.update_lob_motion(zombies, env, fx);
+        } else {
+            self.update_normal_motion(zombies, env, fx);
+        }
+        let slope = super::pos_y_based_on_row(env.background, self.pos_x, old_row) - old_y;
+        if self.lobbed {
+            self.pos_y += slope;
+            self.pos_z -= slope;
+        }
+        self.shadow_y += slope;
+        self.x = self.pos_x as i32;
+        self.y = (self.pos_y + self.pos_z) as i32;
+    }
+
+    /// `Projectile::UpdateNormalMotion`.
+    fn update_normal_motion(&mut self, zombies: &mut DataArray<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
         self.pos_x += 3.33;
         if self.vel_y != 0.0 {
             self.pos_y += self.vel_y;
@@ -206,8 +270,36 @@ impl Projectile {
             self.shadow_y += self.vel_y;
         }
         self.check_for_collision(zombies, env, fx);
-        self.x = self.pos_x as i32;
-        self.y = (self.pos_y + self.pos_z) as i32;
+    }
+
+    /// `Projectile::UpdateLobMotion`: up and over, landing on the first zombie
+    /// it comes down on, or the ground.
+    fn update_lob_motion(&mut self, zombies: &mut DataArray<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
+        self.vel_z += self.acc_z;
+        self.pos_x += self.vel_x;
+        self.pos_z += self.vel_z;
+        let rising = self.vel_z < 0.0;
+        if self.age <= 20 || rising {
+            return;
+        }
+        let mut min_collision_z = match self.ty {
+            ProjectileType::Butter => -32.0,
+            ProjectileType::Melon => -35.0,
+            ProjectileType::Cabbage | ProjectileType::Kernel => -30.0,
+            _ => 0.0,
+        };
+        if env.pool_rows.get(self.row as usize).copied().unwrap_or(false) {
+            min_collision_z += 40.0;
+        }
+        if self.pos_z <= min_collision_z {
+            return;
+        }
+        let target = self.find_collision_target(zombies);
+        let hit_ground = self.pos_z > 80.0;
+        if target.is_none() && !hit_ground {
+            return;
+        }
+        self.do_lob_impact(zombies, target, env, fx);
     }
 
     /// `Projectile::CheckForCollision`.
@@ -236,6 +328,10 @@ impl Projectile {
         let mut best: Option<(i32, sexy::data_array::Id<Zombie>)> = None;
         for (id, zombie) in zombies.iter() {
             if zombie.row != self.row || !zombie.effected_by_damage(self.damage_range_flags) {
+                continue;
+            }
+            // A snorkel swimming under the water is only hit by shots coming down on it.
+            if zombie.phase == super::zombie::ZombiePhase::SnorkelWalkingInPool && self.pos_z <= 45.0 {
                 continue;
             }
             if rect_overlap(rect, zombie.zombie_rect()) >= 0 && best.is_none_or(|(x, _)| zombie.x < x) {
@@ -277,7 +373,7 @@ impl Projectile {
             ProjectileType::Pea => (-15.0, ParticleEffect::PeaSplat),
             ProjectileType::Snowpea => (-15.0, ParticleEffect::SnowpeaSplat),
             ProjectileType::Puff => (-20.0, ParticleEffect::PuffSplat),
-            ProjectileType::Fire => return,
+            ProjectileType::Fire | ProjectileType::Cabbage | ProjectileType::Kernel | ProjectileType::Butter | ProjectileType::Melon => return,
         };
         let (splat_x, splat_y) = (self.pos_x + 12.0 + splat_offset, self.pos_y + 12.0);
         let mut x = splat_x + 52.0 - zombie.x as f32;
@@ -286,6 +382,81 @@ impl Projectile {
             x -= 60.0;
         }
         zombie.add_attached_particle(x, y, effect, fx);
+        self.die(fx);
+    }
+
+    /// Whether a melon's splash reaches `zombie` (`IsZombieHitBySplash`).
+    fn is_hit_by_splash(&self, zombie: &Zombie) -> bool {
+        (zombie.row - self.row).abs() <= 1
+            && zombie.effected_by_damage(self.damage_range_flags)
+            && rect_overlap(self.rect(), zombie.zombie_rect()) >= 0
+    }
+
+    /// `Projectile::DoImpact` for a lobbed shot, which may come down on a
+    /// zombie or only on the ground.
+    fn do_lob_impact(&mut self, zombies: &mut DataArray<Zombie>, target: Option<sexy::data_array::Id<Zombie>>, env: &ZombieEnv, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Projectile::DoImpact and DoSplashDamage.
+        match self.ty {
+            ProjectileType::Kernel => fx.sounds.play_foley(FoleyType::KernelSplat),
+            ProjectileType::Butter => fx.sounds.play_foley(FoleyType::Butter),
+            _ => {
+                if let Some(zombie) = target.and_then(|id| zombies.get(id)) {
+                    self.play_impact_sound(zombie, fx);
+                } else {
+                    fx.sounds.play_foley(FoleyType::Splat);
+                }
+            }
+        }
+        if self.ty == ProjectileType::Melon {
+            let full = self.ty.damage();
+            let splashed: Vec<_> = zombies.iter().filter(|(id, z)| Some(*id) != target && self.is_hit_by_splash(z)).map(|(id, _)| id).collect();
+            let mut splash = full / 3;
+            let total = splash * splashed.len() as i32;
+            let cap = full * 7;
+            if total > cap {
+                splash = (full * cap / (total * 3)).max(1);
+            }
+            let flags = damage::HITS_SHIELD_AND_BODY;
+            if let Some(zombie) = target.and_then(|id| zombies.get_mut(id)) {
+                zombie.take_damage(full, flags, env, fx);
+            }
+            for id in splashed {
+                if let Some(zombie) = zombies.get_mut(id) {
+                    zombie.take_damage(splash, flags, env, fx);
+                }
+            }
+        } else if let Some(zombie) = target.and_then(|id| zombies.get_mut(id)) {
+            zombie.take_damage(self.ty.damage(), damage::BYPASSES_SHIELD, env, fx);
+            if self.ty == ProjectileType::Butter {
+                zombie.apply_butter(fx);
+            }
+        }
+
+        let last_x = self.pos_x - self.vel_x;
+        let last_y = self.pos_y + self.pos_z - self.vel_z;
+        let order = self.render_order + 1;
+        let (splat_x, splat_y, effect) = match self.ty {
+            ProjectileType::Cabbage => (last_x - 38.0, last_y + 23.0, Some(ParticleEffect::CabbageSplat)),
+            ProjectileType::Butter => (last_x - 20.0, last_y + 63.0, Some(ParticleEffect::ButterSplat)),
+            _ => (self.pos_x + 12.0, self.pos_y + 12.0, None),
+        };
+        if self.ty == ProjectileType::Melon {
+            let rng = fx.sounds.rng();
+            fx.effects.add_particle(last_x + 30.0, last_y + 30.0, order, ParticleEffect::Melonsplash, fx.res, fx.images, rng);
+        }
+        if let Some(effect) = effect {
+            if let Some(zombie) = target.and_then(|id| zombies.get_mut(id)) {
+                let x = splat_x + 52.0 - zombie.x as f32;
+                let mut y = splat_y - zombie.y as f32;
+                if matches!(zombie.phase, super::zombie::ZombiePhase::SnorkelWalkingInPool | super::zombie::ZombiePhase::DolphinWalkingInPool) {
+                    y += 60.0;
+                }
+                zombie.add_attached_particle(x, y.clamp(20.0, 100.0), effect, fx);
+            } else {
+                let rng = fx.sounds.rng();
+                fx.effects.add_particle(splat_x, splat_y, order, effect, fx.res, fx.images, rng);
+            }
+        }
         self.die(fx);
     }
 
@@ -336,12 +507,17 @@ impl Projectile {
 
     /// `Projectile::Draw`: in the projectile's own coordinates.
     pub fn draw(&self, g: &mut Graphics, res: &GameResources) {
+        if self.lobbed {
+            self.draw_lobbed(g, res);
+            return;
+        }
         let id = match self.ty {
             ProjectileType::Pea => "IMAGE_PROJECTILEPEA",
             ProjectileType::Snowpea => "IMAGE_PROJECTILESNOWPEA",
             ProjectileType::Puff => "IMAGE_PUFFSHROOM_PUFF1",
             // The flames are a reanimation of their own.
             ProjectileType::Fire => return,
+            ProjectileType::Cabbage | ProjectileType::Kernel | ProjectileType::Butter | ProjectileType::Melon => return,
         };
         let Some(image) = res.image(id) else { return };
         g.push_state();
@@ -357,6 +533,24 @@ impl Projectile {
         g.pop_state();
     }
 
+    /// `Projectile::Draw` for the lobbed shots: spinning as they fly.
+    fn draw_lobbed(&self, g: &mut Graphics, res: &GameResources) {
+        let (id, scale) = match self.ty {
+            ProjectileType::Cabbage => ("IMAGE_REANIM_CABBAGEPULT_CABBAGE", 1.0),
+            ProjectileType::Kernel => ("IMAGE_REANIM_CORNPULT_KERNAL", 0.95),
+            ProjectileType::Butter => ("IMAGE_REANIM_CORNPULT_BUTTER", 0.8),
+            _ => ("IMAGE_REANIM_MELONPULT_MELON", 1.0),
+        };
+        let Some(image) = res.image(id) else { return };
+        let (w, h) = (image.cel_width() as f32, image.cel_height() as f32);
+        let center = Vec2::new(self.pos_x + w * 0.5, self.pos_y + self.pos_z + h * 0.5);
+        // The caller translated to (x, y); the shot is placed by its own centre.
+        let t = g.translation();
+        let transform = Affine2::from_scale_angle_translation(Vec2::splat(scale), self.rotation, center - t)
+            * Affine2::from_translation(Vec2::new(-w * 0.5, -h * 0.5));
+        g.draw_image_matrix(image, transform);
+    }
+
     /// `Projectile::DrawShadow`.
     pub fn draw_shadow(&self, g: &mut Graphics, night: bool, res: &GameResources) {
         if self.ty == ProjectileType::Puff {
@@ -367,7 +561,12 @@ impl Projectile {
         g.push_state();
         g.translate(self.x as f32, self.y as f32);
         let y = self.shadow_y - self.pos_y + offset_y;
-        if self.ty == ProjectileType::Snowpea {
+        if self.lobbed {
+            // The shadow shrinks as the shot climbs (the original's 1.6 scale, less with height).
+            let height = (-self.pos_z).clamp(0.0, 200.0);
+            let scale = 1.6 * 200.0 / (height + 200.0);
+            g.draw_image_cel_center_scaled(image, offset_x, y + 10.0, night as u32, scale, scale);
+        } else if self.ty == ProjectileType::Snowpea {
             g.draw_image_cel_center_scaled(image, offset_x - 4.0, y, night as u32, 1.3, 1.3);
         } else {
             g.draw_image_cel(image, offset_x, y, night as u32, 0);

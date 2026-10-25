@@ -30,9 +30,9 @@ Legend: `[x]` done, `[~]` partly done, `[ ]` not started.
 - [ ] Seed chooser pool and fog warnings (not yet in the chooser).
 
 ### World 5: roof (5-1 to 5-10, `BackgroundType::Roof`)
-- [ ] Roof terrain: slope (columns 0-4 vs 5-8), flower pots required on every tile, tile-lifted drawing.
-- [ ] Flower pot planting (placing pots first, pot art under plants, plants 5 px higher in the pot).
-- [ ] Lobbed projectiles vs the slope (cabbage/kernel/melon hit rules, miss over the crest), direct shooters blocked by the slope.
+- [x] Roof terrain: slope (columns 0-4 vs 5-8), flower pots required on every tile, tile-lifted drawing.
+- [x] Flower pot planting (placing pots first, pot art under plants, plants 5 px higher in the pot).
+- [x] Lobbed projectiles vs the slope (cabbage/kernel/melon hit rules); direct shooters keep a level flight, only their shadows follow the slope, as in the original.
 - [ ] Roof level intro, rake, Crazy Dave talks, the "no sun from the sky" rule is gone on roof (sky sun returns).
 - [ ] Level 5-5 conveyor / bowling variants and others per `gZombieWaves` tables.
 - [ ] Craters for roof (`grid_item.rs` TODO) and pool craters.
@@ -94,7 +94,7 @@ Present (verify behaviour): peashooter, sunflower, cherry bomb, wall-nut, potato
 Partly there (definition, little behaviour): lily pad, tangle kelp, sea-shroom, pumpkin, gloom-shroom, coffee bean (waking up sleeping mushrooms, `plant.rs` TODO).
 
 Not started:
-- [ ] Lily pad, tangle kelp, sea-shroom (finish), plantern (fog light), cactus (pops balloons, hits over high zombies), blover (blows fog and balloons), split pea (backward head), starfruit (five directions), pumpkin (shell over plant, repair), magnet-shroom (removes metal items), cabbage-pult, flower pot, kernel-pult (butter stun), coffee bean (finish), garlic (diverts zombies), umbrella leaf (bungee shield, lob protection), marigold (coins), melon-pult, gatling pea (upgrade of repeater), twin sunflower (upgrade), gloom-shroom (upgrade), cattail (pool homing shots), winter melon (upgrade), gold magnet (picks up coins), spikerock (upgrade), cob cannon (upgrade, aim and fire), imitater (clones any seed, grey packet), sprout.
+- [ ] Lily pad, tangle kelp, sea-shroom (finish), plantern (fog light), cactus (pops balloons, hits over high zombies), blover (blows fog and balloons), split pea (backward head), starfruit (five directions), pumpkin (shell over plant, repair), magnet-shroom (removes metal items), flower pot, cabbage-pult, kernel-pult (butter stun), coffee bean (finish), garlic (diverts zombies), umbrella leaf (bungee shield, lob protection), marigold (coins), melon-pult, gatling pea (upgrade of repeater), twin sunflower (upgrade), gloom-shroom (upgrade), cattail (pool homing shots), winter melon (upgrade), gold magnet (picks up coins), spikerock (upgrade), cob cannon (upgrade, aim and fire), imitater (clones any seed, grey packet), sprout.
 - [ ] Upgrade plants: planting over the base plant, base plant required (`seed_bank.rs` TODO), glow when ready.
 - [ ] Zombie-facing hit rules for new shooters (lobbed shots arc, ignore walls); `effected_by_damage` for new plants.
 - [ ] Plant glow as zombies approach (`plant.rs` TODO), multi-head shake, twin / threepeater / split pea faces, 5-pixel lift in a flower pot.

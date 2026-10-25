@@ -43,7 +43,7 @@ pub enum PlantAction {
     ///
     /// A threepeater's side peas start in its own row and drift towards `row`
     /// (`drift` is their vertical speed, `MOTION_THREEPEATER`).
-    Shoot { x: i32, y: i32, row: i32, render_order: i32, projectile: ProjectileType, short_range: bool, drift: f32 },
+    Shoot { x: i32, y: i32, row: i32, render_order: i32, projectile: ProjectileType, short_range: bool, drift: f32, lob: Option<Lob> },
     /// `Plant::DoRowAreaDamage`: hurts every zombie in `row` touching `rect`
     /// (the fume-shroom's fumes).
     RowAreaDamage { row: i32, rect: IRect, damage: i32, flags: u32 },
@@ -113,6 +113,8 @@ pub(super) enum PlantState {
     SquashFalling,
     SquashDoneFalling,
     SpikeweedAttacking,
+    /// The kernel-pult has a pat of butter ready to throw.
+    KernelButter,
     /// The tangle kelp has hold of a zombie and is pulling it under.
     TanglekelpGrabbing,
     /// An instant plant counting down to going off.
@@ -175,6 +177,8 @@ pub struct Plant {
     /// The threepeater's other two heads (`mHeadReanimID2` and `3`); `head` is the first.
     extra_heads: [Option<ReanimationId>; 2],
     blink: Option<ReanimationId>,
+    /// Stands in a flower pot (or is one) on the roof: drawn and shooting 5 px higher.
+    pub in_pot: bool,
     /// The plantern's glow over the fog.
     light: Option<ParticleSystemId>,
     /// The squash's square, where it jumps from (`mStartRow` and its column).
@@ -182,6 +186,24 @@ pub struct Plant {
     /// The zombie it's jumping on (`mTargetZombieID`) and the x it jumps to.
     target_zombie: Option<sexy::data_array::Id<Zombie>>,
     target_x: i32,
+}
+
+/// Where a catapult plant's shot is thrown: how far along and down it lands,
+/// and what it may hit.
+#[derive(Debug, Clone, Copy)]
+pub struct Lob {
+    pub range_x: f32,
+    pub range_y: f32,
+    pub range_flags: u32,
+}
+
+/// What a catapult plant works out about the zombie it's throwing at.
+#[derive(Debug, Clone, Copy)]
+struct LobTarget {
+    lead_x: f32,
+    top: i32,
+    riding_dolphin: bool,
+    swimming_snorkel: bool,
 }
 
 /// `PlantDrawHeightOffset`, without the pool's bobbing and flower pots.
@@ -236,6 +258,7 @@ impl Plant {
             state: PlantState::NotReady,
             state_countdown: 0,
             do_special_countdown: 0,
+            in_pot: false,
             light: None,
             blink_countdown: 0,
             launch_rate: def.launch_rate,
@@ -336,6 +359,11 @@ impl Plant {
                 }
             }
             Chomper | Scaredyshroom => plant.state = PlantState::Ready,
+            Kernelpult => {
+                if let Some(body) = plant.body.and_then(|b| effects.get_mut(b)) {
+                    body.assign_render_group_to_prefix("Cornpult_butter", RENDER_GROUP_HIDDEN);
+                }
+            }
             Plantern => {
                 // Behaviour per ruslan831 decomp, Plant::PlantInitialize: its glow shows above the fog.
                 plant.state_countdown = 50;
@@ -411,6 +439,11 @@ impl Plant {
         };
         let layer = if self.bowling { render_layer::PROJECTILE } else { render_layer::PLANT };
         make_render_order(layer, self.row, order as i32 * 5 - self.x + 800)
+    }
+
+    /// `PlantDrawHeightOffset` for this plant: potted plants sit 5 px higher.
+    fn height_offset(&self) -> f32 {
+        plant_draw_height_offset(self.seed) + if self.in_pot { 5.0 } else { 0.0 }
     }
 
     /// `Plant::Update`, while playing.
@@ -760,7 +793,7 @@ impl Plant {
         if self.dead || self.is_asleep {
             return;
         }
-        self.update_shooting(actions, effects);
+        self.update_shooting(zombies, actions, effects);
         if self.state_countdown > 0 {
             self.state_countdown -= 1;
         }
@@ -1194,13 +1227,22 @@ impl Plant {
             if self.seed == SeedType::Threepeater {
                 self.launch_threepeater(zombies, effects, open_rows);
             } else if is_pea_shooter(self.seed)
-                || matches!(self.seed, SeedType::Puffshroom | SeedType::Seashroom | SeedType::Fumeshroom | SeedType::Scaredyshroom)
+                || matches!(
+                    self.seed,
+                    SeedType::Puffshroom
+                        | SeedType::Seashroom
+                        | SeedType::Fumeshroom
+                        | SeedType::Scaredyshroom
+                        | SeedType::Cabbagepult
+                        | SeedType::Kernelpult
+                        | SeedType::Melonpult
+                )
             {
-                self.find_target_and_fire(zombies, actions, effects);
+                self.find_target_and_fire(zombies, actions, effects, rng);
             }
         }
         if self.launch_counter == 25 && self.seed == SeedType::Repeater {
-            self.find_target_and_fire(zombies, actions, effects);
+            self.find_target_and_fire(zombies, actions, effects, rng);
         }
     }
 
@@ -1210,12 +1252,35 @@ impl Plant {
         self.find_target_zombie_in_row(zombies, self.row)
     }
 
+    /// What this plant's shots can reach (`GetDamageRangeFlags`): the catapult
+    /// plants' lobs come down on swimmers too.
+    fn target_flags(&self) -> u32 {
+        match self.seed {
+            SeedType::Cabbagepult | SeedType::Kernelpult | SeedType::Melonpult => damage_range::GROUND | damage_range::SUBMERGED,
+            _ => damage_range::GROUND,
+        }
+    }
+
+    /// The zombie a catapult plant throws at, if it is one.
+    fn lob_target(&self, zombies: &DataArray<Zombie>) -> Option<LobTarget> {
+        if !matches!(self.seed, SeedType::Cabbagepult | SeedType::Kernelpult | SeedType::Melonpult) {
+            return None;
+        }
+        let zombie = self.find_target_zombie(zombies).and_then(|id| zombies.get(id))?;
+        Some(LobTarget {
+            lead_x: zombie.target_lead_x(50.0),
+            top: zombie.zombie_rect().y,
+            riding_dolphin: zombie.phase == super::zombie::ZombiePhase::DolphinRiding,
+            swimming_snorkel: zombie.phase == super::zombie::ZombiePhase::SnorkelWalkingInPool,
+        })
+    }
+
     /// `Plant::FindTargetZombie` for any `row` (the threepeater looks at three).
     fn find_target_zombie_in_row(&self, zombies: &DataArray<Zombie>, row: i32) -> Option<sexy::data_array::Id<Zombie>> {
         let attack = self.attack_rect();
         let mut best: Option<(i32, sexy::data_array::Id<Zombie>)> = None;
         for (id, zombie) in zombies.iter() {
-            if zombie.row != row || !zombie.effected_by_damage(damage_range::GROUND) {
+            if zombie.row != row || !zombie.effected_by_damage(self.target_flags()) {
                 continue;
             }
             if self.seed == SeedType::ExplodeONut && zombie.phase == super::zombie::ZombiePhase::PoleInVault {
@@ -1263,14 +1328,14 @@ impl Plant {
         let rows = [(self.head, self.row + 1), (self.extra_heads[0], self.row), (self.extra_heads[1], self.row - 1)];
         for (head, row) in rows {
             if shooting(head) {
-                self.fire(row, actions, effects);
+                self.fire(row, None, actions, effects);
             }
         }
     }
 
     /// `Plant::FindTargetAndFire`: starts the shooting animation if there's
     /// something to shoot at.
-    fn find_target_and_fire(&mut self, zombies: &DataArray<Zombie>, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem) {
+    fn find_target_and_fire(&mut self, zombies: &DataArray<Zombie>, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem, rng: &mut MtRand) {
         if self.find_target_zombie(zombies).is_none() {
             return;
         }
@@ -1289,20 +1354,33 @@ impl Plant {
         } else if self.body.and_then(|b| effects.get(b)).is_some_and(|b| b.definition.find_track("anim_shooting").is_some()) {
             // Mushrooms shoot with their whole body.
             self.play_body_reanim(effects, "anim_shooting", LoopType::PlayOnceAndHold, 20, 35.0);
-            // TODO: the other body shooters' timings (cabbage-pult 32, melon-pult 36, ...).
+            // TODO: the other body shooters' timings (cactus 35, ...).
             self.shooting_counter = match self.seed {
                 SeedType::Fumeshroom => 50,
                 SeedType::Scaredyshroom => 25,
+                SeedType::Cabbagepult => 32,
+                SeedType::Melonpult => 36,
+                SeedType::Kernelpult => {
+                    // One throw in four is a pat of butter.
+                    if rng.next_range(4) == 0 {
+                        self.state = PlantState::KernelButter;
+                        if let Some(body) = self.body.and_then(|b| effects.get_mut(b)) {
+                            body.assign_render_group_to_prefix("Cornpult_butter", RENDER_GROUP_NORMAL);
+                            body.assign_render_group_to_prefix("Cornpult_kernal", RENDER_GROUP_HIDDEN);
+                        }
+                    }
+                    30
+                }
                 _ => 29,
             };
         } else {
-            self.fire(self.row, actions, effects);
+            self.fire(self.row, None, actions, effects);
         }
     }
 
     /// `Plant::UpdateShooting`: fires when the animation reaches the shot,
     /// then goes back to idle once it's done.
-    fn update_shooting(&mut self, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem) {
+    fn update_shooting(&mut self, zombies: &DataArray<Zombie>, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem) {
         if self.shooting_counter == 0 {
             return;
         }
@@ -1316,7 +1394,16 @@ impl Plant {
             if self.seed == SeedType::Threepeater {
                 self.fire_threepeater(actions, effects);
             } else {
-                self.fire(self.row, actions, effects);
+                let target = self.lob_target(zombies);
+                self.fire(self.row, target, actions, effects);
+                // The butter's thrown: back to kernels.
+                if self.seed == SeedType::Kernelpult && self.state == PlantState::KernelButter {
+                    self.state = PlantState::NotReady;
+                    if let Some(body) = self.body.and_then(|b| effects.get_mut(b)) {
+                        body.assign_render_group_to_prefix("Cornpult_butter", RENDER_GROUP_HIDDEN);
+                        body.assign_render_group_to_prefix("Cornpult_kernal", RENDER_GROUP_NORMAL);
+                    }
+                }
             }
             return;
         }
@@ -1372,23 +1459,30 @@ impl Plant {
     }
 
     /// `Plant::Fire`, for peashooters and the mushrooms.
-    fn fire(&mut self, row: i32, actions: &mut Vec<PlantAction>, effects: &EffectSystem) {
+    fn fire(&mut self, row: i32, target: Option<LobTarget>, actions: &mut Vec<PlantAction>, effects: &EffectSystem) {
         if self.seed == SeedType::Fumeshroom {
             let rect = self.attack_rect();
             actions.push(PlantAction::RowAreaDamage { row: self.row, rect, damage: 20, flags: damage::HITS_SHIELD_AND_BODY });
             actions.push(PlantAction::Foley(FoleyType::Fume));
             return;
         }
-        let (x, y) = match self.seed {
+        let (x, mut y) = match self.seed {
             SeedType::Puffshroom | SeedType::Seashroom => (self.x + 40, self.y + 40),
             SeedType::Scaredyshroom => (self.x + 29, self.y + 21),
             SeedType::Threepeater => (self.x + 45, self.y + 10),
+            SeedType::Cabbagepult => (self.x + 5, self.y - 12),
+            SeedType::Melonpult => (self.x + 25, self.y - 46),
+            SeedType::Kernelpult if self.state == PlantState::KernelButter => (self.x + 12, self.y - 56),
+            SeedType::Kernelpult => (self.x + 19, self.y - 37),
             _ => {
                 let (offset_x, offset_y) = self.pea_head_offset(effects);
                 (self.x + offset_x + 24, self.y + offset_y - 33)
             }
         };
-        // TODO: shots leave 5 pixels higher from a flower pot.
+        // Shots leave 5 pixels higher from a flower pot.
+        if self.in_pot {
+            y -= 5;
+        }
         let muzzle = make_render_order(render_layer::LAWN_MOWER, self.row, 1);
         let projectile = match self.seed {
             SeedType::Snowpea => {
@@ -1404,8 +1498,30 @@ impl Plant {
                 actions.push(PlantAction::Foley(FoleyType::Puff));
                 ProjectileType::Puff
             }
+            SeedType::Cabbagepult => ProjectileType::Cabbage,
+            SeedType::Melonpult => ProjectileType::Melon,
+            SeedType::Kernelpult if self.state == PlantState::KernelButter => ProjectileType::Butter,
+            SeedType::Kernelpult => ProjectileType::Kernel,
             _ => ProjectileType::Pea,
         };
+        // A catapult's shot is thrown at where the zombie will be (`Plant::Fire`).
+        let lob = matches!(self.seed, SeedType::Cabbagepult | SeedType::Kernelpult | SeedType::Melonpult).then(|| {
+            let (mut range_x, range_y) = match target {
+                Some(t) => {
+                    let mut range_x = t.lead_x - x as f32 - 30.0;
+                    if t.riding_dolphin {
+                        range_x -= 60.0;
+                    }
+                    if t.swimming_snorkel {
+                        range_x -= 40.0;
+                    }
+                    (range_x, (t.top - y) as f32)
+                }
+                None => (700.0 - x as f32, 0.0),
+            };
+            range_x = range_x.max(40.0);
+            Lob { range_x, range_y, range_flags: self.target_flags() | 8 }
+        });
         // Only the puff-shroom's puffs fade out after a short way (`MOTION_PUFF`).
         let short_range = matches!(self.seed, SeedType::Puffshroom | SeedType::Seashroom);
         // The threepeater's side peas change lanes (`MOTION_THREEPEATER`).
@@ -1415,13 +1531,13 @@ impl Plant {
             std::cmp::Ordering::Greater => 3.0,
             std::cmp::Ordering::Equal => 0.0,
         };
-        actions.push(PlantAction::Shoot { x, y, row, render_order: self.render_order - 1, projectile, short_range, drift });
+        actions.push(PlantAction::Shoot { x, y, row, render_order: self.render_order - 1, projectile, short_range, drift, lob });
     }
 
     /// `Plant::UpdateReanim`.
     fn update_reanim(&mut self, effects: &mut EffectSystem) {
         let Some(body) = self.body else { return };
-        let (mut offset_x, mut offset_y) = (self.shake_offset_x, plant_draw_height_offset(self.seed));
+        let (mut offset_x, mut offset_y) = (self.shake_offset_x, self.height_offset());
         let (mut scale_x, mut scale_y) = (1.0, 1.0);
         match self.seed {
             SeedType::GiantWallnut => {
@@ -1560,7 +1676,7 @@ impl Plant {
     pub fn draw(&self, g: &mut Graphics, stage_is_night: bool, effects: &EffectSystem, res: &GameResources) {
         g.push_state();
         g.translate(self.x as f32, self.y as f32);
-        let offset_y = plant_draw_height_offset(self.seed);
+        let offset_y = self.height_offset();
         // The squash's shadow stays on the ground as it jumps.
         let airborne = self.seed == SeedType::Squash
             && matches!(self.state, PlantState::SquashRising | PlantState::SquashFalling | PlantState::SquashDoneFalling);

@@ -433,6 +433,10 @@ pub enum FoleyType {
     PlantWater,
     /// `FOLEY_DOLPHIN_BEFORE_JUMPING`.
     DolphinBeforeJumping,
+    /// `FOLEY_KERNEL_SPLAT`: a kernel hits.
+    KernelSplat,
+    /// `FOLEY_BUTTER`: a pat of butter hits.
+    Butter,
     /// `FOLEY_ZOMBIE_ENTERING_WATER`: a snorkel or dolphin rider dives in.
     #[allow(dead_code, reason = "used once the snorkel and dolphin rider are ported")]
     ZombieEnteringWater,
@@ -554,6 +558,8 @@ impl FoleyType {
             Self::JalapenoIgnite => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_JALAPENO"], flags: 0 },
             Self::Thump => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_GARGANTUAR_THUMP"], flags: 0 },
             Self::ZombieSplash => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_PLANT_WATER", "SOUND_ZOMBIE_ENTERING_WATER"], flags: 0 },
+            Self::KernelSplat => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_KERNELPULT", "SOUND_KERNELPULT2"], flags: 0 },
+            Self::Butter => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_BUTTER"], flags: 0 },
             Self::DolphinBeforeJumping => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_DOLPHIN_BEFORE_JUMPING"], flags: 0 },
             Self::PlantWater => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_PLANT_WATER"], flags: 0 },
             Self::ZombieEnteringWater => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_ZOMBIE_ENTERING_WATER"], flags: 0 },

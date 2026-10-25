@@ -304,6 +304,8 @@ pub struct Zombie {
     chilled_counter: i32,
     /// Ticks left frozen solid by an ice-shroom (`mIceTrapCounter`).
     ice_trap_counter: i32,
+    /// Ticks left stuck in butter (`mButteredCounter`).
+    buttered_counter: i32,
     phase_counter: i32,
     /// How far above the ground it is (`mAltitude`); below it while rising from a grave.
     altitude: f32,
@@ -441,6 +443,7 @@ impl Zombie {
             just_got_shot_counter: 0,
             chilled_counter: 0,
             ice_trap_counter: 0,
+            buttered_counter: 0,
             phase_counter: 0,
             altitude: 0.0,
             height: ZombieHeight::Normal,
@@ -1099,7 +1102,23 @@ impl Zombie {
 
     /// `Zombie::IsImmobilizied`: frozen solid (or, later, buttered).
     pub fn is_immobilized(&self) -> bool {
-        self.ice_trap_counter > 0
+        self.ice_trap_counter > 0 || self.buttered_counter > 0
+    }
+
+    /// `Zombie::ApplyButter`: a pat of butter holds it still for a while.
+    pub fn apply_butter(&mut self, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::ApplyButter.
+        if !self.has_head || !self.can_be_chilled() || self.zombie_type == ZombieType::Zamboni || self.zombie_type == ZombieType::Boss {
+            return;
+        }
+        self.buttered_counter = 400;
+        self.update_anim_speed(fx.effects);
+    }
+
+    /// Whether it's stuck in butter.
+    #[cfg(test)]
+    pub(super) fn is_buttered(&self) -> bool {
+        self.buttered_counter > 0
     }
 
     /// `Zombie::ApplyChill`: frozen zombies move and bite at half speed;
@@ -1550,6 +1569,12 @@ impl Zombie {
                 // RemoveIceTrap.
                 self.update_anim_speed(fx.effects);
                 self.add_attached_particle(75.0, 106.0, ParticleEffect::IceTrapRelease, fx);
+            }
+        }
+        if self.buttered_counter > 0 {
+            self.buttered_counter -= 1;
+            if self.buttered_counter == 0 {
+                self.update_anim_speed(fx.effects);
             }
         }
         if self.chilled_counter > 0 {
@@ -3183,6 +3208,13 @@ impl Zombie {
             && let Some(front) = res.image("IMAGE_ICETRAP")
         {
             g.draw_image(front, 46.0, ice_y);
+        }
+        // DrawButter: a pat of butter on its head.
+        if self.buttered_counter > 0
+            && let Some(butter) = res.image("IMAGE_REANIM_CORNPULT_BUTTER_SPLAT")
+        {
+            let (head_x, head_y) = self.track_position(effects, "anim_head1");
+            g.draw_image(butter, head_x - self.pos_x - 29.0 - self.x as f32 + self.pos_x, head_y - self.pos_y - 36.0 - self.y as f32 + self.pos_y + self.draw_pos().body_y);
         }
         g.pop_state();
     }

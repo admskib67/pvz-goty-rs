@@ -1322,12 +1322,16 @@ impl Board {
         sounds: &mut Sounds,
     ) {
         match action {
-            PlantAction::Shoot { x, y, row, render_order, projectile, short_range, drift } => {
+            PlantAction::Shoot { x, y, row, render_order, projectile, short_range, drift, lob } => {
                 sounds.play_foley(FoleyType::Throw);
                 let grid_x = self.pixel_to_grid_x(x).max(0);
                 let shadow_y = self.grid_to_pixel_y(grid_x, row) as f32 + 67.0;
-                // TODO: shadows sit 12 pixels higher on the roof's left side.
+                // Shadows sit 12 pixels higher on the roof's left side.
+                let shadow_y = if self.stage_has_roof() && x < 480 { shadow_y - 12.0 } else { shadow_y };
                 let mut shot = Projectile::new(x, y, render_order, row, shadow_y, projectile);
+                if let Some(lob) = lob {
+                    shot.launch_lob(lob.range_x, lob.range_y, lob.range_flags, sounds.rng());
+                }
                 shot.short_range = short_range;
                 if drift != 0.0 {
                     shot.set_lane_drift(drift);

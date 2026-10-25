@@ -137,6 +137,11 @@ impl Board {
         })
     }
 
+    /// `Board::GetFlowerPotAt`: whether a flower pot sits on `(grid_x, grid_y)`.
+    pub(super) fn has_flower_pot_at(&self, grid_x: i32, grid_y: i32) -> bool {
+        self.plants.iter().any(|(_, p)| p.col == grid_x && p.row == grid_y && !p.dead && p.seed == SeedType::Flowerpot)
+    }
+
     /// Whether a lily pad floats on `(grid_x, grid_y)`.
     pub(super) fn has_lily_pad_at(&self, grid_x: i32, grid_y: i32) -> bool {
         self.plants.iter().any(|(_, p)| p.col == grid_x && p.row == grid_y && !p.dead && p.seed == SeedType::Lilypad)
@@ -194,8 +199,19 @@ impl Board {
         if seed.is_aquatic() {
             return PlantingReason::NotHere;
         }
+        // Behaviour per ruslan831 decomp, Board::CanPlantAt: a flower pot needs a
+        // bare square, and on the roof nothing else goes without one.
+        if seed == SeedType::Flowerpot {
+            let occupied = self.plants.iter().any(|(_, p)| p.col == grid_x && p.row == grid_y && !p.dead);
+            return if occupied { PlantingReason::NotHere } else { PlantingReason::Ok };
+        }
         if self.stage_has_roof() {
-            return PlantingReason::NeedsPot;
+            if matches!(seed, SeedType::Spikeweed | SeedType::Spikerock) {
+                return PlantingReason::NotHere;
+            }
+            if !self.has_flower_pot_at(grid_x, grid_y) {
+                return PlantingReason::NeedsPot;
+            }
         }
         if self.normal_plant_at(grid_x, grid_y).is_some() {
             return PlantingReason::NotHere;
@@ -588,7 +604,9 @@ impl Board {
             return;
         }
         let bowling = self.is_wallnut_bowling_level();
-        let plant = Plant::new(grid_x, grid_y, x, y, seed, bowling, effects, res, images, sounds.rng());
+        let mut plant = Plant::new(grid_x, grid_y, x, y, seed, bowling, effects, res, images, sounds.rng());
+        // On the roof everything stands in a pot (or is one): it sits 5 px higher.
+        plant.in_pot = self.stage_has_roof();
         let id = self.plants.alloc(plant);
         // TODO: water sounds and splashes in the pool.
         sounds.play_foley(FoleyType::Plant);

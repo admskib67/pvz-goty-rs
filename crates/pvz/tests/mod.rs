@@ -14,6 +14,7 @@
 mod fog;
 mod levels;
 mod plants;
+mod roof;
 mod zombies;
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
