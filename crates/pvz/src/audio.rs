@@ -418,8 +418,22 @@ pub enum FoleyType {
     Dancer,
     /// A fume-shroom's fumes.
     Fume,
-    /// A zombie biting a hypno-shroom.
+    /// A zombie biting a hypno-shroom, or a bungee zombie lifting a plant.
     Floop,
+    /// A bungee zombie screaming as it drops.
+    BungeeScream,
+    /// `FOLEY_GRASSSTEP`: heard as a bungee zombie comes into view.
+    GrassStep,
+    /// An umbrella leaf snapping open.
+    Umbrella,
+    /// A catapult zombie throwing a basketball.
+    Basketball,
+    /// The gargantuar's groan.
+    LowGroan,
+    /// A gargantuar going down.
+    GargantuDeath,
+    /// An imp being flung.
+    Imp,
     /// The whack-a-zombie mallet swinging, and hitting.
     Swing,
     Bonk,
@@ -564,6 +578,17 @@ impl FoleyType {
             Self::PlantWater => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_PLANT_WATER"], flags: 0 },
             Self::ZombieEnteringWater => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_ZOMBIE_ENTERING_WATER"], flags: 0 },
             Self::Floop => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_FLOOP"], flags: 0 },
+            Self::BungeeScream => FoleyParams {
+                pitch_range: 2.0,
+                sounds: &["SOUND_BUNGEE_SCREAM", "SOUND_BUNGEE_SCREAM2", "SOUND_BUNGEE_SCREAM3"],
+                flags: 0,
+            },
+            Self::GrassStep => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_GRASSSTEP"], flags: 0 },
+            Self::Umbrella => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_THROW2"], flags: 0 },
+            Self::Basketball => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_BASKETBALL"], flags: 0 },
+            Self::LowGroan => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_LOWGROAN", "SOUND_LOWGROAN2"], flags: 0 },
+            Self::GargantuDeath => FoleyParams { pitch_range: 3.0, sounds: &["SOUND_GARGANTUDEATH"], flags: 0 },
+            Self::Imp => FoleyParams { pitch_range: 5.0, sounds: &["SOUND_IMP", "SOUND_IMP2"], flags: 0 },
             Self::Fume => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_FUME"], flags: 0 },
             Self::NewspaperRip => FoleyParams { pitch_range: -2.0, sounds: &["SOUND_NEWSPAPER_RIP"], flags: 0 },
             Self::NewspaperRarrgh => FoleyParams {

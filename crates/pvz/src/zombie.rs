@@ -91,7 +91,7 @@ static ZOMBIE_DEFS: [ZombieDefinition; NUM_ZOMBIE_TYPES] = [
     def(4, 43, 10, 1000), // Ladder
     def(5, 46, 10, 1500), // Catapult
     def(10, 48, 15, 1500), // Gargantuar
-    def(10, 48, 1, 1),    // Imp
+    def(10, 48, 1, 0),    // Imp
     def(10, 50, 1, 0),    // Boss
     def(1, 99, 1, 4000),  // PeaHead
     def(4, 99, 1, 3000),  // WallnutHead
@@ -125,6 +125,11 @@ impl ZombieType {
             Self::Football => Some(ReanimationType::ZombieFootball),
             Self::Dancer => Some(ReanimationType::Dancer),
             Self::BackupDancer => Some(ReanimationType::BackupDancer),
+            Self::Bungee => Some(ReanimationType::Bungee),
+            Self::Ladder => Some(ReanimationType::Ladder),
+            Self::Catapult => Some(ReanimationType::Catapult),
+            Self::Gargantuar => Some(ReanimationType::Gargantuar),
+            Self::Imp => Some(ReanimationType::Imp),
             _ => None,
         }
     }

@@ -395,6 +395,38 @@ impl Graphics {
         self.draw_image_matrix_src(image, transform, src);
     }
 
+    /// `TodDrawImageScaledF`: the image scaled from its top-left corner at
+    /// (x, y).
+    pub fn draw_image_scaled(&mut self, image: &ImageRes, x: f32, y: f32, sx: f32, sy: f32) {
+        if sx == 1.0 && sy == 1.0 {
+            self.draw_image(image, x, y);
+            return;
+        }
+        let (w, h) = (image.width as f32, image.height as f32);
+        let transform = Affine2::from_cols_array(&[sx, 0.0, 0.0, sy, x + w * sx * 0.5, y + h * sy * 0.5]);
+        self.draw_image_matrix(image, transform);
+    }
+
+    /// Where on screen each image drawn so far ended up (its bounding box),
+    /// so tests can check what's drawn where.
+    #[cfg(test)]
+    pub fn image_rects(&self) -> Vec<(Handle<Image>, SexyRect)> {
+        self.cmds
+            .iter()
+            .filter_map(|cmd| match cmd {
+                DrawCmd::Rect { .. } => None,
+                DrawCmd::Image { image, dest, .. } => Some((image.clone(), *dest)),
+                DrawCmd::Matrix { image, transform, src, .. } => {
+                    let corners = [(-0.5, -0.5), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5)]
+                        .map(|(u, v)| transform.transform_point2(Vec2::new(u * src.w, v * src.h)));
+                    let (x0, y0) = corners.iter().fold((f32::MAX, f32::MAX), |(x, y), c| (x.min(c.x), y.min(c.y)));
+                    let (x1, y1) = corners.iter().fold((f32::MIN, f32::MIN), |(x, y), c| (x.max(c.x), y.max(c.y)));
+                    Some((image.clone(), SexyRect::new(x0, y0, x1 - x0, y1 - y0)))
+                }
+            })
+            .collect()
+    }
+
     /// `TodDrawImageCelF`: one cel of an image strip, top-left at (x, y).
     pub fn draw_image_cel(&mut self, image: &ImageRes, x: f32, y: f32, col: u32, row: u32) {
         let (w, h) = (image.cel_width() as f32, image.cel_height() as f32);

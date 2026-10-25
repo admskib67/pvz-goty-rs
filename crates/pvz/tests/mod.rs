@@ -11,10 +11,12 @@
 //! (none are loaded) and the random generator has a fixed seed, so runs
 //! repeat exactly.
 
+mod butter;
 mod fog;
 mod levels;
 mod plants;
 mod roof;
+mod roof_zombies;
 mod zombies;
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};

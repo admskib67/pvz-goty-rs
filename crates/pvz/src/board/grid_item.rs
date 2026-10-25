@@ -30,6 +30,8 @@ pub enum GridItemType {
     GraveStone,
     /// A doom-shroom's hole: nothing can be planted there for a while.
     Crater,
+    /// A ladder zombie's ladder, leaning on a plant for zombies to climb over.
+    Ladder,
 }
 
 /// `GridItemState`, for what's ported so far.
@@ -137,6 +139,41 @@ impl Board {
             counter,
             dead: false,
         });
+    }
+
+    /// `Board::AddALadder`.
+    pub(super) fn add_a_ladder(&mut self, grid_x: i32, grid_y: i32) {
+        self.grid_items.alloc(GridItem {
+            item_type: GridItemType::Ladder,
+            state: GridItemState::Normal,
+            grid_x,
+            grid_y,
+            render_order: make_render_order(render_layer::PLANT, grid_y, 800),
+            counter: 0,
+            dead: false,
+        });
+    }
+
+    /// `Board::GetLadderAt`.
+    pub(super) fn ladder_at(&self, grid_x: i32, grid_y: i32) -> Option<Id<GridItem>> {
+        self.grid_items
+            .iter()
+            .find(|(_, g)| g.item_type == GridItemType::Ladder && g.grid_x == grid_x && g.grid_y == grid_y && !g.dead)
+            .map(|(id, _)| id)
+    }
+
+    /// Every square's ladder, for the zombies.
+    pub(super) fn ladder_grid(&self) -> super::zombie::LadderGrid {
+        let mut grid = [[false; MAX_GRID_SIZE_Y]; MAX_GRID_SIZE_X];
+        for (_, item) in self.grid_items.iter() {
+            if item.item_type == GridItemType::Ladder
+                && !item.dead
+                && let Some(cell) = grid.get_mut(item.grid_x as usize).and_then(|c| c.get_mut(item.grid_y as usize))
+            {
+                *cell = true;
+            }
+        }
+        grid
     }
 
     /// `Board::GetCraterAt`.
@@ -288,7 +325,16 @@ impl Board {
         match item.item_type {
             GridItemType::GraveStone => self.draw_grave_stone(item, res, g),
             GridItemType::Crater => self.draw_crater(item, res, g),
+            GridItemType::Ladder => self.draw_ladder(item, res, g),
         }
+    }
+
+    /// `GridItem::DrawLadder`: the ladder at 80% size, leaning on the plant.
+    fn draw_ladder(&self, item: &GridItem, res: &GameResources, g: &mut Graphics) {
+        let Some(ladder) = res.image("IMAGE_REANIM_ZOMBIE_LADDER_5") else { return };
+        let x = self.grid_to_pixel_x(item.grid_x) as f32 + 25.0;
+        let y = self.grid_to_pixel_y(item.grid_x, item.grid_y) as f32 - 4.0;
+        g.draw_image_scaled(ladder, x, y, 0.8, 0.8);
     }
 
     /// `GridItem::DrawCrater`: a scorched hole that fades as it fills in.

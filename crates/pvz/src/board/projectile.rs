@@ -1,6 +1,7 @@
 //! Things plants shoot (`Projectile`). So far the pea, the snow pea, the
 //! puff-shroom's short-range puff, the torchwood's fire pea, and the
-//! catapult plants' lobbed cabbages, kernels, butter and melons.
+//! catapult plants' lobbed cabbages, kernels, butter and melons, and the
+//! catapult zombie's basketballs, which come down on plants.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Projectile.cpp`:
 //! `ProjectileInitialize`, `Update`, `UpdateMotion`, `UpdateNormalMotion`,
@@ -18,7 +19,8 @@ use crate::particle::ParticleEffect;
 use crate::reanim::{ParticleSystemId, ReanimationId, ReanimationType};
 use crate::resources::GameResources;
 
-use super::zombie::{Fx, HelmType, IRect, Zombie, ZombieEnv, damage, damage_range, rect_overlap};
+use super::plant::{Plant, PlantState, find_umbrella_plant, top_plant_any};
+use super::zombie::{Basketball, Fx, HelmType, IRect, Zombie, ZombieEnv, damage, damage_range, rect_overlap};
 use super::{make_render_order, render_layer};
 
 /// `ProjectileType`, for what's ported so far.
@@ -35,6 +37,8 @@ pub enum ProjectileType {
     Kernel,
     Butter,
     Melon,
+    /// The catapult zombie's basketball, thrown at plants.
+    Basketball,
 }
 
 impl ProjectileType {
@@ -45,6 +49,7 @@ impl ProjectileType {
             Self::Fire | Self::Cabbage | Self::Butter => 40,
             Self::Kernel => 20,
             Self::Melon => 80,
+            Self::Basketball => 75,
         }
     }
 }
@@ -136,13 +141,30 @@ impl Projectile {
         };
     }
 
+    /// `Zombie::ZombieCatapultFire`: a catapult zombie's basketball, lobbed
+    /// back towards the plants, spinning.
+    pub fn launch_basketball(&mut self, shot: &Basketball, rng: &mut MtRand) {
+        self.lobbed = true;
+        self.vel_x = shot.vel_x;
+        self.vel_z = shot.vel_z;
+        self.acc_z = 0.115;
+        self.rotation = rng.range_f32(0.0, 2.0 * std::f32::consts::PI);
+        self.rotation_speed = rng.range_f32(0.05, 0.1);
+    }
+
     /// The trail particles a snow pea or puff leaves (`ProjectileInitialize`),
     /// and where they sit on it.
     pub fn trail_effect(ty: ProjectileType) -> Option<(ParticleEffect, f32, f32)> {
         match ty {
             ProjectileType::Snowpea => Some((ParticleEffect::SnowpeaTrail, 8.0, 13.0)),
             ProjectileType::Puff => Some((ParticleEffect::PuffshroomTrail, 13.0, 13.0)),
-            ProjectileType::Pea | ProjectileType::Fire | ProjectileType::Cabbage | ProjectileType::Kernel | ProjectileType::Butter | ProjectileType::Melon => None,
+            ProjectileType::Pea
+            | ProjectileType::Fire
+            | ProjectileType::Cabbage
+            | ProjectileType::Kernel
+            | ProjectileType::Butter
+            | ProjectileType::Melon
+            | ProjectileType::Basketball => None,
         }
     }
 
@@ -170,7 +192,7 @@ impl Projectile {
             ProjectileType::Fire => IRect::new(self.x, self.y, self.width - 10, self.height),
             ProjectileType::Pea | ProjectileType::Snowpea => IRect::new(self.x - 15, self.y, self.width + 15, self.height),
             ProjectileType::Melon => IRect::new(self.x + 20, self.y, 60, self.height),
-            ProjectileType::Puff | ProjectileType::Cabbage | ProjectileType::Kernel | ProjectileType::Butter => {
+            ProjectileType::Puff | ProjectileType::Cabbage | ProjectileType::Kernel | ProjectileType::Butter | ProjectileType::Basketball => {
                 IRect::new(self.x, self.y, self.width, self.height)
             }
         }
@@ -226,14 +248,14 @@ impl Projectile {
     }
 
     /// `Projectile::Update`.
-    pub fn update(&mut self, zombies: &mut DataArray<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
+    pub fn update(&mut self, zombies: &mut DataArray<Zombie>, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
         self.age += 1;
         // Peas start under the plants' heads and come out on top after a tick.
         if self.age > 0 {
             self.render_order = make_render_order(render_layer::PROJECTILE, self.row, 0);
         }
         self.rotation += self.rotation_speed;
-        self.update_motion(zombies, env, fx);
+        self.update_motion(zombies, plants, env, fx);
         // AttachmentUpdateAndMove.
         if let Some((id, dx, dy)) = self.trail
             && let Some(trail) = fx.effects.particle_mut(id)
@@ -249,11 +271,11 @@ impl Projectile {
     }
 
     /// `Projectile::UpdateMotion`: moves, then follows the roof's slope.
-    fn update_motion(&mut self, zombies: &mut DataArray<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
+    fn update_motion(&mut self, zombies: &mut DataArray<Zombie>, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
         let old_row = self.row;
         let old_y = super::pos_y_based_on_row(env.background, self.pos_x, self.row);
         if self.lobbed {
-            self.update_lob_motion(zombies, env, fx);
+            self.update_lob_motion(zombies, plants, env, fx);
         } else {
             self.update_normal_motion(zombies, env, fx);
         }
@@ -285,7 +307,7 @@ impl Projectile {
 
     /// `Projectile::UpdateLobMotion`: up and over, landing on the first zombie
     /// it comes down on, or the ground.
-    fn update_lob_motion(&mut self, zombies: &mut DataArray<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
+    fn update_lob_motion(&mut self, zombies: &mut DataArray<Zombie>, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
         self.vel_z += self.acc_z;
         self.pos_x += self.vel_x;
         self.pos_z += self.vel_z;
@@ -294,6 +316,7 @@ impl Projectile {
             return;
         }
         let mut min_collision_z = match self.ty {
+            ProjectileType::Basketball => 60.0,
             ProjectileType::Butter => -32.0,
             ProjectileType::Melon => -35.0,
             ProjectileType::Cabbage | ProjectileType::Kernel => -30.0,
@@ -303,6 +326,13 @@ impl Projectile {
             min_collision_z += 40.0;
         }
         if self.pos_z <= min_collision_z {
+            return;
+        }
+        if self.ty == ProjectileType::Basketball {
+            let plant = self.find_collision_target_plant(plants);
+            if plant.is_some() || self.pos_z > 80.0 {
+                self.basketball_impact(plants, plant, zombies, env, fx);
+            }
             return;
         }
         let target = self.find_collision_target(zombies);
@@ -352,6 +382,56 @@ impl Projectile {
         best.map(|(_, id)| id)
     }
 
+    /// `Projectile::FindCollisionTargetPlant`: the top plant on a square
+    /// it's coming down on.
+    fn find_collision_target_plant(&self, plants: &DataArray<Plant>) -> Option<sexy::data_array::Id<Plant>> {
+        let rect = self.rect();
+        plants
+            .iter()
+            .find(|(_, p)| p.row == self.row && !p.dead && rect_overlap(rect, p.rect()) > 8)
+            .and_then(|(_, p)| top_plant_any(plants, p.col, p.row))
+    }
+
+    /// `Projectile::CheckForCollision` for a basketball: it hurts the plant,
+    /// unless an umbrella leaf next to it is up (or goes up) in time.
+    fn basketball_impact(
+        &mut self,
+        plants: &mut DataArray<Plant>,
+        plant: Option<sexy::data_array::Id<Plant>>,
+        zombies: &mut DataArray<Zombie>,
+        env: &ZombieEnv,
+        fx: &mut Fx,
+    ) {
+        // Behaviour per ruslan831 decomp, Projectile::CheckForCollision.
+        let Some((col, row)) = plant.and_then(|id| plants.get(id)).map(|p| (p.col, p.row)) else {
+            self.do_lob_impact(zombies, None, env, fx);
+            return;
+        };
+        if let Some(umbrella) = find_umbrella_plant(plants, col, row).and_then(|id| plants.get_mut(id)) {
+            match umbrella.state() {
+                PlantState::UmbrellaReflecting => {
+                    fx.sounds.play_foley(FoleyType::Splat);
+                    let rng = fx.sounds.rng();
+                    let order = make_render_order(render_layer::TOP, 0, 1);
+                    fx.effects.add_particle(self.pos_x + 20.0, self.pos_y + 20.0, order, ParticleEffect::UmbrellaReflect, fx.res, fx.images, rng);
+                    self.die(fx);
+                }
+                PlantState::UmbrellaTriggered => {}
+                _ => {
+                    fx.sounds.play_foley(FoleyType::Umbrella);
+                    umbrella.open_umbrella(fx.effects);
+                }
+            }
+            return;
+        }
+        if let Some(plant) = plant.and_then(|id| plants.get_mut(id)) {
+            plant.health -= self.ty.damage();
+            plant.eaten_flash_countdown = plant.eaten_flash_countdown.max(25);
+        }
+        fx.sounds.play_foley(FoleyType::Splat);
+        self.die(fx);
+    }
+
     /// `Projectile::PlayImpactSound`.
     fn play_impact_sound(&self, zombie: &Zombie, fx: &mut Fx) {
         let mut splat = true;
@@ -384,7 +464,12 @@ impl Projectile {
             ProjectileType::Pea => (-15.0, ParticleEffect::PeaSplat),
             ProjectileType::Snowpea => (-15.0, ParticleEffect::SnowpeaSplat),
             ProjectileType::Puff => (-20.0, ParticleEffect::PuffSplat),
-            ProjectileType::Fire | ProjectileType::Cabbage | ProjectileType::Kernel | ProjectileType::Butter | ProjectileType::Melon => return,
+            ProjectileType::Fire
+            | ProjectileType::Cabbage
+            | ProjectileType::Kernel
+            | ProjectileType::Butter
+            | ProjectileType::Melon
+            | ProjectileType::Basketball => return,
         };
         let (splat_x, splat_y) = (self.pos_x + 12.0 + splat_offset, self.pos_y + 12.0);
         let mut x = splat_x + 52.0 - zombie.x as f32;
@@ -528,7 +613,7 @@ impl Projectile {
             ProjectileType::Puff => "IMAGE_PUFFSHROOM_PUFF1",
             // The flames are a reanimation of their own.
             ProjectileType::Fire => return,
-            ProjectileType::Cabbage | ProjectileType::Kernel | ProjectileType::Butter | ProjectileType::Melon => return,
+            ProjectileType::Cabbage | ProjectileType::Kernel | ProjectileType::Butter | ProjectileType::Melon | ProjectileType::Basketball => return,
         };
         let Some(image) = res.image(id) else { return };
         g.push_state();
@@ -550,6 +635,7 @@ impl Projectile {
             ProjectileType::Cabbage => ("IMAGE_REANIM_CABBAGEPULT_CABBAGE", 1.0),
             ProjectileType::Kernel => ("IMAGE_REANIM_CORNPULT_KERNAL", 0.95),
             ProjectileType::Butter => ("IMAGE_REANIM_CORNPULT_BUTTER", 0.8),
+            ProjectileType::Basketball => ("IMAGE_REANIM_ZOMBIE_CATAPULT_BASKETBALL", 1.1),
             _ => ("IMAGE_REANIM_MELONPULT_MELON", 1.0),
         };
         let Some(image) = res.image(id) else { return };

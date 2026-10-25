@@ -117,6 +117,10 @@ pub(super) enum PlantState {
     KernelButter,
     /// The tangle kelp has hold of a zombie and is pulling it under.
     TanglekelpGrabbing,
+    /// The umbrella leaf opening over its neighbours...
+    UmbrellaTriggered,
+    /// ...and held open, bouncing what drops on it.
+    UmbrellaReflecting,
     /// An instant plant counting down to going off.
     DoingSpecial,
 }
@@ -124,6 +128,41 @@ pub(super) enum PlantState {
 /// Plants that shoot straight peas.
 fn is_pea_shooter(seed: SeedType) -> bool {
     matches!(seed, SeedType::Peashooter | SeedType::Snowpea | SeedType::Repeater)
+}
+
+/// `PlantOnBungeeState`: a bungee zombie has hold of the plant, or is
+/// carrying it off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnBungee {
+    No,
+    Grabbed,
+    Rising,
+}
+
+/// `Board::GetTopPlantAt` with `TOPPLANT_BUNGEE_ORDER` (also `TOPPLANT_ANY`):
+/// a coffee bean, then the plant, then a pumpkin, then a lily pad or pot.
+pub fn top_plant_any(plants: &DataArray<Plant>, col: i32, row: i32) -> Option<sexy::data_array::Id<Plant>> {
+    let rank = |p: &Plant| match p.seed {
+        SeedType::InstantCoffee => 0,
+        SeedType::Pumpkinshell => 2,
+        SeedType::Lilypad | SeedType::Flowerpot => 3,
+        _ => 1,
+    };
+    plants
+        .iter()
+        .filter(|(_, p)| p.col == col && p.row == row && !p.dead)
+        .min_by_key(|(_, p)| rank(p))
+        .map(|(id, _)| id)
+}
+
+/// `Board::FindUmbrellaPlant`: an umbrella leaf on or next to the square.
+pub fn find_umbrella_plant(plants: &DataArray<Plant>, col: i32, row: i32) -> Option<sexy::data_array::Id<Plant>> {
+    plants
+        .iter()
+        .find(|(_, p)| {
+            p.seed == SeedType::Umbrella && !p.dead && !p.not_on_ground() && (p.col - col).abs() <= 1 && (p.row - row).abs() <= 1
+        })
+        .map(|(id, _)| id)
 }
 
 /// `Plant::mWidth` and `mHeight`.
@@ -179,6 +218,8 @@ pub struct Plant {
     blink: Option<ReanimationId>,
     /// Stands in a flower pot (or is one) on the roof: drawn and shooting 5 px higher.
     pub in_pot: bool,
+    /// Grabbed or being carried off by a bungee zombie (`mOnBungeeState`).
+    pub on_bungee: OnBungee,
     /// The plantern's glow over the fog.
     light: Option<ParticleSystemId>,
     /// The squash's square, where it jumps from (`mStartRow` and its column).
@@ -275,6 +316,7 @@ impl Plant {
             blink: None,
             home: (x, y),
             target_zombie: None,
+            on_bungee: OnBungee::No,
             target_x: x,
         };
         plant.render_order = plant.calc_render_order();
@@ -519,7 +561,7 @@ impl Plant {
         }
         if self.recently_eaten_countdown > 0 {
             body.anim_rate = 0.1;
-        } else if body.anim_rate < 1.0 {
+        } else if body.anim_rate < 1.0 && self.on_bungee != OnBungee::Rising {
             body.anim_rate = rng.range_f32(10.0, 15.0);
         }
     }
@@ -578,17 +620,18 @@ impl Plant {
     }
 
     /// What the plant is doing (`mState`).
-    #[cfg(test)]
     pub(super) fn state(&self) -> PlantState {
         self.state
     }
 
     /// A potato mine past `STATE_NOTREADY` (rising or armed): zombies
     /// can't eat it then.
-    /// `Plant::NotOnGround`: a jumping or landed squash can't be reached.
+    /// `Plant::NotOnGround`: a jumping or landed squash, or a plant flying
+    /// off with a bungee zombie, can't be reached.
     pub fn not_on_ground(&self) -> bool {
-        self.seed == SeedType::Squash
-            && matches!(self.state, PlantState::SquashRising | PlantState::SquashFalling | PlantState::SquashDoneFalling)
+        self.on_bungee == OnBungee::Rising
+            || self.seed == SeedType::Squash
+                && matches!(self.state, PlantState::SquashRising | PlantState::SquashFalling | PlantState::SquashDoneFalling)
     }
 
     /// A squash that is still looking or crouching can't be eaten (`Zombie::EatPlant`).
@@ -701,6 +744,33 @@ impl Plant {
         }
     }
 
+    /// `Plant::DoSpecial` for the umbrella leaf: it opens over its neighbours.
+    pub fn open_umbrella(&mut self, effects: &mut EffectSystem) {
+        if !matches!(self.state, PlantState::UmbrellaTriggered | PlantState::UmbrellaReflecting) {
+            self.state = PlantState::UmbrellaTriggered;
+            self.state_countdown = 5;
+            self.play_body_reanim(effects, "anim_block", LoopType::PlayOnceAndHold, 0, 22.0);
+        }
+    }
+
+    /// `Plant::UpdateUmbrella`: once open it's drawn over the row below,
+    /// and it folds back when the block animation is done.
+    fn update_umbrella(&mut self, effects: &mut EffectSystem) {
+        // Behaviour per ruslan831 decomp, Plant::UpdateUmbrella.
+        match self.state {
+            PlantState::UmbrellaTriggered if self.state_countdown == 0 => {
+                self.render_order = make_render_order(render_layer::PROJECTILE, self.row + 1, 0);
+                self.state = PlantState::UmbrellaReflecting;
+            }
+            PlantState::UmbrellaReflecting if self.body.and_then(|b| effects.get(b)).is_some_and(|b| b.loop_count > 0) => {
+                self.play_body_reanim(effects, "anim_idle", LoopType::Loop, 20, 0.0);
+                self.state = PlantState::NotReady;
+                self.render_order = self.calc_render_order();
+            }
+            _ => {}
+        }
+    }
+
     /// `Plant::FindTargetZombie` for the potato mine: a zombie on its square
     /// (or biting something next to it).
     fn find_potato_target(&self, zombies: &DataArray<Zombie>) -> bool {
@@ -790,7 +860,7 @@ impl Plant {
         open_rows: &[bool; super::MAX_GRID_SIZE_Y],
         rng: &mut MtRand,
     ) {
-        if self.dead || self.is_asleep {
+        if self.dead || self.is_asleep || self.on_bungee != OnBungee::No {
             return;
         }
         self.update_shooting(zombies, actions, effects);
@@ -829,6 +899,9 @@ impl Plant {
         }
         if self.seed == SeedType::Blover {
             self.update_blover(effects);
+        }
+        if self.seed == SeedType::Umbrella {
+            self.update_umbrella(effects);
         }
         // UpdateIceShroom: it goes off as soon as it's awake.
         if self.seed == SeedType::Iceshroom && self.state != PlantState::DoingSpecial {
@@ -1658,6 +1731,14 @@ impl Plant {
         }
     }
 
+    /// Slows (or speeds) the plant's body animation: a plant carried off by
+    /// a bungee zombie barely moves.
+    pub fn set_body_anim_rate(&self, effects: &mut EffectSystem, rate: f32) {
+        if let Some(body) = self.body.and_then(|b| effects.get_mut(b)) {
+            body.anim_rate = rate;
+        }
+    }
+
     /// `Plant::Die`.
     pub fn die(&mut self, effects: &mut EffectSystem) {
         self.dead = true;
@@ -1692,6 +1773,7 @@ impl Plant {
     fn draw_shadow(&self, g: &mut Graphics, x: f32, y: f32, night: bool, res: &GameResources) {
         use SeedType::*;
         if matches!(self.seed, Lilypad | Starfruit | Tanglekelp | Seashroom | Cobcannon | Spikeweed | Spikerock | Gravebuster | Cattail)
+            || self.on_bungee == OnBungee::Rising
         {
             return;
         }

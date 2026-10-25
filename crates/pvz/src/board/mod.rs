@@ -15,11 +15,13 @@
 //! the grid helpers; `LawnApp::NewGame`, `MakeNewBoard`, `StartPlaying`,
 //! `DoConfirmBackToMain` and `DoBackToMain`.
 
+mod bungee;
 mod coin;
 mod crazy_dave;
 mod conveyor;
 mod cursor;
 mod cutscene;
+mod dev_scene;
 mod fog;
 mod grid_item;
 mod lawn_mower;
@@ -854,6 +856,8 @@ fn new_game(
         let mut fx = Fx { effects: &mut effects, res: &mut resources, images: &mut images, sounds: &mut sounds };
         board.place_street_zombies(&mut fx);
     }
+    let mut fx = Fx { effects: &mut effects, res: &mut resources, images: &mut images, sounds: &mut sounds };
+    dev_scene::set_up(&mut board, &mut music, &mut fx);
     commands.insert_resource(board);
 }
 
@@ -1077,6 +1081,10 @@ impl Board {
         let show_walking = self.cut_scene.show_zombie_walking();
         {
             let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+            let mut placed_ladders = Vec::new();
+            let mut basketballs = Vec::new();
+            let mut imps = Vec::new();
+            let mut shakes = Vec::new();
             for (id, zombie) in self.zombies.iter_mut() {
                 if playing {
                     zombie.update(&mut self.plants, &env, &mut fx);
@@ -1084,6 +1092,18 @@ impl Board {
                         zombie.ice_keep = false;
                         let row = zombie.row as usize;
                         self.ice_timer[row] = self.ice_timer[row].max(500);
+                    }
+                    if let Some((col, row)) = zombie.placed_ladder.take() {
+                        placed_ladders.push((col, row));
+                    }
+                    if let Some(shot) = zombie.thrown_basketball.take() {
+                        basketballs.push((shot, zombie.row, zombie.render_order));
+                    }
+                    if let Some(imp) = zombie.thrown_imp.take() {
+                        imps.push((imp, zombie.from_wave));
+                    }
+                    if let Some(shake) = zombie.shake.take() {
+                        shakes.push(shake);
                     }
                     if let Some(x) = zombie.ice_trail.take() {
                         // Behaviour per ruslan831 decomp, Zombie::UpdateZamboni.
@@ -1101,10 +1121,29 @@ impl Board {
                     zombie.update_street(fx.effects);
                 }
             }
+            for (col, row) in placed_ladders {
+                self.add_a_ladder(col, row);
+            }
+            for (imp, wave) in imps {
+                let id = self.add_zombie_in_row(crate::zombie::ZombieType::Imp, imp.row, wave, &mut fx);
+                let env = self.zombie_env();
+                if let Some(zombie) = self.zombies.get_mut(id) {
+                    zombie.throw_as_imp(&imp, &env, &mut fx);
+                }
+            }
+            for (x, y) in shakes {
+                self.shake_board(x, y);
+            }
+            for (shot, row, render_order) in basketballs {
+                let shadow_y = self.projectile_shadow_y(shot.x as i32, row);
+                let mut ball = Projectile::new(shot.x as i32, shot.y as i32, render_order, row, shadow_y, projectile::ProjectileType::Basketball);
+                ball.launch_basketball(&shot, fx.sounds.rng());
+                self.projectiles.alloc(ball);
+            }
             if playing {
                 self.update_torchwoods(&mut fx);
                 for (_, projectile) in self.projectiles.iter_mut() {
-                    projectile.update(&mut self.zombies, &env, &mut fx);
+                    projectile.update(&mut self.zombies, &mut self.plants, &env, &mut fx);
                 }
             }
             for mower in &mut self.lawn_mowers {
@@ -1128,6 +1167,7 @@ impl Board {
             for action in std::mem::take(&mut self.plant_actions) {
                 self.do_plant_action(action, effects, res, images, sounds);
             }
+            self.update_bungee_plants(effects);
             self.collect_zombie_loot(effects, res, images, sounds);
             let mut scored = 0;
             for (_, coin) in self.coins.iter_mut() {
@@ -1312,6 +1352,14 @@ impl Board {
         }
     }
 
+    /// Where a shot fired at `x` in `row` casts its shadow.
+    fn projectile_shadow_y(&self, x: i32, row: i32) -> f32 {
+        let grid_x = self.pixel_to_grid_x(x).max(0);
+        let shadow_y = self.grid_to_pixel_y(grid_x, row) as f32 + 67.0;
+        // Shadows sit 12 pixels higher on the roof's left side.
+        if self.stage_has_roof() && x < 480 { shadow_y - 12.0 } else { shadow_y }
+    }
+
     /// Carries out what a plant did this tick.
     fn do_plant_action(
         &mut self,
@@ -1324,10 +1372,7 @@ impl Board {
         match action {
             PlantAction::Shoot { x, y, row, render_order, projectile, short_range, drift, lob } => {
                 sounds.play_foley(FoleyType::Throw);
-                let grid_x = self.pixel_to_grid_x(x).max(0);
-                let shadow_y = self.grid_to_pixel_y(grid_x, row) as f32 + 67.0;
-                // Shadows sit 12 pixels higher on the roof's left side.
-                let shadow_y = if self.stage_has_roof() && x < 480 { shadow_y - 12.0 } else { shadow_y };
+                let shadow_y = self.projectile_shadow_y(x, row);
                 let mut shot = Projectile::new(x, y, render_order, row, shadow_y, projectile);
                 if let Some(lob) = lob {
                     shot.launch_lob(lob.range_x, lob.range_y, lob.range_flags, sounds.rng());
@@ -1367,6 +1412,12 @@ impl Board {
                     if zombie.row == row && zombie.effected_by_damage(zombie::damage_range::EXPLOSION) {
                         zombie.remove_cold_effects(fx.effects);
                         zombie.apply_burn(&env, &mut fx);
+                    }
+                }
+                // Plant::BurnRow: the row's ladders burn too.
+                for (_, item) in self.grid_items.iter_mut() {
+                    if item.item_type == grid_item::GridItemType::Ladder && item.grid_y == row {
+                        item.dead = true;
                     }
                 }
                 self.do_fwoosh(row, effects, res, images, sounds.rng());
@@ -1477,6 +1528,14 @@ impl Board {
 
     /// `Board::ProcessDeleteQueue`: frees dead plants, zombies, projectiles and coins.
     fn process_delete_queue(&mut self) {
+        // Behaviour per ruslan831 decomp, Plant::Die: a ladder goes with the
+        // plant it leant on.
+        let gone: Vec<_> = self.plants.iter().filter(|(_, p)| p.dead && p.seed != SeedType::InstantCoffee).map(|(_, p)| (p.col, p.row)).collect();
+        for (col, row) in gone {
+            if let Some(ladder) = self.ladder_at(col, row).and_then(|id| self.grid_items.get_mut(id)) {
+                ladder.dead = true;
+            }
+        }
         self.plants.retain(|p| !p.dead);
         self.zombies.retain(|z| !z.dead);
         self.lawn_mowers.retain(|m| !m.dead);
@@ -1678,6 +1737,7 @@ enum RenderItem {
     Plant(sexy::data_array::Id<Plant>),
     Zombie(sexy::data_array::Id<Zombie>),
     ZombieShadow(sexy::data_array::Id<Zombie>),
+    BungeeTarget(sexy::data_array::Id<Zombie>),
     Projectile(sexy::data_array::Id<Projectile>),
     ProjectileShadow(sexy::data_array::Id<Projectile>),
     Particle(ParticleSystemId),
@@ -1700,7 +1760,10 @@ fn draw_board(
 
     let mut items: Vec<(i32, RenderItem)> = Vec::new();
     for (id, plant) in board.plants.iter() {
-        items.push((plant.render_order, RenderItem::Plant(id)));
+        // A bungee zombie draws the plant it has hold of.
+        if plant.on_bungee == plant::OnBungee::No {
+            items.push((plant.render_order, RenderItem::Plant(id)));
+        }
     }
     for (id, coin) in board.coins.iter() {
         items.push((coin.render_order, RenderItem::Coin(id)));
@@ -1708,6 +1771,9 @@ fn draw_board(
     for (id, zombie) in board.zombies.iter() {
         items.push((zombie.render_order, RenderItem::Zombie(id)));
         items.push((make_render_order(render_layer::GROUND, zombie.row, 3), RenderItem::ZombieShadow(id)));
+        if zombie.zombie_type == crate::zombie::ZombieType::Bungee {
+            items.push((make_render_order(render_layer::PROJECTILE, zombie.row, 1), RenderItem::BungeeTarget(id)));
+        }
     }
     for (id, projectile) in board.projectiles.iter() {
         items.push((projectile.render_order, RenderItem::Projectile(id)));
@@ -1793,7 +1859,13 @@ fn draw_board(
             RenderItem::Fog => board.draw_fog(&resources, &mut g),
             RenderItem::Zombie(id) => {
                 if let Some(zombie) = board.zombies.get(id).filter(|z| !z.is_winner() || board.cut_scene.show_zombie_walking()) {
-                    zombie.draw(&mut g, &effects, &resources);
+                    let carried = zombie.target_plant.and_then(|p| board.plants.get(p)).filter(|p| !p.dead && p.on_bungee != plant::OnBungee::No);
+                    zombie.draw(&mut g, &effects, &resources, carried, board.stage_is_night(), board.stage_has_roof());
+                }
+            }
+            RenderItem::BungeeTarget(id) => {
+                if let Some(zombie) = board.zombies.get(id) {
+                    zombie.draw_bungee_target(&mut g, &resources);
                 }
             }
             RenderItem::ZombieShadow(id) => {

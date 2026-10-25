@@ -4,6 +4,8 @@ use crate::plant::SeedType;
 use crate::zombie::ZombieType;
 
 use super::super::cursor::PlantingReason;
+use super::super::plant::OnBungee;
+use super::super::zombie::ZombiePhase;
 use super::test_board;
 
 fn plant_of(t: &super::TestBoard, seed: SeedType, col: i32, row: i32) -> sexy::data_array::Id<super::super::plant::Plant> {
@@ -195,7 +197,7 @@ fn butter_sits_on_the_zombies_head_anywhere_on_the_slope() {
         let (butter_w, butter_h) = (butter.cel_width() as f32, butter.cel_height() as f32);
         let mut offsets = Vec::new();
         for (_, z) in board.zombies.iter() {
-            let (bx, by) = z.butter_position(effects, res).expect("buttered");
+            let (bx, by, _) = z.butter_position(effects, res).expect("buttered");
             // Where the head image is drawn, in the zombie's own coordinates.
             let body = effects.get(z.body_reanim().unwrap()).unwrap();
             let track = body.definition.find_track("anim_head1").unwrap();
@@ -214,4 +216,129 @@ fn butter_sits_on_the_zombies_head_anywhere_on_the_slope() {
         }
         assert!(offsets.windows(2).all(|w| (w[0].0 - w[1].0).abs() < 2.0 && (w[0].1 - w[1].1).abs() < 2.0), "the same offset all along the slope (give or take the head bobbing): {offsets:?}");
     });
+}
+
+/// A bungee zombie dropping on a square in `col` (`AddZombie` then
+/// `PickBungeeZombieTarget(col)`).
+fn bungee_on(t: &mut super::TestBoard, col: i32) -> sexy::data_array::Id<crate::board::zombie::Zombie> {
+    t.with(|board, effects, res, images, sounds| {
+        let mut fx = super::super::zombie::Fx { effects, res, images, sounds };
+        let id = board.add_zombie(ZombieType::Bungee, 0, &mut fx);
+        board.pick_bungee_target(id, Some(col), &mut fx);
+        id
+    })
+}
+
+#[test]
+fn a_bungee_zombie_aims_for_a_plant() {
+    let mut t = test_board!("5-1");
+    t.plant(SeedType::Flowerpot, 4, 1);
+    t.plant(SeedType::Wallnut, 4, 1);
+    let bungee = bungee_on(&mut t, 4);
+    let z = t.zombie_ref(bungee).unwrap();
+    assert_eq!((z.target_col, z.row), (4, 1), "the plant outweighs the empty squares");
+    assert_eq!(z.phase, ZombiePhase::BungeeDiving);
+}
+
+#[test]
+fn a_bungee_zombie_cannot_be_hit_until_it_lands() {
+    use super::super::zombie::damage_range;
+    let mut t = test_board!("5-1");
+    t.plant(SeedType::Flowerpot, 4, 1);
+    t.plant(SeedType::Wallnut, 4, 1);
+    let bungee = bungee_on(&mut t, 4);
+    t.ticks(50);
+    assert!(!t.zombie_ref(bungee).unwrap().effected_by_damage(damage_range::GROUND), "still in the sky");
+    assert!(t.run_until(1000, |b| b.zombies.get(bungee).is_some_and(|z| z.phase == ZombiePhase::BungeeAtBottom)), "it lands");
+    assert!(t.zombie_ref(bungee).unwrap().effected_by_damage(damage_range::GROUND), "and can be hit on the ground");
+}
+
+#[test]
+fn a_bungee_zombie_carries_a_plant_off_and_leaves_its_pot() {
+    let mut t = test_board!("5-1");
+    let pot = t.plant(SeedType::Flowerpot, 4, 1);
+    t.plant(SeedType::Wallnut, 4, 1);
+    let nut = plant_of(&t, SeedType::Wallnut, 4, 1);
+    let bungee = bungee_on(&mut t, 4);
+    assert!(t.run_until(1000, |b| b.plants.get(nut).is_some_and(|p| p.on_bungee == OnBungee::Grabbed)), "it grabs the wall-nut");
+    assert!(t.run_until(500, |b| b.plants.get(nut).is_some_and(|p| p.on_bungee == OnBungee::Rising)), "and lifts it");
+    assert!(t.run_until(500, |b| b.zombies.get(bungee).is_none_or(|z| z.dead)), "then flies off with it");
+    assert!(t.plant_ref(nut).is_none(), "the wall-nut's gone");
+    assert!(t.plant_ref(pot).is_some(), "the pot stays");
+}
+
+#[test]
+fn killing_a_bungee_zombie_at_the_bottom_saves_the_plant() {
+    let mut t = test_board!("5-1");
+    t.plant(SeedType::Flowerpot, 4, 1);
+    t.plant(SeedType::Wallnut, 4, 1);
+    let nut = plant_of(&t, SeedType::Wallnut, 4, 1);
+    let bungee = bungee_on(&mut t, 4);
+    assert!(t.run_until(1000, |b| b.zombies.get(bungee).is_some_and(|z| z.phase == ZombiePhase::BungeeAtBottom)));
+    t.plant(SeedType::Flowerpot, 0, 1);
+    t.plant(SeedType::Jalapeno, 0, 1);
+    assert!(t.run_until(400, |b| b.zombies.get(bungee).is_none_or(|z| z.is_dead_or_dying())), "the jalapeno gets it");
+    t.ticks(5);
+    let nut = t.plant_ref(nut).expect("the wall-nut's still there");
+    assert_eq!(nut.on_bungee, OnBungee::No);
+}
+
+#[test]
+fn a_bungee_zombie_killed_mid_grab_lets_go_of_the_plant() {
+    let mut t = test_board!("5-1");
+    t.plant(SeedType::Flowerpot, 4, 1);
+    t.plant(SeedType::Wallnut, 4, 1);
+    let nut = plant_of(&t, SeedType::Wallnut, 4, 1);
+    let bungee = bungee_on(&mut t, 4);
+    assert!(t.run_until(1000, |b| b.plants.get(nut).is_some_and(|p| p.on_bungee == OnBungee::Grabbed)));
+    t.with(|board, effects, res, images, sounds| {
+        let env = board.zombie_env();
+        let mut fx = super::super::zombie::Fx { effects, res, images, sounds };
+        board.zombies.get_mut(bungee).unwrap().take_damage(1000, 0, &env, &mut fx);
+    });
+    t.tick();
+    assert!(t.zombie_ref(bungee).is_none_or(|z| z.is_dead_or_dying()));
+    let nut = t.plant_ref(nut).expect("the wall-nut stays");
+    assert_eq!(nut.on_bungee, OnBungee::No, "and is let go");
+}
+
+#[test]
+fn an_umbrella_leaf_bounces_a_bungee_zombie_back() {
+    use super::super::plant::PlantState;
+    let mut t = test_board!("5-1");
+    t.plant(SeedType::Flowerpot, 3, 1);
+    t.plant(SeedType::Umbrella, 3, 1);
+    let umbrella = plant_of(&t, SeedType::Umbrella, 3, 1);
+    t.plant(SeedType::Flowerpot, 4, 1);
+    t.plant(SeedType::Wallnut, 4, 1);
+    let nut = plant_of(&t, SeedType::Wallnut, 4, 1);
+    let bungee = bungee_on(&mut t, 4);
+    assert_eq!(t.zombie_ref(bungee).unwrap().row, 1);
+    let mut blocked = false;
+    let mut landed = false;
+    assert!(
+        t.run_until(1500, |b| {
+            blocked |= b.plants.get(umbrella).is_some_and(|p| p.state() == PlantState::UmbrellaTriggered);
+            landed |= b.zombies.get(bungee).is_some_and(|z| z.phase == ZombiePhase::BungeeAtBottom);
+            b.zombies.get(bungee).is_none_or(|z| z.dead)
+        }),
+        "the bungee zombie goes back up"
+    );
+    assert!(blocked, "the umbrella leaf opens");
+    assert!(!landed, "the bungee zombie never lands");
+    let nut = t.plant_ref(nut).expect("the wall-nut stays");
+    assert_eq!(nut.on_bungee, OnBungee::No);
+    assert!(t.run_until(300, |b| b.plants.get(umbrella).is_some_and(|p| p.state() == PlantState::NotReady)), "and the leaf folds back");
+}
+
+#[test]
+fn an_umbrella_leaf_only_shelters_the_squares_next_to_it() {
+    let mut t = test_board!("5-1");
+    t.plant(SeedType::Flowerpot, 2, 1);
+    t.plant(SeedType::Umbrella, 2, 1);
+    t.plant(SeedType::Flowerpot, 4, 1);
+    t.plant(SeedType::Wallnut, 4, 1);
+    let bungee = bungee_on(&mut t, 4);
+    assert_eq!(t.zombie_ref(bungee).unwrap().row, 1);
+    assert!(t.run_until(1000, |b| b.zombies.get(bungee).is_some_and(|z| z.phase == ZombiePhase::BungeeAtBottom)), "two squares away, it lands");
 }

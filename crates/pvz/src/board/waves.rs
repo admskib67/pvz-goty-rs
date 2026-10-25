@@ -29,7 +29,7 @@ use super::tutorial::{AdviceType, TutorialState};
 use super::zombie::{Fx, NUM_BACKUP_DANCERS, Zombie, ZombieEnv};
 use crate::graphics::{Graphics, SexyRect};
 
-use super::{Board, MAX_GRID_SIZE_Y, PlantRowType};
+use super::{Board, MAX_GRID_SIZE_Y, PlantRowType, make_render_order, render_layer};
 
 const ZOMBIE_COUNTDOWN_FIRST_WAVE: i32 = 1800;
 const ZOMBIE_COUNTDOWN: i32 = 2500;
@@ -341,6 +341,9 @@ impl Board {
         let zombie = Zombie::new(row, ty, variant, from_wave, is_flag_wave, &env, fx);
         let on_board = zombie.is_on_board();
         let leader = self.zombies.alloc(zombie);
+        if ty == ZombieType::Bungee && on_board {
+            self.pick_bungee_target(leader, None, fx);
+        }
         // A bobsled team is a leader and three zombies behind it on the sled.
         if ty == ZombieType::Bobsled && on_board {
             let leader_x = self.zombies.get(leader).map_or(0.0, |z| z.pos_x);
@@ -420,8 +423,22 @@ impl Board {
     /// have this routine, so how many and where is a guess.
     pub(super) fn place_street_zombies(&mut self, fx: &mut Fx) {
         let count = (2 + self.level / 3).min(8);
+        let mut bungee_shown = false;
         for _ in 0..count {
             let ty = self.pick_zombie_type(10, self.waves.num_waves - 1, fx.sounds.rng());
+            // Behaviour per ruslan831 decomp, CutScene::PlaceAZombie: one
+            // bungee zombie at most, hanging over the street.
+            if ty == ZombieType::Bungee {
+                if !bungee_shown {
+                    bungee_shown = true;
+                    let id = self.add_zombie_in_row(ty, 0, super::zombie::ZOMBIE_WAVE_CUTSCENE, fx);
+                    if let Some(z) = self.zombies.get_mut(id) {
+                        z.place(950.0, 50.0);
+                        z.render_order = make_render_order(render_layer::GROUND, 0, 0);
+                    }
+                }
+                continue;
+            }
             let mut row = fx.sounds.rng().next_range(MAX_GRID_SIZE_Y as u32) as i32;
             for _ in 0..MAX_GRID_SIZE_Y {
                 if self.row_can_have_zombie_type(row, ty) {
@@ -601,6 +618,7 @@ impl Board {
             award_dropped: self.has_level_award_dropped(),
             pool_rows: self.plant_row.map(|r| r == PlantRowType::Pool),
             ice_min_x: self.ice_min_x,
+            ladders: self.ladder_grid(),
             zombies_on_screen: self
                 .zombies
                 .iter()
@@ -613,7 +631,7 @@ impl Board {
     fn total_zombies_health_in_wave(&self, wave: i32) -> i32 {
         self.zombies
             .iter()
-            .filter(|(_, z)| z.from_wave == wave && !z.is_dead_or_dying() && !z.mind_controlled)
+            .filter(|(_, z)| z.from_wave == wave && !z.is_dead_or_dying() && !z.mind_controlled && z.zombie_type != ZombieType::Bungee)
             .map(|(_, z)| z.total_health())
             .sum()
     }
