@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 
 use crate::audio::{MUSIC_VOLUME, Music, SFX_VOLUME, SoundSystem};
-use crate::dialog::{DialogSlider, Dialogs, LawnDialog, OptionsValues, SFX_SLIDER_SCALE};
+use crate::dialog::{DialogSlider, Dialogs, LawnDialog, OptionsFrom, OptionsValues, SFX_SLIDER_SCALE};
 use crate::install::Config;
 use crate::resources::GameResources;
 
@@ -104,21 +104,14 @@ fn apply_saved_settings(
 }
 
 /// `LawnApp::DoNewOptions`.
-pub fn do_new_options(
-    dialogs: &mut Dialogs,
-    res: &GameResources,
-    settings: &Settings,
-    from_game_selector: bool,
-    finished_adventure: bool,
-    can_show_almanac: bool,
-) {
+pub fn do_new_options(dialogs: &mut Dialogs, res: &GameResources, settings: &Settings, from: OptionsFrom) {
     let values = OptionsValues {
         music_volume: settings.music_volume,
         sfx_volume: settings.sfx_volume,
         fullscreen: settings.fullscreen,
         hardware_acceleration: settings.hardware_acceleration,
     };
-    dialogs.add_dialog(LawnDialog::new_options(res, values, from_game_selector, finished_adventure, can_show_almanac));
+    dialogs.add_dialog(LawnDialog::new_options(res, values, from));
 }
 
 #[cfg(test)]

@@ -354,26 +354,32 @@ impl Graphics {
 
     /// `TodDrawStringWrapped`: `text` wrapped to the rectangle's width, its
     /// first line's top at the rectangle's top (or the block centered in it,
-    /// for the `*Middle` justifications). `{FORMAT}` codes aren't supported.
+    /// for the `*Middle` justifications). `{FORMAT}` codes from
+    /// `gLawnStringFormats` change the colour and line spacing as it goes;
+    /// unknown codes are dropped.
     pub fn tod_draw_string_wrapped(&mut self, font: &FontRes, rect: SexyRect, text: &str, color: SexyColor, justify: Justify) {
-        let (x, w) = (rect.x as i32, rect.w as i32);
-        let spacing = font.font.line_spacing();
-        let (lines, height) = font.font.word_wrap(text, w, spacing);
+        self.tod_draw_string_wrapped_ex(font, rect, text, color, justify, true);
+    }
+
+    /// [`Self::tod_draw_string_wrapped`], with the `{METAL}` lines (which
+    /// `TOD_FORMAT_HIDE_UNTIL_MAGNETSHROOM` hides until the player has a
+    /// magnet-shroom) shown or not.
+    pub fn tod_draw_string_wrapped_ex(
+        &mut self,
+        font: &FontRes,
+        rect: SexyRect,
+        text: &str,
+        color: SexyColor,
+        justify: Justify,
+        show_metal: bool,
+    ) {
+        let text: Vec<char> = text.chars().collect();
+        let wrap = TodWrap { font, x: rect.x as i32, width: rect.w as i32, justify, show_metal, max_chars: text.len() };
         let mut y = rect.y as i32;
         if justify.vertical_middle() {
-            y += (rect.h as i32 - height) / 2;
+            y += (rect.h as i32 - wrap.helper(self, &text, y, color, false)) / 2;
         }
-        self.push_state();
-        self.set_color(color);
-        for (line, baseline) in lines {
-            let line_x = match justify.horizontal() {
-                0 => x + (w - font.font.string_width(&line)) / 2,
-                1 => x + w - font.font.string_width(&line),
-                _ => x,
-            };
-            self.draw_string(font, line_x, y + baseline, &line);
-        }
-        self.pop_state();
+        wrap.helper(self, &text, y, color, true);
     }
 
     /// `Widget::WriteCenteredLine`: `text` centered across `width`, baseline at `y`.
@@ -510,6 +516,207 @@ impl Justify {
 
     fn vertical_middle(self) -> bool {
         matches!(self, Self::LeftMiddle | Self::RightMiddle | Self::CenterMiddle)
+    }
+}
+
+/// The state `{FORMAT}` codes change (`TodStringListFormat`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TodFormat {
+    color: SexyColor,
+    line_spacing_offset: i32,
+    flags: u32,
+}
+
+/// `TOD_FORMAT_IGNORE_NEWLINES`: newlines are spaces (flavour text).
+const FORMAT_IGNORE_NEWLINES: u32 = 1;
+/// `TOD_FORMAT_HIDE_UNTIL_MAGNETSHROOM`.
+const FORMAT_HIDE_UNTIL_MAGNETSHROOM: u32 = 2;
+
+/// `gLawnStringFormats`: name, colour (`None` keeps the current one), line
+/// spacing offset, flags.
+const LAWN_STRING_FORMATS: [(&str, Option<SexyColor>, i32, u32); 12] = [
+    ("NORMAL", Some(SexyColor::rgba(40, 50, 90, 255)), 0, 0),
+    ("FLAVOR", Some(SexyColor::rgba(143, 67, 27, 255)), 0, FORMAT_IGNORE_NEWLINES),
+    ("KEYWORD", Some(SexyColor::rgba(143, 67, 27, 255)), 0, 0),
+    ("NOCTURNAL", Some(SexyColor::rgba(136, 50, 170, 255)), 0, 0),
+    ("AQUATIC", Some(SexyColor::rgba(11, 161, 219, 255)), 0, 0),
+    ("STAT", Some(SexyColor::rgba(204, 36, 29, 255)), 0, 0),
+    ("METAL", Some(SexyColor::rgba(204, 36, 29, 255)), 0, FORMAT_HIDE_UNTIL_MAGNETSHROOM),
+    ("KEYMETAL", Some(SexyColor::rgba(143, 67, 27, 255)), 0, FORMAT_HIDE_UNTIL_MAGNETSHROOM),
+    ("SHORTLINE", None, -9, 0),
+    ("EXTRASHORTLINE", None, -14, 0),
+    ("CREDITS1", None, 3, 0),
+    ("CREDITS2", None, 2, 0),
+];
+
+/// `TodWriteStringSetFormat`: the first format whose name starts the code.
+/// Hidden `{METAL}` lines are transparent and take no room (as
+/// `AlmanacDialog::DrawZombies` sets them).
+fn set_format(code: &[char], format: &mut TodFormat, show_metal: bool) {
+    for (name, color, spacing, flags) in LAWN_STRING_FORMATS {
+        if code.len() >= name.len() && code.iter().zip(name.chars()).all(|(&a, b)| a == b) {
+            let (mut color, mut spacing) = (color, spacing);
+            if flags & FORMAT_HIDE_UNTIL_MAGNETSHROOM != 0 && !show_metal {
+                color = color.map(|c| c.with_alpha(0));
+                spacing = -17;
+            }
+            if let Some(color) = color {
+                format.color = color;
+            }
+            format.line_spacing_offset = spacing;
+            format.flags = flags;
+            return;
+        }
+    }
+}
+
+/// `CharIsSpaceInFormat`.
+fn is_space_in_format(c: char, format: &TodFormat) -> bool {
+    c == ' ' || (format.flags & FORMAT_IGNORE_NEWLINES != 0 && c == '\n')
+}
+
+/// `TodDrawStringWrappedHelper` and the functions it calls.
+struct TodWrap<'a> {
+    font: &'a FontRes,
+    x: i32,
+    width: i32,
+    justify: Justify,
+    show_metal: bool,
+    max_chars: usize,
+}
+
+impl TodWrap<'_> {
+    /// `TodWriteString`: one line from `offset`, `len` characters long, with
+    /// its codes applied. Returns its width. Like the original, measuring a
+    /// line to justify it runs its codes too.
+    #[allow(clippy::too_many_arguments)]
+    fn write_string(&self, g: &mut Graphics, text: &[char], y: i32, format: &mut TodFormat, justify: Justify, draw: bool, offset: usize, len: usize) -> i32 {
+        let f = &self.font.font;
+        let mut x = self.x;
+        if draw {
+            let spare = self.width - self.write_string(g, text, y, format, Justify::Left, false, offset, len);
+            match justify.horizontal() {
+                1 => x += spare,
+                0 => x += spare / 2,
+                _ => {}
+            }
+        }
+        let end = (offset + len).min(text.len());
+        let mut chunk = String::new();
+        let mut x_offset = 0;
+        let flush = |g: &mut Graphics, chunk: &mut String, x_offset: &mut i32, format: &TodFormat| {
+            if draw && !chunk.is_empty() {
+                g.push_state();
+                g.set_color(format.color);
+                g.draw_string(self.font, x + *x_offset, y, chunk);
+                g.pop_state();
+            }
+            *x_offset += f.string_width(chunk);
+            chunk.clear();
+        };
+        let mut i = offset;
+        while i < end {
+            let c = text[i];
+            if c == '{'
+                && let Some(close) = text[i + 1..].iter().position(|&c| c == '}')
+            {
+                flush(g, &mut chunk, &mut x_offset, format);
+                set_format(&text[i + 1..i + 1 + close], format, self.show_metal);
+                i += close + 2;
+                continue;
+            }
+            if format.flags & FORMAT_IGNORE_NEWLINES != 0 && is_space_in_format(c, format) {
+                chunk.push(' ');
+            } else if c != '\n' {
+                chunk.push(c);
+            }
+            i += 1;
+        }
+        flush(g, &mut chunk, &mut x_offset, format);
+        x_offset
+    }
+
+    /// `TodWriteWordWrappedHelper`: -1 past the end of the text.
+    #[allow(clippy::too_many_arguments)]
+    fn write_line(&self, g: &mut Graphics, text: &[char], y: i32, format: &mut TodFormat, draw: bool, offset: usize, len: usize) -> i32 {
+        let len = if offset + len > self.max_chars {
+            match self.max_chars.checked_sub(offset) {
+                Some(len) if len > 0 => len,
+                _ => return -1,
+            }
+        } else {
+            len
+        };
+        self.write_string(g, text, y, format, self.justify, draw, offset, len)
+    }
+
+    /// `TodDrawStringWrappedHelper`: breaks the text into lines at spaces
+    /// (or anywhere, for a word wider than the rectangle) and at newlines.
+    /// Returns the text's height.
+    fn helper(&self, g: &mut Graphics, text: &[char], top: i32, color: SexyColor, draw: bool) -> i32 {
+        let f = &self.font.font;
+        let mut format = TodFormat { color, line_spacing_offset: 0, flags: 0 };
+        let mut y_offset = f.ascent - f.ascent_padding;
+        let mut line_spacing = f.line_spacing() + format.line_spacing_offset;
+        let (mut line_start, mut cur, mut cur_width) = (0, 0, 0);
+        let mut prev = None;
+        let mut space_pos: Option<usize> = None;
+        while cur < text.len() {
+            let mut c = text[cur];
+            if c == '{' {
+                if let Some(close) = text[cur + 1..].iter().position(|&c| c == '}') {
+                    // Codes change the spacing here; the colour as each line is written.
+                    let keep = format.color;
+                    set_format(&text[cur + 1..cur + 1 + close], &mut format, self.show_metal);
+                    format.color = keep;
+                    line_spacing = f.line_spacing() + format.line_spacing_offset;
+                    cur += close + 2;
+                    continue;
+                }
+            } else if is_space_in_format(c, &format) {
+                space_pos = Some(cur);
+                c = ' ';
+            } else if c == '\n' {
+                space_pos = Some(cur);
+                cur_width = self.width + 1;
+                cur += 1;
+            }
+            cur_width += f.char_width_kern(c, prev);
+            prev = Some(c);
+            if cur_width <= self.width {
+                cur += 1;
+                continue;
+            }
+            if let Some(space) = space_pos {
+                self.write_line(g, text, top + y_offset, &mut format, draw, line_start, space - line_start);
+                cur = space + 1;
+                if c != '\n' {
+                    while cur < text.len() && is_space_in_format(text[cur], &format) {
+                        cur += 1;
+                    }
+                }
+            } else {
+                if cur < line_start + 1 {
+                    cur += 1;
+                }
+                if self.write_line(g, text, top + y_offset, &mut format, draw, line_start, cur - line_start) < 0 {
+                    break;
+                }
+            }
+            y_offset += line_spacing;
+            line_start = cur;
+            space_pos = None;
+            cur_width = 0;
+            prev = None;
+        }
+        if line_start < text.len() {
+            if self.write_line(g, text, top + y_offset, &mut format, draw, line_start, text.len() - line_start) >= 0 {
+                y_offset += line_spacing;
+            }
+        } else {
+            y_offset += line_spacing;
+        }
+        f.descent() + y_offset - line_spacing
     }
 }
 
@@ -774,6 +981,23 @@ fn sync_draw_calls(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn string_formats_match_by_prefix() {
+        let codes = |s: &str| s.chars().collect::<Vec<_>>();
+        let mut format = TodFormat { color: SexyColor::WHITE, line_spacing_offset: 0, flags: 0 };
+        set_format(&codes("SHORTLINE"), &mut format, true);
+        assert_eq!((format.color, format.line_spacing_offset), (SexyColor::WHITE, -9));
+        set_format(&codes("FLAVOR"), &mut format, true);
+        assert_eq!((format.color, format.flags), (SexyColor::rgba(143, 67, 27, 255), FORMAT_IGNORE_NEWLINES));
+        // Unknown codes, like a zombie's hidden toughness, change nothing.
+        set_format(&codes("270"), &mut format, true);
+        assert_eq!(format.flags, FORMAT_IGNORE_NEWLINES);
+        set_format(&codes("KEYMETAL"), &mut format, false);
+        assert_eq!((format.color.a, format.line_spacing_offset), (0, -17));
+        set_format(&codes("METAL"), &mut format, true);
+        assert_eq!((format.color, format.line_spacing_offset), (SexyColor::rgba(204, 36, 29, 255), 0));
+    }
 
     #[test]
     fn clipping_trims_dest_and_src_together() {

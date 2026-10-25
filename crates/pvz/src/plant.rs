@@ -215,6 +215,17 @@ pub fn award_seed_for_level(level: i32) -> i32 {
     seeds.min(40)
 }
 
+/// `LawnApp::HasSeedType`/`SeedTypeAvailable`: the upgrades and the
+/// imitater are bought from the store (`mPurchases`, whose first nine items
+/// are those plants in seed order); the rest come with adventure.
+pub fn has_seed_type(player: &PlayerInfo, seed: SeedType) -> bool {
+    let index = seed as usize;
+    if (SeedType::Gatlingpea as usize..=SeedType::Imitater as usize).contains(&index) {
+        return player.purchases[index - SeedType::Gatlingpea as usize] > 0;
+    }
+    (index as i32) < seeds_available(player)
+}
+
 /// `LawnApp::GetSeedsAvailable`.
 pub fn seeds_available(player: &PlayerInfo) -> i32 {
     if player.has_finished_adventure() || player.level > 50 {

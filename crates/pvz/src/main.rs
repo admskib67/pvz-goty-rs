@@ -1,3 +1,4 @@
+mod almanac;
 mod audio;
 mod award;
 mod board;
@@ -142,6 +143,7 @@ fn main() {
             dialog::DialogPlugin,
             lawn_app::LawnAppPlugin,
             options::OptionsPlugin,
+            almanac::AlmanacPlugin,
             devshot::DevShotPlugin,
         ))
         .add_systems(Startup, spawn_camera)

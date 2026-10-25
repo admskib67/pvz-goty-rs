@@ -59,6 +59,9 @@ impl Board {
         for id in asking {
             let Some(zombie) = self.zombies.get_mut(id) else { continue };
             zombie.loot_pending = false;
+            // Zombie::DropLoot: the almanac learns about it.
+            self.defeated_zombies[zombie.zombie_type as usize] = true;
+            let Some(zombie) = self.zombies.get(id) else { continue };
             let rect = zombie.zombie_rect();
             let center = (rect.x + rect.w / 2, rect.y + rect.h / 2);
             if self.try_spawn_level_award(id, center, effects, res, images, sounds) {

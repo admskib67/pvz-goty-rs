@@ -280,6 +280,95 @@ impl<Id> StoneButton<Id> {
     }
 }
 
+/// A labelled Lawn `GameButton` (the almanac's and award screen's): an
+/// image, a brighter one while the mouse is over it, an optional glow on
+/// top, and a centered label. Coordinates are relative to its parent.
+#[derive(Debug, Clone)]
+pub struct LabelButton {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub label: String,
+    pub font: &'static str,
+    pub color: SexyColor,
+    pub hilite_color: SexyColor,
+    pub image: &'static str,
+    pub over_image: Option<&'static str>,
+    /// `mOverOverlayImage`: drawn over the button while the mouse is on it.
+    pub over_overlay: Option<&'static str>,
+    pub text_offset: (i32, i32),
+    /// `!mBtnNoDraw`: hidden buttons are neither drawn nor clickable.
+    pub visible: bool,
+    pub is_over: bool,
+    pub is_down: bool,
+}
+
+impl LabelButton {
+    /// `label` is already translated.
+    pub fn new(label: String, font: &'static str, color: SexyColor, image: &'static str) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            label,
+            font,
+            color,
+            hilite_color: color,
+            image,
+            over_image: None,
+            over_overlay: None,
+            text_offset: (0, 0),
+            visible: true,
+            is_over: false,
+            is_down: false,
+        }
+    }
+
+    pub fn resize(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        (self.x, self.y, self.width, self.height) = (x, y, width, height);
+    }
+
+    pub fn contains(&self, p: IVec2) -> bool {
+        self.visible && p.x >= self.x && p.y >= self.y && p.x < self.x + self.width && p.y < self.y + self.height
+    }
+
+    /// `GameButton::Draw`.
+    pub fn draw(&self, g: &mut Graphics, resources: &GameResources) {
+        if !self.visible {
+            return;
+        }
+        let is_down = self.is_down && self.is_over;
+        let Some(font) = resources.font(self.font) else { return };
+        let ascent = font.font.ascent;
+        let mut font_x = self.x + self.text_offset.0 + (self.width - font.font.string_width(&self.label)) / 2;
+        let mut font_y = self.y + self.text_offset.1 + (self.height - ascent / 6 + ascent - 1) / 2;
+        // Held down, the over image (or the plain one) and the label move a pixel.
+        let (image, shift, color) = if is_down {
+            (self.over_image.unwrap_or(self.image), 1, self.hilite_color)
+        } else if self.is_over {
+            (self.over_image.unwrap_or(self.image), 0, self.hilite_color)
+        } else {
+            (self.image, 0, self.color)
+        };
+        if let Some(image) = resources.image(image) {
+            g.draw_image(image, (self.x + shift) as f32, (self.y + shift) as f32);
+        }
+        font_x += shift;
+        font_y += shift;
+        g.push_state();
+        g.set_color(color);
+        g.draw_string(font, font_x, font_y, &self.label);
+        g.pop_state();
+        if self.is_over
+            && let Some(overlay) = self.over_overlay.and_then(|id| resources.image(id))
+        {
+            g.draw_image(overlay, self.x as f32, self.y as f32);
+        }
+    }
+}
+
 /// A horizontal `Slider`: a track image in three cels (left end, middle
 /// tiled, right end) and a thumb to drag. `value` runs from 0 to 1.
 /// Coordinates are relative to its parent. Not ported: vertical sliders and

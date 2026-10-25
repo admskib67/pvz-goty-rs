@@ -98,6 +98,36 @@ pub fn confirm_quit(dialogs: &mut Dialogs, res: &GameResources) {
     }
 }
 
+/// `LawnApp::DoConfirmBackToMain`.
+pub fn do_confirm_back_to_main(dialogs: &mut Dialogs, res: &GameResources) {
+    let lines = "Do you want to return\nto the main menu?\n\nYour game will be saved.";
+    let dialog = dialogs.do_dialog(res, DialogId::ConfirmBackToMain, "Leave Game?", lines, "", ButtonMode::YesNo);
+    if let Some(yes) = &mut dialog.yes_button {
+        yes.label = res.translate("[LEAVE_BUTTON]");
+    }
+    if let Some(no) = &mut dialog.no_button {
+        no.label = res.translate("[DIALOG_BUTTON_CANCEL]");
+    }
+}
+
+/// `NewOptionsDialog_Restart`'s question. Adventure levels only, so far.
+fn do_confirm_restart(dialogs: &mut Dialogs, res: &GameResources) {
+    let dialog = dialogs.do_dialog(
+        res,
+        DialogId::ConfirmRestart,
+        "[RESTART_LEVEL_HEADER]",
+        "[RESTART_LEVEL_BODY]",
+        "",
+        ButtonMode::YesNo,
+    );
+    if let Some(yes) = &mut dialog.yes_button {
+        yes.label = res.translate("[RESTART_LABEL]");
+    }
+    if let Some(no) = &mut dialog.no_button {
+        no.label = res.translate("[DIALOG_BUTTON_CANCEL]");
+    }
+}
+
 /// `LawnApp::DoUserDialog`: "Who are you?".
 pub fn do_user_dialog(dialogs: &mut Dialogs, res: &GameResources, profiles: &ProfileMgr) {
     let names: Vec<&str> = profiles.names().collect();
@@ -256,6 +286,13 @@ impl DialogActions<'_, '_, '_> {
                 self.dialogs.kill_dialog(DialogId::ConfirmBackToMain);
                 self.do_back_to_main();
             }
+            // The level starts over (PreNewGame); leaving and re-entering
+            // the board state clears it away and builds it again.
+            DialogId::ConfirmRestart if yes => {
+                self.dialogs.kill_dialog(DialogId::ConfirmRestart);
+                self.dialogs.kill_dialog(DialogId::NewOptions);
+                self.next_state.set(AppState::Board);
+            }
             DialogId::GameOver => {
                 self.dialogs.kill_dialog(DialogId::GameOver);
                 if yes {
@@ -280,6 +317,7 @@ impl DialogActions<'_, '_, '_> {
     /// the board state stops its music and clears it away (`KillBoard`).
     /// TODO: save the game in progress (`Board::TryToSaveGame`).
     fn do_back_to_main(&mut self) {
+        self.dialogs.kill_dialog(DialogId::NewOptions);
         self.profiles.save_current_details();
         self.next_state.set(AppState::GameSelector);
     }
@@ -313,7 +351,7 @@ impl DialogActions<'_, '_, '_> {
 }
 
 /// `LawnApp::KillNewOptionsDialog`: closes the options, switching the screen
-/// mode to what they ask for, and saves the settings.
+/// mode to what they ask for.
 fn kill_new_options_dialog(dialogs: &mut Dialogs, settings: &mut Settings, windows: &mut Query<&mut Window, With<PrimaryWindow>>) {
     let Some(options) = dialogs.get(DialogId::NewOptions).and_then(|d| d.options()) else { return };
     settings.fullscreen = options.fullscreen.checked;
@@ -322,7 +360,6 @@ fn kill_new_options_dialog(dialogs: &mut Dialogs, settings: &mut Settings, windo
         window.mode = settings.window_mode();
     }
     dialogs.kill_dialog(DialogId::NewOptions);
-    settings.save();
 }
 
 /// The options dialog's sliders, checkboxes and buttons.
@@ -360,20 +397,26 @@ fn options_event(
         // Escape (ID_CANCEL) closes it without switching the screen mode.
         DialogEvent::Button(_, DialogButton::No) => {
             app.dialogs.kill_dialog(DialogId::NewOptions);
-            settings.save();
         }
         DialogEvent::Button(_, DialogButton::MainMenu) => {
             let from_game_selector =
                 app.dialogs.get(DialogId::NewOptions).and_then(|d| d.options()).is_some_and(|o| o.from_game_selector);
-            kill_new_options_dialog(app.dialogs, settings, windows);
             if from_game_selector {
+                kill_new_options_dialog(app.dialogs, settings, windows);
                 // TODO: ShowAwardScreen(AWARD_CREDITS_ZOMBIENOTE) once the credits exist.
                 info!("the credits aren't ported yet");
             } else {
-                app.do_back_to_main();
+                // Board::NeedSaveGame: a level in progress asks first. TODO:
+                // save it (TryToSaveGame), and leave without asking where
+                // there's nothing to save.
+                do_confirm_back_to_main(app.dialogs, app.res);
             }
         }
-        // TODO: the almanac, and restarting the level once the options open from the board.
+        DialogEvent::Button(_, DialogButton::Restart) => do_confirm_restart(app.dialogs, app.res),
+        // Over the options, which stay open beneath it.
+        DialogEvent::Button(_, DialogButton::Almanac) => {
+            crate::almanac::do_almanac_dialog(app.dialogs, app.res, crate::almanac::AlmanacStart::Index)
+        }
         DialogEvent::Button(_, button) => info!("options {button:?} isn't ported yet"),
         DialogEvent::ListClicked(..) => {}
     }
@@ -394,6 +437,7 @@ fn handle_dialog_events(
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
     let events = dialogs.take_events();
+    let options_were_open = dialogs.get(DialogId::NewOptions).is_some();
     let (Some(res), Some(mut profiles)) = (res, profiles) else { return };
     let mut app = DialogActions {
         dialogs: &mut dialogs,
@@ -429,5 +473,10 @@ fn handle_dialog_events(
             DialogEvent::ListClicked(DialogId::UserDialog, idx, count) => app.user_list_clicked(idx, count),
             _ => {}
         }
+    }
+    // However the options closed (OK, Escape, leaving or restarting the
+    // level), the settings are saved.
+    if options_were_open && app.dialogs.get(DialogId::NewOptions).is_none() {
+        settings.save();
     }
 }

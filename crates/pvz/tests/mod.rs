@@ -11,6 +11,7 @@
 //! (none are loaded) and the random generator has a fixed seed, so runs
 //! repeat exactly.
 
+mod almanac;
 mod butter;
 mod fog;
 mod levels;

@@ -8,7 +8,7 @@ Legend: `[x]` done, `[~]` partly done, `[ ]` not started.
 
 - [x] Boot, setup, title, main menu, player profiles, dialogs, first-ever intro cinematic.
 - [x] Adventure worlds 1 and 2 (day, night), levels 1-1 to 2-10, awards, Crazy Dave on 1-5 / 2-1 / 2-2 / 2-3+ (seed slots).
-- [~] Zombies: 10 of 33 types (normal, flag, cone, bucket, screen door, newspaper, pole vaulter, football, dancer, backup dancer).
+- [~] Zombies: 20 of 33 types (normal, flag, cone, bucket, screen door, newspaper, pole vaulter, football, dancer, backup dancer, ducky tube, snorkel, Zamboni, bobsled, dolphin rider, bungee, ladder, catapult, gargantuar, imp).
 - [~] Plants: roughly 25 of 53 (see section 3).
 - [~] Pool plants and land plants for world 3 (squash, jalapeno, spikeweed, torchwood, threepeater, tall-nut) are in. Lily pad, tangle kelp and sea-shroom have definitions and some code; the pool itself is not playable.
 
@@ -52,11 +52,11 @@ Legend: `[x]` done, `[~]` partly done, `[ ]` not started.
 - [ ] Level 3-x onward tutorial hints (`AdviceType` set is incomplete).
 - [ ] Brains cutscene shake (`SetShakeOverride`, `cutscene.rs`), plant gloom/threepeater head shake.
 - [ ] Mower tinting, upgrade graying (`seed_bank.rs`).
-- [ ] Seed chooser extras: almanac / store / imitater buttons, pool / roof / flyer warnings.
+- [ ] Seed chooser extras: almanac (the almanac itself exists: `do_almanac_dialog`) / store / imitater buttons, pool / roof / flyer warnings.
 
-## 2. Zombies (23 left)
+## 2. Zombies (13 left)
 
-Ported: normal, flag, cone, bucket, screen door, newspaper, pole vaulter, football, dancer, backup dancer.
+Ported: normal, flag, cone, bucket, screen door, newspaper, pole vaulter, football, dancer, backup dancer, ducky tube, snorkel, Zamboni, bobsled, dolphin rider, bungee, ladder, catapult, gargantuar, imp.
 
 Pool and fog:
 - [x] Ducky tube zombie (normal / cone / bucket variants on water; any wading zombie wears the tube).
@@ -71,11 +71,11 @@ Pool and fog:
 - [ ] Yeti (rare appearance, runs off the screen).
 
 Roof and boss:
-- [ ] Bungee zombie (steals a plant, target marker, umbrella leaf defence).
-- [ ] Ladder zombie (places a ladder so other zombies cross walls).
-- [ ] Catapult zombie (basketballs).
-- [ ] Gargantuar (smash, throws imp, giga-version with red eye `RedeyeGargantuar`).
-- [ ] Imp.
+- [x] Bungee zombie (steals a plant, target marker, umbrella leaf defence).
+- [x] Ladder zombie (places a ladder so other zombies cross walls).
+- [x] Catapult zombie (basketballs).
+- [~] Gargantuar (smash, throws imp); the giga-version with red eye (`RedeyeGargantuar`) isn't ported.
+- [x] Imp.
 - [ ] Dr. Zomboss (`Boss`).
 
 Puzzle / "I, Zombie" heads (also used by Zen mini-games): [ ] PeaHead, WallnutHead, JalapenoHead, GatlingHead, SquashHead, TallnutHead.
@@ -126,12 +126,12 @@ All of these start from `AppState::GameSelector` and `GameMode` (only `Adventure
 ## 6. Main menu pieces
 
 - [x] Help: the zombies' help note (`AwardScreen::help`, as the original's `AWARD_HELP_ZOMBIENOTE`), back to the main menu.
-- [~] Options dialog (`DialogKind::Options`, `options::Settings`): music / sound volume sliders, 3D acceleration (remembered only) and full screen from the main menu, saved in `config.toml`. Still to do: open it from the board's Menu button as the pause menu (Back To Game, Restart with its confirmation, Main Menu, the almanac; it's built for this, but nothing pauses yet and the Menu button still offers "Leave Game?"), and the Credits button shown once adventure is finished.
-- [ ] Almanac: index with plants and zombies, detail pages with animated portrait, stats, descriptions; opens from menu, from the seed chooser and after unlock. Unlock rules per seed / zombie seen.
+- [~] Options dialog (`DialogKind::Options`, `options::Settings`): music / sound volume sliders, 3D acceleration (remembered only) and full screen from the main menu, saved in `config.toml`. From a level it's the pause menu (Menu button or Escape: Back To Game, Restart Level with its confirmation, Main Menu via "Leave Game?"). Still to do: the Credits button shown once adventure is finished.
+- [x] Almanac (`almanac.rs`): index, plant and zombie pages with live plant and zombie, cards with formatted descriptions, unlock rules (plants owned, zombies reached or beaten, the yeti's silhouette); opens from the main menu, the options dialog in a level and the level-15 award. Still to do: its button in the seed chooser, the pool water behind water plants, and live portraits of the zombies not ported yet (they show a still frame).
 - [ ] Zombatar: zombie avatar editor (face, hair, eyes, mouth, clothing, accessories, background, colours), saved in the player profile, shown on the main menu sign / achievements, import image.
 - [ ] Achievements (Steam GOTY list: Home Lawn Security, Nobel Peas Prize, Better Off Dead, ...): tracking, popup banner, achievements screen. Needs a per-achievement trigger audit.
 - [ ] Quit confirmation and Windows-style "exit" behaviours already exist; add "Main Menu" button on the Game Over dialog (`level_end.rs` mention in `agents.md`).
-- [ ] Pause menu and pause overlay (pause music, mute foley on pause, `audio.rs` TODO), "restart level" and "back to main" flows.
+- [~] Pause menu: the options dialog from a level pauses the board, with restart and back-to-main. Still to do: pausing music and MUTE_ON_PAUSE foley (`audio.rs` TODO), and the pause dialog of a lost focus (`DoPauseDialog`).
 - [ ] Save and load a game in progress (`lawn_app.rs`, `Board::TryToSaveGame`, `player.rs` delete saved games TODO, resume from the selector).
 - [ ] Adventure-complete message on the selector (`game_selector.rs` TODO).
 

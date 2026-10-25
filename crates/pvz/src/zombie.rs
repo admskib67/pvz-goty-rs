@@ -134,6 +134,30 @@ impl ZombieType {
         }
     }
 
+    /// The reanimation that shows a zombie of this type in the almanac,
+    /// including the types not ported yet (`gZombieDefs`' `mReanimationType`).
+    pub fn almanac_reanim(self) -> Option<ReanimationType> {
+        self.reanim().or(match self {
+            Self::JackInTheBox => Some(ReanimationType::Jackinthebox),
+            Self::Balloon => Some(ReanimationType::Balloon),
+            Self::Digger => Some(ReanimationType::Digger),
+            Self::Pogo => Some(ReanimationType::Pogo),
+            Self::Yeti => Some(ReanimationType::Yeti),
+            Self::Boss => Some(ReanimationType::Boss),
+            _ => None,
+        })
+    }
+
+    /// The `[NAME]` in `LawnStrings.txt`, without brackets (`mZombieName`).
+    pub fn name(self) -> &'static str {
+        ZOMBIE_NAMES[self as usize]
+    }
+
+    /// `Board::IsZombieTypeSpawnedOnly`: zombies that only come with another.
+    pub fn is_spawned_only(self) -> bool {
+        matches!(self, Self::BackupDancer | Self::Bobsled | Self::Imp)
+    }
+
     /// `Zombie::ZombieTypeCanGoInPool`: who can wade into the water.
     pub fn can_go_in_pool(self) -> bool {
         matches!(
@@ -164,6 +188,15 @@ const ALL: [ZombieType; NUM_ZOMBIE_TYPES] = {
         RedeyeGargantuar,
     ]
 };
+
+/// `gZombieDefs`' names.
+const ZOMBIE_NAMES: [&str; NUM_ZOMBIE_TYPES] = [
+    "ZOMBIE", "FLAG_ZOMBIE", "CONEHEAD_ZOMBIE", "POLE_VAULTING_ZOMBIE", "BUCKETHEAD_ZOMBIE", "NEWSPAPER_ZOMBIE",
+    "SCREEN_DOOR_ZOMBIE", "FOOTBALL_ZOMBIE", "DANCING_ZOMBIE", "BACKUP_DANCER", "DUCKY_TUBE_ZOMBIE", "SNORKEL_ZOMBIE",
+    "ZOMBONI", "ZOMBIE_BOBSLED_TEAM", "DOLPHIN_RIDER_ZOMBIE", "JACK_IN_THE_BOX_ZOMBIE", "BALLOON_ZOMBIE", "DIGGER_ZOMBIE",
+    "POGO_ZOMBIE", "ZOMBIE_YETI", "BUNGEE_ZOMBIE", "LADDER_ZOMBIE", "CATAPULT_ZOMBIE", "GARGANTUAR", "IMP", "BOSS",
+    "ZOMBIE", "ZOMBIE", "ZOMBIE", "ZOMBIE", "ZOMBIE", "ZOMBIE", "REDEYED_GARGANTUAR",
+];
 
 /// `gZombieWaves`: how many waves each adventure level has.
 const ZOMBIE_WAVES: [i32; 50] = [

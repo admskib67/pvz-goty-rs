@@ -34,7 +34,8 @@ use crate::audio::{FoleyType, Sounds};
 use crate::graphics::{Graphics, SexyColor};
 use crate::particle::ParticleEffect;
 use crate::reanim::{
-    EffectSystem, ParticleSystemId, ReanimationId, ReanimationType, draw_render_group, draw_render_group_colored,
+    EffectSystem, ParticleSystemId, ReanimationId, ReanimationType, draw_reanimation, draw_render_group,
+    draw_render_group_colored,
 };
 use crate::resources::{GameResources, ImageRes};
 use crate::zombie::ZombieType;
@@ -55,6 +56,8 @@ pub const ZOMBIE_WAVE_WINNER: i32 = -4;
 /// `Zombie::ZOMBIE_WAVE_CUTSCENE`: a zombie waiting on the street during the
 /// level intro.
 pub const ZOMBIE_WAVE_CUTSCENE: i32 = -2;
+/// `Zombie::ZOMBIE_WAVE_UI`: a zombie shown off the board (the almanac's).
+pub const ZOMBIE_WAVE_UI: i32 = -3;
 
 /// `DamageFlags`, as bit masks.
 #[allow(dead_code, reason = "the full set; zombies use more of it as they're ported")]
@@ -279,6 +282,23 @@ pub struct ZombieEnv {
 }
 
 impl ZombieEnv {
+    /// The setting for a zombie off the board: a plain day lawn.
+    pub fn ui() -> Self {
+        Self {
+            background: BackgroundType::Day,
+            level: 1,
+            finished_adventure: false,
+            zombie_count: 0,
+            zombies_on_screen: 0,
+            bowling: false,
+            main_counter: 0,
+            award_dropped: false,
+            pool_rows: [false; super::MAX_GRID_SIZE_Y],
+            ice_min_x: [super::BOARD_ICE_START; super::MAX_GRID_SIZE_Y],
+            ladders: [[false; super::MAX_GRID_SIZE_Y]; super::MAX_GRID_SIZE_X],
+        }
+    }
+
     /// `Board::IsPoolSquare` for the square under pixel column `x` in `row`.
     pub fn is_pool_square(&self, x: i32, row: i32) -> bool {
         x >= super::cursor::LAWN_XMIN && self.pool_rows.get(row as usize).copied().unwrap_or(false)
@@ -304,6 +324,96 @@ pub struct Fx<'a, 'w, 's> {
     pub res: &'a mut GameResources,
     pub images: &'a mut Assets<Image>,
     pub sounds: &'a mut Sounds<'w, 's>,
+}
+
+/// `ReanimatorCache::DrawCachedZombie`: a still picture of a zombie type
+/// (the almanac's thumbnails), its frame's top-left at (x, y), drawn at the
+/// current scale. `with_pole` is `ZOMBIE_CACHED_POLEVAULTER_WITH_POLE`.
+/// Behaviour per ruslan831 decomp, `ReanimatorCache::MakeCachedZombieFrame`.
+/// The reanimations must be loaded beforehand.
+pub fn draw_cached_zombie(g: &mut Graphics, res: &GameResources, x: f32, y: f32, ty: ZombieType, with_pole: bool) {
+    use sexy::reanim::Reanimation;
+    let Some(reanim_type) = ty.almanac_reanim() else { return };
+    let load = |ty: ReanimationType, x: f32, y: f32| res.loaded_reanim_definition(ty.file()).map(|d| Reanimation::new(x, y, d));
+    let (pos_x, pos_y) = (x + 40.0, y + 40.0);
+    match reanim_type {
+        ReanimationType::Zombie => {
+            let Some(mut reanim) = load(reanim_type, pos_x, pos_y) else { return };
+            reanim.set_frames_for_layer("anim_idle");
+            setup_reanim_layers(&mut reanim, ty);
+            if ty == ZombieType::Door {
+                reanim.assign_render_group_to_track("anim_screendoor", RENDER_GROUP_NORMAL);
+            } else if ty == ZombieType::Flag
+                && let Some(mut flag) = load(ReanimationType::Flag, pos_x, pos_y)
+            {
+                flag.set_frames_for_layer("Zombie_flag");
+                draw_reanimation(g, &flag, res);
+            }
+            draw_reanimation(g, &reanim, res);
+        }
+        ReanimationType::Boss => {
+            let (Some(mut boss), Some(mut driver)) =
+                (load(reanim_type, x - 524.0, y - 88.0), load(ReanimationType::BossDriver, x + 46.0, y + 22.0))
+            else {
+                return;
+            };
+            boss.set_frames_for_layer("anim_head_idle");
+            driver.set_frames_for_layer("anim_idle");
+            draw_reanimation(g, &boss, res);
+            draw_reanimation(g, &driver, res);
+            for track in ["boss_body1", "boss_neck", "boss_head2"] {
+                boss.assign_render_group_to_track(track, RENDER_GROUP_HIDDEN);
+            }
+            draw_reanimation(g, &boss, res);
+        }
+        _ => {
+            let track = match ty {
+                ZombieType::Pogo => "anim_pogo",
+                ZombieType::Polevaulter if !with_pole => "anim_walk",
+                _ => "anim_idle",
+            };
+            let pos_y = if ty == ZombieType::Gargantuar { y + 60.0 } else { pos_y };
+            crate::reanim::draw_reanimator_frame(g, res, pos_x, pos_y, reanim_type, Some(track), 1.0);
+        }
+    }
+}
+
+/// `Zombie::SetupReanimLayers`: which parts of the plain zombie's
+/// reanimation each of its types wears.
+fn setup_reanim_layers(reanim: &mut sexy::reanim::Reanimation, ty: ZombieType) {
+    for prefix in ["anim_cone", "anim_bucket", "anim_screendoor", "Zombie_flaghand", "Zombie_duckytube", "anim_tongue", "Zombie_mustache"] {
+        reanim.assign_render_group_to_prefix(prefix, RENDER_GROUP_HIDDEN);
+    }
+    // SetupDoorArms(false).
+    for prefix in ["Zombie_outerarm_hand", "Zombie_outerarm_lower", "Zombie_outerarm_upper", "anim_innerarm"] {
+        reanim.assign_render_group_to_prefix(prefix, RENDER_GROUP_NORMAL);
+    }
+    for prefix in ["Zombie_outerarm_screendoor", "Zombie_innerarm_screendoor", "Zombie_innerarm_screendoor_hand"] {
+        reanim.assign_render_group_to_prefix(prefix, RENDER_GROUP_HIDDEN);
+    }
+    match ty {
+        ZombieType::TrafficCone | ZombieType::Pail => {
+            let helmet = if ty == ZombieType::TrafficCone { "anim_cone" } else { "anim_bucket" };
+            reanim.assign_render_group_to_prefix(helmet, RENDER_GROUP_NORMAL);
+            reanim.assign_render_group_to_prefix("anim_hair", RENDER_GROUP_HIDDEN);
+        }
+        ZombieType::Door => {
+            for prefix in ["Zombie_outerarm_hand", "Zombie_outerarm_lower", "Zombie_outerarm_upper", "anim_innerarm"] {
+                reanim.assign_render_group_to_prefix(prefix, RENDER_GROUP_HIDDEN);
+            }
+            for prefix in ["Zombie_outerarm_screendoor", "Zombie_innerarm_screendoor", "Zombie_innerarm_screendoor_hand"] {
+                reanim.assign_render_group_to_prefix(prefix, RENDER_GROUP_NORMAL);
+            }
+        }
+        ZombieType::Newspaper => reanim.assign_render_group_to_prefix("Zombie_paper_paper", RENDER_GROUP_HIDDEN),
+        ZombieType::Flag => {
+            reanim.assign_render_group_to_prefix("anim_innerarm", RENDER_GROUP_HIDDEN);
+            reanim.assign_render_group_to_track("Zombie_flaghand", RENDER_GROUP_NORMAL);
+            reanim.assign_render_group_to_track("Zombie_innerarm_screendoor", RENDER_GROUP_NORMAL);
+        }
+        ZombieType::DuckyTube => reanim.assign_render_group_to_prefix("Zombie_duckytube", RENDER_GROUP_NORMAL),
+        _ => {}
+    }
 }
 
 /// `ZombieDrawPosition`.
@@ -1070,7 +1180,7 @@ impl Zombie {
 
     /// `Zombie::IsOnBoard`.
     pub fn is_on_board(&self) -> bool {
-        self.from_wave != ZOMBIE_WAVE_CUTSCENE
+        self.from_wave != ZOMBIE_WAVE_CUTSCENE && self.from_wave != ZOMBIE_WAVE_UI
     }
 
     /// `Zombie::Update` for a zombie waiting on the street: it only

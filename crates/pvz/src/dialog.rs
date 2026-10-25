@@ -53,6 +53,10 @@ pub enum DialogId {
     ChooserWarning,
     /// `DIALOG_NEWOPTIONS`: volumes, full screen and 3D acceleration.
     NewOptions,
+    /// `DIALOG_CONFIRM_RESTART`: the options dialog's "restart the level?".
+    ConfirmRestart,
+    /// `DIALOG_ALMANAC`, run by `almanac`.
+    Almanac,
 }
 
 /// `Dialog::BUTTONS_*`.
@@ -108,6 +112,16 @@ pub enum DialogEvent {
     SliderVal(DialogId, DialogSlider, f32, bool),
     /// `CheckboxListener::CheckboxChecked`.
     CheckboxChecked(DialogId, DialogCheckbox, bool),
+}
+
+/// Where the options dialog was opened from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionsFrom {
+    /// The main menu: Credits instead of Main Menu once adventure is finished.
+    GameSelector { finished_adventure: bool },
+    /// A level, as its pause menu: no restart or almanac during the level
+    /// intro, and the almanac only once the player has found it.
+    Board { level_intro: bool, can_show_almanac: bool },
 }
 
 /// What the options dialog opens with.
@@ -176,6 +190,9 @@ pub enum DialogKind {
     User { list: ListWidget, num_users: i32, rename: StoneButton<DialogButton>, delete: StoneButton<DialogButton> },
     /// `NewOptionsDialog`: a picture instead of the stone frame.
     Options(Box<OptionsWidgets>),
+    /// `AlmanacDialog`: the whole screen, drawn and run by `almanac`; it
+    /// sits in the dialog list to be modal and on top.
+    Almanac(crate::almanac::AlmanacStart),
 }
 
 /// A `LawnDialog`. Its widgets' coordinates are relative to its top-left.
@@ -297,15 +314,10 @@ impl LawnDialog {
 
     /// `NewOptionsDialog::NewOptionsDialog`, sized to its background and
     /// centered (`LawnApp::DoNewOptions`). From the main menu there is no
-    /// restart or almanac, and Main Menu becomes Credits once adventure is
-    /// finished (otherwise it's hidden).
-    pub fn new_options(
-        res: &GameResources,
-        values: OptionsValues,
-        from_game_selector: bool,
-        finished_adventure: bool,
-        can_show_almanac: bool,
-    ) -> Self {
+    /// restart, and Main Menu becomes Credits once adventure is finished
+    /// (otherwise it's hidden).
+    pub fn new_options(res: &GameResources, values: OptionsValues, from: OptionsFrom) -> Self {
+        let from_game_selector = matches!(from, OptionsFrom::GameSelector { .. });
         let mut dialog = Self::new(res, DialogId::NewOptions, "", "", "", ButtonMode::Footer);
         let look = ImageLook {
             normal: "IMAGE_OPTIONS_BACKTOGAMEBUTTON0",
@@ -336,20 +348,33 @@ impl LawnDialog {
             main_menu: button(DialogButton::MainMenu, "[MAIN_MENU_BUTTON]"),
             from_game_selector,
         };
-        if from_game_selector {
-            widgets.restart.visible = false;
-            if finished_adventure {
-                widgets.main_menu.label = res.translate("[CREDITS]");
-            } else {
-                widgets.main_menu.visible = false;
+        match from {
+            OptionsFrom::GameSelector { finished_adventure } => {
+                widgets.restart.visible = false;
+                widgets.almanac.visible = false;
+                if finished_adventure {
+                    widgets.main_menu.label = res.translate("[CREDITS]");
+                } else {
+                    widgets.main_menu.visible = false;
+                }
+            }
+            OptionsFrom::Board { level_intro, can_show_almanac } => {
+                widgets.restart.visible = !level_intro;
+                widgets.almanac.visible = can_show_almanac && !level_intro;
             }
         }
-        // TODO: the level intro, zen garden and tree of wisdom also hide
-        // restart and the almanac, once the options open from the board.
-        widgets.almanac.visible = can_show_almanac && !from_game_selector;
         dialog.kind = DialogKind::Options(Box::new(widgets));
         let (w, h) = image_size(res, "IMAGE_OPTIONS_MENUBACK");
         dialog.resize(res, (GAME_WIDTH as i32 - w) / 2, (GAME_HEIGHT as i32 - h) / 2, w, h);
+        dialog
+    }
+
+    /// `AlmanacDialog`'s place in the dialog list, the whole screen.
+    pub fn almanac(res: &GameResources, start: crate::almanac::AlmanacStart) -> Self {
+        let mut dialog = Self::new(res, DialogId::Almanac, "", "", "", ButtonMode::Footer);
+        dialog.yes_button = None;
+        dialog.kind = DialogKind::Almanac(start);
+        (dialog.x, dialog.y, dialog.width, dialog.height) = (0, 0, GAME_WIDTH as i32, GAME_HEIGHT as i32);
         dialog
     }
 
@@ -476,7 +501,7 @@ impl LawnDialog {
 
         let (content_left, content_top, content_width) = (self.content_left(), self.content_top(), self.content_width());
         match &mut self.kind {
-            DialogKind::Message | DialogKind::Options(_) => {}
+            DialogKind::Message | DialogKind::Options(_) | DialogKind::Almanac(_) => {}
             DialogKind::NewUser { edit } => {
                 if let Some(font) = res.font(EDIT_FONT) {
                     let w = width - insets.left - insets.right - 24;
@@ -652,7 +677,7 @@ impl LawnDialog {
             b.draw(g, res);
         }
         match &self.kind {
-            DialogKind::Message | DialogKind::Options(_) => {}
+            DialogKind::Message | DialogKind::Options(_) | DialogKind::Almanac(_) => {}
             DialogKind::NewUser { edit } => {
                 if let Some(font) = res.font(EDIT_FONT) {
                     edit.draw(g, font);
@@ -816,6 +841,8 @@ pub struct Dialogs {
     pressed: Option<(DialogId, Target)>,
     last_click: Option<(f64, Vec2)>,
     click_count: u32,
+    /// A dialog was open when this frame's input was handed out.
+    had_input: bool,
 }
 
 impl Dialogs {
@@ -824,8 +851,19 @@ impl Dialogs {
         !self.list.is_empty()
     }
 
+    /// True when a dialog took this frame's input, even if it has closed
+    /// since: a key that closed a dialog shouldn't also reach the screen.
+    pub fn took_input(&self) -> bool {
+        self.had_input
+    }
+
     pub fn get(&self, id: DialogId) -> Option<&LawnDialog> {
         self.list.iter().find(|d| d.id == id)
+    }
+
+    /// The topmost dialog, which gets the input.
+    pub fn top(&self) -> Option<&LawnDialog> {
+        self.list.last()
     }
 
     pub fn get_mut(&mut self, id: DialogId) -> Option<&mut LawnDialog> {
@@ -905,6 +943,7 @@ fn dialog_input(
     mut sounds: Sounds,
 ) {
     let typed: Vec<KeyboardInput> = key_events.read().filter(|k| k.state == ButtonState::Pressed).cloned().collect();
+    dialogs.had_input = dialogs.is_modal();
     let Some(res) = res else { return };
     let dialogs = &mut *dialogs;
     if mouse.just_pressed(MouseButton::Left)
@@ -917,6 +956,10 @@ fn dialog_input(
     }
     let click_count = dialogs.click_count;
     let Some(dialog) = dialogs.list.last_mut() else { return };
+    // The almanac handles its own input.
+    if matches!(dialog.kind, DialogKind::Almanac(_)) {
+        return;
+    }
     let id = dialog.id;
     let edit_font = res.font(EDIT_FONT).map(|f| f.font.clone());
     let p = cursor.0.map(|p| p.floor().as_ivec2());
@@ -1093,10 +1136,19 @@ fn dialog_input(
     dialogs.events.extend(events);
 }
 
-fn draw_dialogs(dialogs: Res<Dialogs>, res: Option<Res<GameResources>>, mut g: ResMut<Graphics>) {
+fn draw_dialogs(
+    dialogs: Res<Dialogs>,
+    res: Option<Res<GameResources>>,
+    almanac: Option<Res<crate::almanac::Almanac>>,
+    mut g: ResMut<Graphics>,
+) {
     let Some(res) = res else { return };
     for dialog in &dialogs.list {
-        dialog.draw(&mut g, &res);
+        match (&dialog.kind, &almanac) {
+            (DialogKind::Almanac(_), Some(almanac)) => almanac.draw(&mut g, &res),
+            (DialogKind::Almanac(_), None) => {}
+            _ => dialog.draw(&mut g, &res),
+        }
     }
 }
 

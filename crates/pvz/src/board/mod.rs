@@ -36,6 +36,13 @@ mod tutorial;
 mod waves;
 mod whack_a_zombie;
 mod zombie;
+
+/// What the almanac needs to show plants and zombies off the board, as the
+/// original's `AlmanacDialog` makes its own `Plant` and `Zombie`.
+pub(crate) mod figures {
+    pub(crate) use super::plant::{Plant, PlantAction};
+    pub(crate) use super::zombie::{Fx, ZOMBIE_WAVE_UI, Zombie, ZombieEnv, draw_cached_zombie};
+}
 #[cfg(test)]
 #[path = "../../tests/mod.rs"]
 mod tests;
@@ -305,6 +312,8 @@ pub struct Board {
     pub sun_count_down: i32,
     pub draw_count: u32,
     pub paused: bool,
+    /// Zombie types the player defeated in this level (`AlmanacPlayerDefeatedZombie`).
+    pub defeated_zombies: [bool; crate::zombie::NUM_ZOMBIE_TYPES],
     pub show_shovel: bool,
     pub out_of_money_counter: i32,
     pub seed_bank: SeedBank,
@@ -442,6 +451,7 @@ impl Board {
             sun_count_down: 0,
             draw_count: 0,
             paused: false,
+            defeated_zombies: [false; crate::zombie::NUM_ZOMBIE_TYPES],
             show_shovel: false,
             out_of_money_counter: 0,
             seed_bank: SeedBank::new(resources),
@@ -899,11 +909,15 @@ fn update_board(
     mut dialogs: ResMut<Dialogs>,
     mut profiles: ResMut<ProfileMgr>,
     mut next_state: ResMut<NextState<AppState>>,
+    mut defeated: ResMut<crate::almanac::ZombiesDefeated>,
 ) {
     let board = &mut *board;
     // LawnApp::NeedPauseGame: an open dialog pauses the game.
     board.paused = dialogs.is_modal();
     let outcome = board.tick(&mut effects, &mut resources, &mut images, &mut music, &mut sounds);
+    for (seen, &now) in defeated.0.iter_mut().zip(&board.defeated_zombies) {
+        *seen |= now;
+    }
     if outcome.intro_done {
         next_state.set(AppState::Board);
     }
@@ -1600,6 +1614,15 @@ const SUN_COUNTDOWN: i32 = 425;
 const SUN_COUNTDOWN_RANGE: i32 = 275;
 const SUN_COUNTDOWN_MAX: i32 = 950;
 
+/// The menu button and Escape: `LawnApp::DoNewOptions(false)`, the options as
+/// the pause menu (a dialog being open pauses the board).
+fn open_options(board: &Board, dialogs: &mut Dialogs, res: &GameResources, settings: &crate::options::Settings) {
+    // LawnApp::CanShowAlmanac, for the level being played.
+    let can_show_almanac = !board.first_time_adventure || board.level >= 15;
+    let from = crate::dialog::OptionsFrom::Board { level_intro: board.scene == GameScene::LevelIntro, can_show_almanac };
+    crate::options::do_new_options(dialogs, res, settings, from);
+}
+
 impl Board {
     /// `Board::CanInteractWithBoardButtons`: not while carrying something.
     fn can_interact_with_board_buttons(&self) -> bool {
@@ -1621,10 +1644,16 @@ fn board_input(
     mut images: ResMut<Assets<Image>>,
     mut effects: ResMut<EffectSystem>,
     mut sounds: Sounds,
+    settings: Res<crate::options::Settings>,
 ) {
     let board = &mut *board;
     if board.mode == GameMode::Intro {
         return;
+    }
+    // Board::KeyDown: Escape opens the options too (not when the key just
+    // closed a dialog).
+    if keys.just_pressed(KeyCode::Escape) && !dialogs.took_input() && board.can_interact_with_board_buttons() {
+        open_options(board, &mut dialogs, &resources, &settings);
     }
     // Space and Enter move Crazy Dave's talk along, like a click.
     if !dialogs.is_modal()
@@ -1671,9 +1700,7 @@ fn board_input(
         button.is_over = false;
         button.is_down = false;
         sounds.play_sample("SOUND_PAUSE");
-        // TODO: the options dialog (NewOptionsDialog), whose "Main Menu"
-        // button leads here.
-        do_confirm_back_to_main(&mut dialogs, &resources);
+        open_options(board, &mut dialogs, &resources, &settings);
     }
     board.flush_particle_requests(&mut effects, &mut resources, &mut images, sounds.rng());
 }
@@ -1708,18 +1735,6 @@ fn do_chooser_warning_dialog(dialogs: &mut Dialogs, res: &GameResources, warning
     }
     if let Some(no) = &mut dialog.no_button {
         no.label = res.translate("[REPICK_BUTTON]");
-    }
-}
-
-/// `LawnApp::DoConfirmBackToMain`.
-fn do_confirm_back_to_main(dialogs: &mut Dialogs, res: &GameResources) {
-    let lines = "Do you want to return\nto the main menu?\n\nYour game will be saved.";
-    let dialog = dialogs.do_dialog(res, DialogId::ConfirmBackToMain, "Leave Game?", lines, "", ButtonMode::YesNo);
-    if let Some(yes) = &mut dialog.yes_button {
-        yes.label = res.translate("[LEAVE_BUTTON]");
-    }
-    if let Some(no) = &mut dialog.no_button {
-        no.label = res.translate("[DIALOG_BUTTON_CANCEL]");
     }
 }
 

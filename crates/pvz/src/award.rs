@@ -4,14 +4,17 @@
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Widget/AwardScreen.cpp`:
 //! `AwardScreen`, `DrawBottom`, `DrawAwardSeed`, `Draw`, `Update`,
-//! `StartButtonPressed`, `MouseDown` and `MouseUp`. Not yet: the trophy and
-//! money-bag screens, the credits note, the almanac and store the original
+//! `StartButtonPressed`, `MouseDown` and `MouseUp`. Level 15's button opens
+//! the almanac, and closing it starts the next level. Not yet: the trophy
+//! and money-bag screens, the credits note, and the store the original
 //! opens from some levels.
 
 use bevy::math::Affine2;
 use bevy::prelude::*;
 
+use crate::almanac::{AlmanacStart, do_almanac_dialog};
 use crate::audio::{Music, MusicTune, Sounds};
+use crate::dialog::Dialogs;
 use crate::graphics::{Graphics, Justify, SexyColor, SexyRect};
 use crate::input::GameCursor;
 use crate::plant::{SeedType, award_seed_for_level};
@@ -159,12 +162,18 @@ fn in_rect(p: Vec2, (x, y, w, h): (f32, f32, f32, f32)) -> bool {
 }
 
 /// `AwardScreen::StartButtonPressed`: the help note goes back to the main
-/// menu, the others on to the next level.
-fn start_pressed(screen: &AwardScreen, next_state: &mut NextState<AppState>) {
-    next_state.set(if screen.kind == AwardKind::HelpNote { AppState::GameSelector } else { AppState::Board });
+/// menu, the almanac award opens it (`almanac` starts the next level when
+/// it closes), and the others go on to the next level.
+fn start_pressed(screen: &AwardScreen, next_state: &mut NextState<AppState>, dialogs: &mut Dialogs, res: &GameResources) {
+    match screen.kind {
+        AwardKind::HelpNote => next_state.set(AppState::GameSelector),
+        AwardKind::Almanac => do_almanac_dialog(dialogs, res, AlmanacStart::Index),
+        _ => next_state.set(AppState::Board),
+    }
 }
 
 /// `AwardScreen::MouseDown`, `MouseUp` and `KeyChar`.
+#[allow(clippy::too_many_arguments)]
 fn award_input(
     mut screen: ResMut<AwardScreen>,
     cursor: Res<GameCursor>,
@@ -172,7 +181,15 @@ fn award_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut next_state: ResMut<NextState<AppState>>,
     mut sounds: Sounds,
+    mut dialogs: ResMut<Dialogs>,
+    res: Res<GameResources>,
 ) {
+    // The almanac, over the screen, takes the input.
+    if dialogs.is_modal() || dialogs.took_input() {
+        screen.start_over = false;
+        screen.menu_over = false;
+        return;
+    }
     let (start, menu_rect) = (screen.start_rect(), AwardScreen::MENU_RECT);
     screen.start_over = cursor.0.is_some_and(|p| in_rect(p, start));
     screen.menu_over = screen.menu_visible() && cursor.0.is_some_and(|p| in_rect(p, menu_rect));
@@ -181,13 +198,13 @@ fn award_input(
     }
     if mouse.just_released(MouseButton::Left) {
         if screen.start_over {
-            start_pressed(&screen, &mut next_state);
+            start_pressed(&screen, &mut next_state, &mut dialogs, &res);
         } else if screen.menu_over {
             next_state.set(AppState::GameSelector);
         }
     }
     if keys.any_just_pressed([KeyCode::Space, KeyCode::Enter, KeyCode::Escape]) {
-        start_pressed(&screen, &mut next_state);
+        start_pressed(&screen, &mut next_state, &mut dialogs, &res);
     }
 }
 

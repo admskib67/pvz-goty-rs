@@ -34,7 +34,7 @@ The application. Bevy supplies the window, input, rendering, audio and asset plu
 - **Resources load in groups** on a background task, as the original did, which drives the loading bar.
 - **Music is played live** by libopenmpt through Bevy's audio, so the game can switch songs and fade the drum layers like the original; sound effects are ordinary Bevy audio.
 - **Screens are Bevy states** (`Boot → Setup → Title → GameSelector ⇄ Board`). `bevy_ui` is used only for screens the original doesn't have, like the first-run install picker.
-- **Dialogs are drawn and laid out like the original's** (stone frame, bitmap fonts), stacked over the current screen. A dialog only reports which button was clicked; the app-level code decides what that does, as `LawnApp` did.
+- **Dialogs are drawn and laid out like the original's** (stone frame, bitmap fonts), stacked over the current screen. A dialog only reports which button was clicked; the app-level code decides what that does, as `LawnApp` did. Big dialogs with a life of their own (the almanac) keep their state in their own module and hold a place in the dialog stack, so they stay modal and on top.
 - **The board draws like the original**: every object (plants, zombies, mowers, effects, the UI) gets a render order from its layer and row, and the board draws them sorted, so things overlap the way they did in the game.
 - **Settings live in `config.toml`** (the install, the last player, the options dialog's volumes and screen mode), where the original used the registry.
 - **Player profiles use the original's save formats**, so an existing `userdata` folder from the game should load as-is.
