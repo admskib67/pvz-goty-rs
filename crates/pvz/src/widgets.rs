@@ -295,6 +295,8 @@ pub struct LabelButton {
     pub hilite_color: SexyColor,
     pub image: &'static str,
     pub over_image: Option<&'static str>,
+    /// `mDownImage`, when it differs from the over image.
+    pub down_image: Option<&'static str>,
     /// `mOverOverlayImage`: drawn over the button while the mouse is on it.
     pub over_overlay: Option<&'static str>,
     pub text_offset: (i32, i32),
@@ -318,6 +320,7 @@ impl LabelButton {
             hilite_color: color,
             image,
             over_image: None,
+            down_image: None,
             over_overlay: None,
             text_offset: (0, 0),
             visible: true,
@@ -346,7 +349,7 @@ impl LabelButton {
         let mut font_y = self.y + self.text_offset.1 + (self.height - ascent / 6 + ascent - 1) / 2;
         // Held down, the over image (or the plain one) and the label move a pixel.
         let (image, shift, color) = if is_down {
-            (self.over_image.unwrap_or(self.image), 1, self.hilite_color)
+            (self.down_image.or(self.over_image).unwrap_or(self.image), 1, self.hilite_color)
         } else if self.is_over {
             (self.over_image.unwrap_or(self.image), 0, self.hilite_color)
         } else {

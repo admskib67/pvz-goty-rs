@@ -757,6 +757,11 @@ impl Sounds<'_, '_> {
         }
     }
 
+    /// `TodFoley::IsFoleyPlaying`.
+    pub fn is_foley_playing(&self, foley: FoleyType) -> bool {
+        self.system.foley.get(&foley).is_some_and(|d| d.instances.iter().flatten().any(|i| self.playing.contains(i.entity)))
+    }
+
     /// `TodFoley::StopFoley`: releases one play of a foley type, stopping it
     /// once nothing holds it (one-at-a-time types count their plays).
     pub fn stop_foley(&mut self, foley: FoleyType) {

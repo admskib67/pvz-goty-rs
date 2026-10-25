@@ -52,7 +52,7 @@ Legend: `[x]` done, `[~]` partly done, `[ ]` not started.
 - [ ] Level 3-x onward tutorial hints (`AdviceType` set is incomplete).
 - [ ] Brains cutscene shake (`SetShakeOverride`, `cutscene.rs`), plant gloom/threepeater head shake.
 - [ ] Mower tinting, upgrade graying (`seed_bank.rs`).
-- [ ] Seed chooser extras: almanac (the almanac itself exists: `do_almanac_dialog`) / store / imitater buttons, pool / roof / flyer warnings.
+- [ ] Seed chooser extras: almanac (the almanac itself exists: `do_almanac_dialog`) / store (the store exists: `AppState::Store`, but returns only to the main menu) / imitater buttons, pool / roof / flyer warnings.
 
 ## 2. Zombies (13 left)
 
@@ -120,8 +120,8 @@ All of these start from `AppState::GameSelector` and `GameMode` (only `Adventure
 - [ ] Zen plant drops: presents, potted plant drops from zombies (`level_end` / `coin`), plant variants (colour variants), save of `zen_garden` plants in `PlayerInfo` (raw 88-byte structs already stored).
 - [ ] Marigolds and their coin production, selling plants, plant rebinding on growth.
 - [ ] Tree of Wisdom: growth stages (heights unlock), feeding with tree food, the tree's speech bubbles, tree height achievements, tree food purchase.
-- [ ] Store ("Crazy Dave's Twiddydinkies"): all items (upgraded seed slots already used, plus pool cleaner, roof cleaner, rake, bug spray, fertilizer, chocolate, tree food, golden watering can, phonograph, glove, wheelbarrows, Stinky, aquarium, taco, ...), prices, item detail page, buy, closed / open states, store reachable from main menu and from the seed chooser.
-- [ ] Crazy Dave's store dialogue ("Bonjour" greeting, purchase lines) and animations.
+- [x] Store ("Crazy Dave's Twiddydinkies", `store.rs`): four pages of items with prices, unlock levels, coming soon / sold out, buying (confirm and not-enough-money dialogs, profile saved), the new seed slot message, Dave's per-item and ambient talk, the hatch, the sign, the coin bank, store music; opens from the main menu and returns to it. Bought plant upgrades appear in the almanac and seed chooser. Still to do: potted marigolds (need the Zen Garden, now "Coming Soon"), going to the tree after buying it, the pool cleaner / roof cleaner / rake / Stinky / consumables having any effect (they're only recorded), the store's night background and hand cursor, the store from the seed chooser, and the intro talks from the award screen (`SetupForIntro`: hatch opens after the talk, the taco's diamond, Zen Garden welcome 2600-2602).
+- [ ] Crazy Dave's store intro dialogue (levels 25 / 35 / 45 awards: `[CRAZY_DAVE_3100]`, 303, 606, 2601...) and the fertilizer / tree food hand-overs.
 
 ## 6. Main menu pieces
 
@@ -186,7 +186,7 @@ Done: 1-5 (shovel lesson), 2-1 and 2-2 talks, 2-3+ seed-slot offers.
 3. Fog (plantern, blover) and world 4.
 4. Roof (flower pot, lobbers, catapult, ladder, bungee, gargantuar, imp), world 5.
 5. Dr. Zomboss, final cinematic, credits.
-6. Main-menu features: options, help, almanac, store, then Zen Garden and the Tree.
+6. Main-menu features: options, help, almanac, store (done), then Zen Garden and the Tree.
 7. Mini-games, puzzle, survival, their pool / fog / roof variants.
 8. Zombatar, achievements, save / load, pause menu.
 9. Windows verification, Linux, polish.

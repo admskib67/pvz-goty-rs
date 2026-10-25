@@ -57,6 +57,14 @@ pub enum DialogId {
     ConfirmRestart,
     /// `DIALOG_ALMANAC`, run by `almanac`.
     Almanac,
+    /// `DIALOG_STORE_PURCHASE`: "buy this item?", and the tree's "visit it now?".
+    StorePurchase,
+    /// `DIALOG_NOT_ENOUGH_MONEY`.
+    NotEnoughMoney,
+    /// `DIALOG_UPGRADED`: the new seed slot count.
+    Upgraded,
+    /// The tree of wisdom's "visit it now?" after buying it.
+    VisitTree,
 }
 
 /// `Dialog::BUTTONS_*`.

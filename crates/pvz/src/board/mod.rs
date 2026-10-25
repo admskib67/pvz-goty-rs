@@ -40,6 +40,8 @@ mod zombie;
 /// What the almanac needs to show plants and zombies off the board, as the
 /// original's `AlmanacDialog` makes its own `Plant` and `Zombie`.
 pub(crate) mod figures {
+    pub(crate) use super::coin::money_string;
+    pub(crate) use super::crazy_dave::{CrazyDave, DaveState, DaveVars};
     pub(crate) use super::plant::{Plant, PlantAction};
     pub(crate) use super::zombie::{Fx, ZOMBIE_WAVE_UI, Zombie, ZombieEnv, draw_cached_zombie};
 }
@@ -2018,6 +2020,11 @@ fn draw_top_right_ui(board: &Board, res: &GameResources, g: &mut Graphics) {
 /// A seed packet drawn at a spot (the award screen).
 pub fn draw_seed_packet_at(g: &mut Graphics, res: &GameResources, x: f32, y: f32, seed: SeedType) {
     seed_bank::draw_seed_packet(g, res, x, y, seed, 0.0, 255, true);
+}
+
+/// A seed packet with no cost under it (the store's items).
+pub fn draw_seed_packet_free(g: &mut Graphics, res: &GameResources, x: f32, y: f32, seed: SeedType) {
+    seed_bank::draw_seed_packet(g, res, x, y, seed, 0.0, 255, false);
 }
 
 /// The stone Menu button at the top right.

@@ -17,6 +17,7 @@ mod player;
 mod reanim;
 mod resources;
 mod setup;
+mod store;
 mod title;
 mod widgets;
 mod zombie;
@@ -50,6 +51,8 @@ pub enum AppState {
     Board,
     /// The new plant (or other prize) after winning a level.
     Award,
+    /// Crazy Dave's store.
+    Store,
 }
 
 /// Frame-by-frame order of input handling and drawing: dialogs get the
@@ -140,6 +143,7 @@ fn main() {
             game_selector::GameSelectorPlugin,
             board::BoardPlugin,
             award::AwardPlugin,
+            store::StorePlugin,
             dialog::DialogPlugin,
             lawn_app::LawnAppPlugin,
             options::OptionsPlugin,

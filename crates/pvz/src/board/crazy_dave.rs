@@ -110,6 +110,24 @@ impl CrazyDave {
         stop_sound(sounds);
     }
 
+    /// `LawnApp::CrazyDaveStopTalking`: he stops mid-speech and idles.
+    pub fn stop_talking(&mut self, effects: &mut EffectSystem, sounds: &mut Sounds) {
+        let Some(id) = self.reanim else { return };
+        if self.state == DaveState::HandingTalking {
+            self.done_handing(effects);
+        }
+        if let Some(dave) = effects.get_mut(id) {
+            dave.set_image_override("Dave_mouths", None);
+            if matches!(self.state, DaveState::Talking | DaveState::HandingTalking) {
+                dave.play("anim_idle", LoopType::Loop, 20, 12.0);
+                self.state = DaveState::Idling;
+            }
+        }
+        self.message_index = -1;
+        self.message_text.clear();
+        stop_sound(sounds);
+    }
+
     /// `LawnApp::CrazyDaveDoneHanding`: what he held out goes away.
     fn done_handing(&mut self, effects: &mut EffectSystem) {
         if let Some(held) = self.held.take() {

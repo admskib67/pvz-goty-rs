@@ -541,6 +541,9 @@ impl GameSelector {
             ButtonId::ChangeUser => do_user_dialog(dialogs, resources, profiles),
             // The title theme comes back when it closes (`almanac`).
             ButtonId::Almanac => do_almanac_dialog(dialogs, resources, AlmanacStart::Index),
+            // KillGameSelector + ShowStoreScreen: the store opens over the
+            // menu's place and the main menu comes back when it closes.
+            ButtonId::Store => next_state.set(AppState::Store),
             ButtonId::Options => {
                 let finished_adventure = profiles.player().is_some_and(PlayerInfo::has_finished_adventure);
                 do_new_options(dialogs, resources, settings, OptionsFrom::GameSelector { finished_adventure });
@@ -701,7 +704,7 @@ fn selector_input(
     // A dialog takes the mouse: to the screen it's as if it left the window.
     let cursor = if dialogs.is_modal() { GameCursor(None) } else { *cursor };
     let mut result = update_buttons(&mut gs.buttons.front_to_back(), &cursor, &mouse);
-    // Development aid: `PVZ_AUTO_START=options`, `help` or `almanac` presses
+    // Development aid: `PVZ_AUTO_START=options`, `help`, `store` or `almanac` presses
     // that button once the menu is up; `almanac-plants` and `almanac-zombies`
     // open the almanac on that page.
     if gs.state == SelectorState::Idle && !*auto_pressed {
@@ -710,6 +713,7 @@ fn selector_input(
             Ok("options") => result.events.push(ButtonEvent::Depress(ButtonId::Options)),
             Ok("help") => result.events.push(ButtonEvent::Depress(ButtonId::Help)),
             Ok("almanac") => result.events.push(ButtonEvent::Depress(ButtonId::Almanac)),
+            Ok("store") => result.events.push(ButtonEvent::Depress(ButtonId::Store)),
             Ok("almanac-plants") => do_almanac_dialog(&mut dialogs, &resources, AlmanacStart::Plant(SeedType::Peashooter)),
             Ok("almanac-zombies") => do_almanac_dialog(&mut dialogs, &resources, AlmanacStart::Zombie(ZombieType::Normal)),
             _ => {}

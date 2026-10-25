@@ -431,6 +431,7 @@ fn handle_dialog_events(
     mut exit: MessageWriter<AppExit>,
     mut next_state: ResMut<NextState<AppState>>,
     mut board: Option<ResMut<crate::board::Board>>,
+    mut store: Option<ResMut<crate::store::StoreScreen>>,
     mut settings: ResMut<Settings>,
     mut music: Option<ResMut<Music>>,
     mut sounds: Sounds,
@@ -459,6 +460,16 @@ fn handle_dialog_events(
                 app.finish_purchase_packet_slot(yes);
                 if let Some(board) = board.as_deref_mut() {
                     board.packet_offer_answer = Some(yes);
+                }
+            }
+            // The store's questions: its own update acts on the answer.
+            DialogEvent::Button(
+                id @ (DialogId::StorePurchase | DialogId::NotEnoughMoney | DialogId::Upgraded | DialogId::VisitTree),
+                button,
+            ) => {
+                app.dialogs.kill_dialog(id);
+                if let Some(store) = store.as_deref_mut() {
+                    store.dialog_answer = Some((id, button == DialogButton::Yes));
                 }
             }
             DialogEvent::Button(DialogId::ChooserWarning, button) => {
