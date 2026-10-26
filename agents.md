@@ -2,6 +2,8 @@
 
 Guidelines for LLMs and coding agents working on this project.
 
+Start with `docs/llms/` (project structure, status and TODO list, workflow); this file holds the binding rules and the detailed per-feature notes.
+
 ## Project
 
 A Rust reconstruction of Plants vs. Zombies: Game of the Year Edition, built on Bevy. It ships no game data: players supply their own legally owned copy, and the app reads its `main.pak` at runtime (see `readme.md`).
