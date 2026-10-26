@@ -36,7 +36,7 @@ impl Plugin for AwardPlugin {
 
 /// What the screen shows, from the level the player is now on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AwardKind {
+pub(crate) enum AwardKind {
     Seed(SeedType),
     Shovel,
     /// A zombie's note (levels 10, 20, 30, 40, 50), numbered 1 to 5.
@@ -51,7 +51,7 @@ enum AwardKind {
 
 impl AwardKind {
     /// `level` is the player's level after the one just won.
-    fn for_level(level: i32) -> Option<Self> {
+    pub(crate) fn for_level(level: i32) -> Option<Self> {
         Some(match level {
             5 => Self::Shovel,
             10 | 20 | 30 | 40 | 50 => Self::Note(level / 10),

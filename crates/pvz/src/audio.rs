@@ -469,6 +469,10 @@ pub enum FoleyType {
     /// `FOLEY_ZOMBIE_ENTERING_WATER`: a snorkel or dolphin rider dives in.
     #[allow(dead_code, reason = "used once the snorkel and dolphin rider are ported")]
     ZombieEnteringWater,
+    /// `FOLEY_POOL_CLEANER`: the pool cleaner starting up.
+    PoolCleaner,
+    /// `FOLEY_SHOOP`: the pool cleaner sucking a zombie down.
+    Shoop,
     /// A jalapeno going off.
     JalapenoIgnite,
     /// A pea passing a torchwood, and a fire pea hitting.
@@ -592,6 +596,8 @@ impl FoleyType {
             Self::DolphinBeforeJumping => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_DOLPHIN_BEFORE_JUMPING"], flags: 0 },
             Self::PlantWater => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_PLANT_WATER"], flags: 0 },
             Self::ZombieEnteringWater => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_ZOMBIE_ENTERING_WATER"], flags: 0 },
+            Self::PoolCleaner => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_POOL_CLEANER"], flags: 0 },
+            Self::Shoop => FoleyParams { pitch_range: -5.0, sounds: &["SOUND_SHOOP"], flags: 0 },
             Self::Floop => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_FLOOP"], flags: 0 },
             Self::BungeeScream => FoleyParams {
                 pitch_range: 2.0,

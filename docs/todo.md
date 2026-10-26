@@ -16,11 +16,16 @@ Legend: `[x]` done, `[~]` partly done, `[ ]` not started.
 
 ### World 3: pool (levels 3-1 to 3-10, `BackgroundType::Pool`)
 - [x] Pool terrain: water rows 3-4 (`has_pool`), plant legality per tile (lily pad, tangle kelp, sea-shroom only on water; land plants need a lily pad), grid cell water flag. Lily pad, tangle kelp and sea-shroom behave and are tested.
-- [ ] Pool rendering: animated water (the intro cinematic uses a static `IMAGE_POOL`), pool shimmer, ripples, plants bobbing on water (`plant.rs` TODO), `PlantingPool` particle splash.
-- [ ] Pool cleaner (lawn mower variant for water rows), its intro roll-in and trigger. Store item "Pool Cleaner" swaps it in.
-- [ ] Level intro for 3-x: pan, pool-cleaner roll-in, zombies on the street, Crazy Dave talk (message 501+; `cutscene.rs` TODO "3-1's (501) and the later levels' talks").
-- [ ] Zombie waves and allowed-level tables for world 3 (`gZombieAllowedLevels`, ducky tube spawn rules, water-row picking for swimmers).
-- [ ] Level 3-5 (Wall-nut bowling again with pool rules), 3-10 (Zomboss-less mini boss belt), 3-x tutorials.
+- [x] Pool rendering: animated water (`board/pool.rs`, a port of `PoolEffect`, also in the intro), plants bobbing on water (`pool_bob_offset`), the `PlantingPool` splash and the planting sound.
+- [x] Pool cleaner (`LawnMowerType::Pool`, `board/lawn_mower.rs`): a pool row's mower once the store's "Pool Cleaner" is bought (without it the row keeps a lawn mower that sinks into the water), its dip in and out of the pool, eating zombies in the water, one run per row. The roll-in is the same as the other mowers'.
+- [x] Level intro for 3-x: Crazy Dave's 3-1 talk (message 501), pan and mower/pool-cleaner roll-in (same timeline as the day levels), one ducky tube on the street at the reference's spot. Not ported: the reference's grid placement of the other street zombies (and so Little Trouble's preview capacity), and the pool rule for fog's stage (4-x).
+- [x] Zombie waves and allowed-level tables for world 3 (`gZombieAllowedLevels`, water-row picking for swimmers in every wave, the ducky tube on the street). Tested in `tests/world3.rs`; the flag and huge-wave rules on pool lawns are not separately tested.
+- [x] World 3 audit: each of 3-1 to 3-10 is played to its last wave and its award coin with a repeater-and-wall-nut defence (`every_pool_level_can_be_won`, about 20 s); the defence is planted straight onto the lawn with no sun economy, no seed bank and no conveyor belts, so none of those are exercised by it.
+- [x] Level 3-5, Big Trouble Little Zombie (adventure level 25): conveyor belt of four plants, tiny zombies (half size, a quarter of the health, normal walking pace), quick waves, Dave's talk 701, loonboon music. Not ported: its street preview grid.
+- [x] Level 3-10 (adventure level 30, conveyor mini boss): its belt of pool plants (lily pad, squash, threepeater, tangle kelp, jalapeno, spikeweed, torchwood, tall-nut), 30 waves kept on a replay, no Dave talk, award is the seashroom packet (the note is at 3-9). Not ported: the street preview's grid.
+- [ ] Pool cursor preview: the plant held over the water doesn't bob as a planted one does (`pool_bob_offset`).
+- [ ] Ice-shroom: the reference pauses the pool water's counter while the ice-shroom works; not ported.
+- [ ] 3-x tutorials.
 
 ### World 4: fog (4-1 to 4-10, `BackgroundType::Fog`)
 - [x] Night pool background with fog overlay, fog drawing and per-column fog coverage, fog fade as the level goes.
@@ -45,11 +50,11 @@ Legend: `[x]` done, `[~]` partly done, `[ ]` not started.
 - [ ] Credits screen (`Credits`, reanim text tracks (`reanim.rs` TODO), song `ZombiesOnYourLawn.ogg` per `audio.rs` TODO), "adventure complete" message on the selector, golden sunflower trophy (`game_selector.rs` TODOs).
 
 ### Cross-world level plumbing
-- [ ] Awards: levels 9, 14, 19, ... and 50 give a note, almanac, key, taco, watering can, etc. (`level_end.rs` TODO), the award screen's trophy, money bag and credits-note variants.
-- [ ] Money bag to click and mower bonus coins at level end (`level_end.rs`).
+- [ ] Awards: the first-visit award coins are in (shovel, note, almanac, car keys, taco, watering can and the seed packet, per `Zombie::TrySpawnLevelAward`). Not yet: the level-50 silver sunflower, the trophy, and the credits-note variants.
+- [ ] Money bag to click and mower bonus coins at level end (`level_end.rs`). Replays of a finished adventure drop no award coin at all (the original drops a money bag there: clicking it fans out five gold coins and fades the level out). Mower bonus: after the fade-out starts the original waits 200 ticks, then every 40 ticks turns the lowest untriggered mower into a gold coin and removes it (`Board::UpdateLevelEndSequence`, `Board::GetBottomLawnMower`).
 - [ ] Presents, potted plants and chocolate drops from zombies.
 - [ ] Huge-wave drum burst, wave text as the original's animated letters (not plain text).
-- [ ] Level 3-x onward tutorial hints (`AdviceType` set is incomplete).
+- [ ] Level 3-x onward tutorial hints (`AdviceType` set is incomplete). The reference has no level-specific hints for 3-x; its water-planting hints (`ADVICE_LILYPAD_ON_WATER`, `ADVICE_TANGLEKELP_ON_WATER`, `ADVICE_SEASHROOM_ON_WATER`, `ADVICE_POTATO_MINE_ON_LILY`, from `Board::MouseDownWithPlant`) aren't ported yet.
 - [ ] Brains cutscene shake (`SetShakeOverride`, `cutscene.rs`), plant gloom/threepeater head shake.
 - [ ] Mower tinting, upgrade graying (`seed_bank.rs`).
 - [ ] Seed chooser extras: almanac (the almanac itself exists: `do_almanac_dialog`) / store (the store exists: `AppState::Store`, but returns only to the main menu) / imitater buttons, pool / roof / flyer warnings.
@@ -139,7 +144,7 @@ All of these start from `AppState::GameSelector` and `GameMode` (only `Adventure
 
 Done: 1-5 (shovel lesson), 2-1 and 2-2 talks, 2-3+ seed-slot offers.
 
-- [ ] 3-1 (message 501) and the other pool level talks (3-x), including "pool" explanation and the pool-cleaner reference.
+- [x] 3-1 (message 501). 3-5's talk (701) is done with the Little Trouble level; the other 3-x levels have none.
 - [ ] 3-5 (wall-nut bowling) talk and giant wall-nut stage (the current game lacks Dave's explanation and giant wall-nuts).
 - [ ] Night pool (4-x) talks, fog explanation, plantern reference.
 - [ ] Roof (5-x) talks: flower pots, catapults, the rake, final level talks before the boss.
@@ -150,11 +155,11 @@ Done: 1-5 (shovel lesson), 2-1 and 2-2 talks, 2-3+ seed-slot offers.
 
 ## 8. Animations, particles and presentation
 
-- [ ] Animated pool water, pool light, wave edge, drips when plants fall in.
+- [ ] Pool drips when plants fall in, and the 3-x pool sparkle (`PoolSparkly`, started once on the pool background).
 - [ ] Fog texture and animation, fog reveal on plantern / blover.
 - [ ] Roof tiles, pot art, slope shading, night glow.
 - [ ] Reanimations for every new zombie and plant (wired through `ReanimationType`, already listed in full), render groups, shields, attachments (balloon string, ladder, bungee cord, catapult basket).
-- [ ] Particles not yet implemented: `PlantingPool`, zombie splashes, ice trail, fire, sparks, fog puff, coin sparkle, trophy sparkle, plus the ones listed in `ParticleEffect` that no one draws yet.
+- [ ] Particles not yet implemented: zombie splashes, ice trail, fire, sparks, fog puff, coin sparkle, trophy sparkle, plus the ones listed in `ParticleEffect` that no one draws yet.
 - [ ] Text and "fullscreen" reanimation tracks (`reanim.rs` TODO) for the credits and boss intro.
 - [ ] Animated huge-wave and final-wave banners, "zombies are coming" text.
 - [ ] Plant highlight under the shovel, tooltips for new plants, seed packet visuals for upgrades.
@@ -190,3 +195,9 @@ Done: 1-5 (shovel lesson), 2-1 and 2-2 talks, 2-3+ seed-slot offers.
 7. Mini-games, puzzle, survival, their pool / fog / roof variants.
 8. Zombatar, achievements, save / load, pause menu.
 9. Windows verification, Linux, polish.
+
+## Found during world 3 work (deferred)
+
+- [ ] Backward-walking (hypnotised) zombies' shadow x offsets differ from `Zombie::DrawShadow` for football (Rust 41, decomp -11), newspaper, pole vaulter, snorkel, dolphin rider, imp and the generic body (`board/zombie.rs` `draw_shadow` table): about 52 px off for footballs. Fix the table from the decomp.
+- [ ] Street preview grid (`CutScene::PlaceStreetZombies`): capacity 10/15 and the jitter rules; current placement is a guess outside the pool ducky.
+- [ ] Tiny zombies (3-5): `OverrideParticleScale` for their particles.

@@ -436,7 +436,7 @@ impl Almanac {
             let mut actions: Vec<PlantAction> = Vec::new();
             let zombies = DataArray::default();
             let rows = [0; MAX_GRID_SIZE_Y];
-            plant.update(&zombies, &mut actions, &mut self.effects, res, images, &rows, &[false; MAX_GRID_SIZE_Y], sounds.rng());
+            plant.update(&zombies, &mut actions, &mut self.effects, res, images, &rows, &[false; MAX_GRID_SIZE_Y], /* no water to bob on */ 0, sounds.rng());
         }
         if let Some(zombie) = &mut self.zombie {
             zombie.update_street(&mut self.effects);

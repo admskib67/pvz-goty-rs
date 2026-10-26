@@ -144,6 +144,21 @@ enum DrawCmd {
         /// The clip rectangle, when it's narrower than the screen.
         clip: Option<SexyRect>,
     },
+    /// Textured triangles already in screen space, with their colors cut by
+    /// the clip rectangle (see [`Graphics::draw_mesh`]).
+    Mesh { image: Handle<Image>, vertices: Vec<MeshVertex>, indices: Vec<u32>, additive: bool },
+}
+
+/// A corner of a [`Graphics::draw_mesh`] triangle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshVertex {
+    /// In the drawing's own coordinates, like the other draw calls.
+    pub pos: Vec2,
+    /// Where in the image it samples: 0 to 1 across it (past 1 when the
+    /// image repeats).
+    pub uv: Vec2,
+    /// Multiplied with the texel.
+    pub color: SexyColor,
 }
 
 /// This frame's draw calls. Cleared at the start of every frame.
@@ -429,6 +444,11 @@ impl Graphics {
                     let (x1, y1) = corners.iter().fold((f32::MIN, f32::MIN), |(x, y), c| (x.max(c.x), y.max(c.y)));
                     Some((image.clone(), SexyRect::new(x0, y0, x1 - x0, y1 - y0)))
                 }
+                DrawCmd::Mesh { image, vertices, .. } => {
+                    let (x0, y0) = vertices.iter().fold((f32::MAX, f32::MAX), |(x, y), v| (x.min(v.pos.x), y.min(v.pos.y)));
+                    let (x1, y1) = vertices.iter().fold((f32::MIN, f32::MIN), |(x, y), v| (x.max(v.pos.x), y.max(v.pos.y)));
+                    Some((image.clone(), SexyRect::new(x0, y0, x1 - x0, y1 - y0)))
+                }
             })
             .collect()
     }
@@ -477,6 +497,23 @@ impl Graphics {
         }
         let clip = (clip != SCREEN).then_some(clip);
         self.cmds.push(DrawCmd::Matrix { image: image.handle.clone(), image_size, transform, src, color, additive, clip });
+    }
+
+    /// `Graphics::DrawTrianglesTex`: textured triangles, three indices each,
+    /// for warped pictures such as the pool. Like the original's 3D path
+    /// (`D3DInterface::DrawTrianglesTex`, `TextureData::BltTriangles`), the
+    /// clip rectangle is ignored: vertices are not faded or cut by it, so a
+    /// pool cell straddling the screen edge keeps its colour while the board
+    /// pans or the seed chooser turns.
+    pub fn draw_mesh(&mut self, image: &Handle<Image>, vertices: &[MeshVertex], indices: &[u32]) {
+        let o = self.state.scale_origin;
+        let scaling = Affine2::from_translation(o) * Affine2::from_scale(Vec2::splat(self.state.scale)) * Affine2::from_translation(-o);
+        let transform = Affine2::from_translation(self.state.trans) * scaling;
+        let vertices = vertices
+            .iter()
+            .map(|v| MeshVertex { pos: transform.transform_point2(v.pos), uv: v.uv, color: v.color })
+            .collect();
+        self.cmds.push(DrawCmd::Mesh { image: image.clone(), vertices, indices: indices.to_vec(), additive: self.state.additive });
     }
 
     pub fn color(&self) -> SexyColor {
@@ -852,6 +889,35 @@ fn quad_polygon(image_size: Vec2, transform: Affine2, src: SexyRect, clip: Optio
     polygon
 }
 
+/// The image, additive flag and mesh of a quad or mesh draw call. `None`
+/// when nothing is left to draw.
+fn quad_parts(cmd: &DrawCmd) -> Option<(&Handle<Image>, bool, Mesh)> {
+    match cmd {
+        DrawCmd::Matrix { image, image_size, transform, src, color, additive, clip } => {
+            quad_mesh(*image_size, *transform, *src, *color, *clip).map(|mesh| (image, *additive, mesh))
+        }
+        DrawCmd::Mesh { image, vertices, indices, additive } => triangle_mesh(vertices, indices).map(|mesh| (image, *additive, mesh)),
+        _ => None,
+    }
+}
+
+/// A mesh of textured triangles already in screen space.
+fn triangle_mesh(vertices: &[MeshVertex], indices: &[u32]) -> Option<Mesh> {
+    if vertices.is_empty() || indices.is_empty() {
+        return None;
+    }
+    let positions: Vec<[f32; 3]> = vertices.iter().map(|v| to_world(v.pos.x, v.pos.y).extend(0.0).to_array()).collect();
+    let uvs: Vec<[f32; 2]> = vertices.iter().map(|v| v.uv.to_array()).collect();
+    let colors: Vec<[f32; 4]> = vertices.iter().map(|v| v.color.to_bevy().to_linear().to_f32_array()).collect();
+    Some(
+        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+            .with_inserted_indices(Indices::U32(indices.to_vec())),
+    )
+}
+
 fn quad_mesh(image_size: Vec2, transform: Affine2, src: SexyRect, color: SexyColor, clip: Option<SexyRect>) -> Option<Mesh> {
     let polygon = quad_polygon(image_size, transform, src, clip);
     if polygon.is_empty() {
@@ -891,9 +957,9 @@ fn sync_draw_calls(
     for (i, cmd) in g.cmds.iter().enumerate() {
         let z = i as f32 * Z_STEP;
 
-        if let DrawCmd::Matrix { image, image_size, transform, src, color, additive, clip } = cmd {
-            let Some(mesh) = quad_mesh(*image_size, *transform, *src, *color, *clip) else { continue };
-            let pool = pools.quads.entry((image.id(), *additive)).or_insert_with(|| QuadPool {
+        if matches!(cmd, DrawCmd::Matrix { .. } | DrawCmd::Mesh { .. }) {
+            let Some((image, additive, mesh)) = quad_parts(cmd) else { continue };
+            let pool = pools.quads.entry((image.id(), additive)).or_insert_with(|| QuadPool {
                 material: materials.add(QuadMaterial { texture: image.clone() }),
                 additive_material: additive.then(|| additive_materials.add(AdditiveQuadMaterial { texture: image.clone() })),
                 entities: Vec::new(),
@@ -944,7 +1010,7 @@ fn sync_draw_calls(
                 },
                 Transform::from_translation(to_world(dest.x, dest.y).extend(z)),
             ),
-            DrawCmd::Matrix { .. } => unreachable!(),
+            DrawCmd::Matrix { .. } | DrawCmd::Mesh { .. } => unreachable!(),
         };
         match pools.sprites.get(sprite_count).map(|&e| (e, sprites.get_mut(e))) {
             Some((_, Ok((mut s, mut t, mut v)))) => {
@@ -1027,6 +1093,26 @@ mod tests {
         let max_v = half.iter().map(|(_, uv)| uv.y).fold(f32::MIN, f32::max);
         assert!((max_y - 5.0).abs() < 1e-5 && (max_v - 0.5).abs() < 1e-5);
         assert!(quad_polygon(size, transform, src, Some(SexyRect::new(20.0, 0.0, 5.0, 5.0))).is_empty());
+    }
+
+    #[test]
+    fn meshes_ignore_the_clip_rectangle() {
+        // DrawTrianglesTex doesn't clip: a vertex past the screen's edge (a pool
+        // cell during the intro's pan) keeps its colour, with the default clip
+        // and with a narrower one.
+        let vertex = |x| MeshVertex { pos: Vec2::new(x, 10.0), uv: Vec2::ZERO, color: SexyColor::WHITE };
+        let mut g = Graphics::default();
+        g.draw_mesh(&Handle::default(), &[vertex(-30.0), vertex(850.0), vertex(60.0)], &[0, 1, 2]);
+        let DrawCmd::Mesh { vertices, indices, .. } = &g.cmds[0] else { panic!() };
+        assert_eq!(indices, &[0, 1, 2]);
+        assert!(vertices.iter().all(|v| v.color.a == 255), "the default clip is the screen: nothing fades");
+        assert_eq!(vertices[0].pos.x, -30.0);
+
+        let mut g = Graphics::default();
+        g.clip_rect(0.0, 0.0, 100.0, 100.0);
+        g.draw_mesh(&Handle::default(), &[vertex(50.0), vertex(150.0), vertex(60.0)], &[0, 1, 2]);
+        let DrawCmd::Mesh { vertices, .. } = &g.cmds[0] else { panic!() };
+        assert!(vertices.iter().all(|v| v.color.a == 255), "a narrower clip doesn't fade either");
     }
 
     #[test]

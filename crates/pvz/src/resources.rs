@@ -183,6 +183,15 @@ impl GameResources {
         Ok(&self.images[id])
     }
 
+    /// The pixels of a manifest image, decoded again from the game's files.
+    /// For effects that compute from a picture: Bevy's copy isn't kept in
+    /// the main world once it's on the GPU.
+    pub fn decode_image(&self, id: &str) -> Option<DecodedImage> {
+        let res = self.manifest.get(id)?;
+        let info = res.image()?;
+        load_image_resource(&self.files, &res.path, info).ok()
+    }
+
     /// Loads a group on the calling thread (`TodLoadResources`), e.g. `Init`
     /// or a level's background. Does nothing if it's already loaded.
     pub fn load_group_now(&mut self, group: &str, assets: &mut Assets<Image>) -> Result<(), String> {

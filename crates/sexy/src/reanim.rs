@@ -577,6 +577,19 @@ impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
         t
     }
 
+    /// `SetTruncateDisappearingFrames`: whether `track` (or every track, for
+    /// `None`) stops at its last visible frame instead of holding it.
+    pub fn set_truncate_disappearing_frames(&mut self, track: Option<&str>, truncate: bool) {
+        match track {
+            None => self.tracks.iter_mut().for_each(|t| t.truncate_disappearing_frames = truncate),
+            Some(track) => {
+                if let Some(i) = self.definition.find_track(track) {
+                    self.tracks[i].truncate_disappearing_frames = truncate;
+                }
+            }
+        }
+    }
+
     /// `SetFramesForLayer`: restricts playback to the range where `track` is shown.
     pub fn set_frames_for_layer(&mut self, track: &str) {
         self.anim_time = if self.anim_rate >= 0.0 { 0.0 } else { 0.999_999_9 };

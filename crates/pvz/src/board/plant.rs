@@ -18,6 +18,8 @@
 //! `PlayIdleAnim`, `SetSleeping`, `UpdateSunShroom`, `UpdateGraveBuster`,
 //! `UpdateScaredyShroom`, `UpdateIceShroom`, `IceZombies` and `DoRowAreaDamage`.
 
+use std::f32::consts::PI;
+
 use bevy::prelude::*;
 use sexy::data_array::DataArray;
 use sexy::rand::MtRand;
@@ -218,6 +220,10 @@ pub struct Plant {
     blink: Option<ReanimationId>,
     /// Stands in a flower pot (or is one) on the roof: drawn and shooting 5 px higher.
     pub in_pot: bool,
+    /// On a square of water: floats, bobbing with `bob`.
+    pub on_water: bool,
+    /// This tick's bob on the water (`pool_bob_offset`), 0 off the water.
+    pub bob: f32,
     /// Grabbed or being carried off by a bungee zombie (`mOnBungeeState`).
     pub on_bungee: OnBungee,
     /// The plantern's glow over the fog.
@@ -247,11 +253,20 @@ struct LobTarget {
     swimming_snorkel: bool,
 }
 
-/// `PlantDrawHeightOffset`, without the pool's bobbing and flower pots.
+/// The bobbing of a plant floating on a pool square: up to 2 px either way,
+/// each square's wave out of step with its neighbours, one cycle per 200
+/// ticks. Behaviour per ruslan831 decomp, `Lawn/Plant.cpp`
+/// (`PlantDrawHeightOffset`, the `doFloating` part).
+pub fn pool_bob_offset(main_counter: i32, col: i32, row: i32) -> f32 {
+    let phase = row as f32 * PI + col as f32 * 0.25 * PI;
+    let time = main_counter as f32 * 2.0 * PI / 200.0;
+    (phase + time).sin() * 2.0
+}
+
+/// `PlantDrawHeightOffset`, without the flower pots' offset.
 pub fn plant_draw_height_offset(seed: SeedType) -> f32 {
     use SeedType::*;
-    // TODO: plants floating in the pool bob up and down, plants in flower
-    // pots sit higher, and spikeweed depends on its row and the stage.
+    // TODO: spikeweed's height depends on its row and the stage.
     match seed {
         Flowerpot => 26.0,
         Lilypad => 25.0,
@@ -300,6 +315,8 @@ impl Plant {
             state_countdown: 0,
             do_special_countdown: 0,
             in_pot: false,
+            on_water: false,
+            bob: 0.0,
             light: None,
             blink_countdown: 0,
             launch_rate: def.launch_rate,
@@ -485,7 +502,7 @@ impl Plant {
 
     /// `PlantDrawHeightOffset` for this plant: potted plants sit 5 px higher.
     fn height_offset(&self) -> f32 {
-        plant_draw_height_offset(self.seed) + if self.in_pot { 5.0 } else { 0.0 }
+        plant_draw_height_offset(self.seed) + if self.in_pot { 5.0 } else { 0.0 } + self.bob
     }
 
     /// `Plant::Update`, while playing.
@@ -499,8 +516,11 @@ impl Plant {
         images: &mut Assets<Image>,
         row_y: &[i32; super::MAX_GRID_SIZE_Y],
         open_rows: &[bool; super::MAX_GRID_SIZE_Y],
+        main_counter: i32,
         rng: &mut MtRand,
     ) {
+        // Floating plants bob while the board runs (`PlantDrawHeightOffset`).
+        self.bob = if self.on_water { pool_bob_offset(main_counter, self.col, self.row) } else { 0.0 };
         self.update_abilities(zombies, actions, effects, row_y, open_rows, rng);
         self.animate(actions, effects, res, images, rng);
         if self.health < 0 {
@@ -1321,6 +1341,12 @@ impl Plant {
 
     /// `Plant::FindTargetZombie`, for peashooters: the leftmost zombie in
     /// the row that's in range.
+    /// The zombie this tangle kelp is dragging under, if it has one
+    /// (`IsTangleKelpTarget` looks at `mTargetZombieID` of the kelp plants).
+    pub fn tangle_kelp_target(&self) -> Option<sexy::data_array::Id<Zombie>> {
+        if self.seed == SeedType::Tanglekelp && !self.dead { self.target_zombie } else { None }
+    }
+
     fn find_target_zombie(&self, zombies: &DataArray<Zombie>) -> Option<sexy::data_array::Id<Zombie>> {
         self.find_target_zombie_in_row(zombies, self.row)
     }

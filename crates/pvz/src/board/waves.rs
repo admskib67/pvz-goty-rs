@@ -29,12 +29,13 @@ use super::tutorial::{AdviceType, TutorialState};
 use super::zombie::{Fx, NUM_BACKUP_DANCERS, Zombie, ZombieEnv};
 use crate::graphics::{Graphics, SexyRect};
 
-use super::{Board, MAX_GRID_SIZE_Y, PlantRowType, make_render_order, render_layer};
+use super::{BackgroundType, Board, MAX_GRID_SIZE_Y, PlantRowType, make_render_order, render_layer};
 
 const ZOMBIE_COUNTDOWN_FIRST_WAVE: i32 = 1800;
 const ZOMBIE_COUNTDOWN: i32 = 2500;
 const ZOMBIE_COUNTDOWN_RANGE: i32 = 600;
 const ZOMBIE_COUNTDOWN_BEFORE_FLAG: i32 = 4500;
+const ZOMBIE_COUNTDOWN_LITTLE_TROUBLE: i32 = 750;
 const MAX_ZOMBIES_IN_WAVE: usize = 50;
 
 /// `TodSmoothArray`: weights that favour whatever hasn't been picked for a
@@ -173,7 +174,8 @@ impl Board {
             return;
         }
         self.pick_zombie_waves(rng);
-        self.waves.zombie_count_down = if self.is_wallnut_bowling_level() {
+        // Challenge::StartLevel: these levels' first wave comes sooner.
+        self.waves.zombie_count_down = if self.is_wallnut_bowling_level() || self.is_little_trouble_level() {
             200
         } else if self.is_mini_boss_level() {
             100
@@ -200,7 +202,9 @@ impl Board {
     /// `Board::PickZombieWaves`.
     fn pick_zombie_waves(&mut self, rng: &mut MtRand) {
         let mut num_waves = waves_for_level(self.level);
-        if !self.first_time_adventure {
+        // Behaviour per ruslan831 decomp, Board::PickZombieWaves: a replayed
+        // mini-boss level keeps its own waves.
+        if !self.first_time_adventure && !self.is_mini_boss_level() {
             num_waves = if num_waves < 10 { 20 } else { num_waves + 10 };
         }
         self.waves.num_waves = num_waves;
@@ -221,7 +225,9 @@ impl Board {
                 }
                 self.put_zombie_in_wave(ZombieType::Flag, wave, &mut picker);
             }
-            if self.is_wallnut_bowling_level() {
+            // Behaviour per ruslan831 decomp, Board::PickZombieWaves: Little
+            // Trouble's and bowling's zombies are worth four times.
+            if self.is_wallnut_bowling_level() || self.is_little_trouble_level() {
                 picker.zombie_points *= 4;
             } else if self.is_mini_boss_level() {
                 picker.zombie_points *= 3;
@@ -419,9 +425,17 @@ impl Board {
     }
 
     /// `CutScene::PlaceStreetZombies`: a few zombies shuffling about on the
-    /// street, seen as the level intro pans right. The reference doesn't
-    /// have this routine, so how many and where is a guess.
+    /// street, seen as the level intro pans right. The reference's routine
+    /// places them on a 5x5 grid (`FindPlaceForStreetZombies`); this port
+    /// picks a row and a spot by guess, except for the pool's ducky tube.
     pub(super) fn place_street_zombies(&mut self, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, CutScene::PlaceStreetZombies: a pool
+        // stage always shows one ducky tube. Only the pool background
+        // (levels 21-30) gets this; fog's stage has the same rule in the
+        // decomp and waits for world 4.
+        if self.background == BackgroundType::Pool {
+            self.place_pool_street_ducky(fx);
+        }
         let count = (2 + self.level / 3).min(8);
         let mut bungee_shown = false;
         for _ in 0..count {
@@ -439,20 +453,54 @@ impl Board {
                 }
                 continue;
             }
-            let mut row = fx.sounds.rng().next_range(MAX_GRID_SIZE_Y as u32) as i32;
-            for _ in 0..MAX_GRID_SIZE_Y {
-                if self.row_can_have_zombie_type(row, ty) {
-                    break;
-                }
-                row = (row + 1) % MAX_GRID_SIZE_Y as i32;
+            self.place_street_zombie(ty, fx);
+        }
+    }
+
+    /// The pool's single ducky tube on the street. Behaviour per ruslan831
+    /// decomp, CutScene::FindPlaceForStreetZombies (any grid spot except the
+    /// first column and the top-right corner, `CanZombieGoInGridSpot`) and
+    /// CutScene::PlaceAZombie (x = gridX * 56 + 830, y = gridY * 90 + 70, 30
+    /// lower on odd columns, then 0-14 of jitter in each direction). The row
+    /// is the grid row, water or not.
+    fn place_pool_street_ducky(&mut self, fx: &mut Fx) {
+        // The reference's street grid is 5x5 (`bool theZombieGrid[5][5]`).
+        const STREET_GRID: i32 = 5;
+        let spots: Vec<(i32, i32)> = (1..STREET_GRID)
+            .flat_map(|grid_x| (0..STREET_GRID).map(move |grid_y| (grid_x, grid_y)))
+            .filter(|&(grid_x, grid_y)| !(grid_x == STREET_GRID - 1 && grid_y == 0))
+            .collect();
+        let pick = fx.sounds.rng().next_range(spots.len() as u32) as usize;
+        let (grid_x, grid_y) = spots[pick];
+        let id = self.add_zombie_in_row(ZombieType::DuckyTube, grid_y, super::zombie::ZOMBIE_WAVE_CUTSCENE, fx);
+        let mut x = (grid_x * 56 + 830) as f32;
+        let mut y = (grid_y * 90 + 70) as f32;
+        if grid_x % 2 == 1 {
+            y += 30.0;
+        }
+        let rng = fx.sounds.rng();
+        y += rng.next_range(15) as f32;
+        x += rng.next_range(15) as f32;
+        if let Some(z) = self.zombies.get_mut(id) {
+            z.place(x, y);
+        }
+    }
+
+    /// One zombie of `ty` on the street, in a row that can have it.
+    fn place_street_zombie(&mut self, ty: ZombieType, fx: &mut Fx) {
+        let mut row = fx.sounds.rng().next_range(MAX_GRID_SIZE_Y as u32) as i32;
+        for _ in 0..MAX_GRID_SIZE_Y {
+            if self.row_can_have_zombie_type(row, ty) {
+                break;
             }
-            self.add_zombie_in_row(ty, row, super::zombie::ZOMBIE_WAVE_CUTSCENE, fx);
-            let rng = fx.sounds.rng();
-            let (x, jitter) = (rng.range_f32(900.0, 1050.0), rng.range_f32(-15.0, 15.0));
-            let y = self.grid_to_pixel_y(0, row) as f32 - 30.0 + jitter;
-            if let Some((_, z)) = self.zombies.iter_mut().last() {
-                z.place(x, y);
-            }
+            row = (row + 1) % MAX_GRID_SIZE_Y as i32;
+        }
+        let id = self.add_zombie_in_row(ty, row, super::zombie::ZOMBIE_WAVE_CUTSCENE, fx);
+        let rng = fx.sounds.rng();
+        let (x, jitter) = (rng.range_f32(900.0, 1050.0), rng.range_f32(-15.0, 15.0));
+        let y = self.grid_to_pixel_y(0, row) as f32 - 30.0 + jitter;
+        if let Some(z) = self.zombies.get_mut(id) {
+            z.place(x, y);
         }
     }
 
@@ -614,6 +662,7 @@ impl Board {
             finished_adventure: !self.first_time_adventure,
             zombie_count: self.zombies.len(),
             bowling: self.is_wallnut_bowling_level(),
+            tiny_zombies: self.is_little_trouble_level(),
             main_counter: self.main_counter,
             award_dropped: self.has_level_award_dropped(),
             pool_rows: self.plant_row.map(|r| r == PlantRowType::Pool),
@@ -763,7 +812,12 @@ impl Board {
             } else {
                 self.waves.zombie_health_to_next_wave =
                     (rng.range_f32(0.5, 0.65) * self.waves.zombie_health_wave_start as f32) as i32;
-                self.waves.zombie_count_down = ZOMBIE_COUNTDOWN + rng.next_range(ZOMBIE_COUNTDOWN_RANGE as u32) as i32;
+                // Board::UpdateZombieSpawning: Little Trouble's waves come every 750 ticks.
+                self.waves.zombie_count_down = if self.is_little_trouble_level() {
+                    ZOMBIE_COUNTDOWN_LITTLE_TROUBLE
+                } else {
+                    ZOMBIE_COUNTDOWN + rng.next_range(ZOMBIE_COUNTDOWN_RANGE as u32) as i32
+                };
             }
             self.waves.zombie_count_down_start = self.waves.zombie_count_down;
         }

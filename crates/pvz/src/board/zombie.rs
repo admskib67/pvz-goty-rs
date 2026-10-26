@@ -269,6 +269,9 @@ pub struct ZombieEnv {
     pub zombies_on_screen: usize,
     /// `IsWallnutBowlingLevel`: zombies don't eat, and pole vaulters jump on the spot.
     pub bowling: bool,
+    /// `IsLittleTroubleLevel`: zombies are half size with a quarter of the health
+    /// (`Zombie::ZombieInitialize`), and groan at a higher pitch.
+    pub tiny_zombies: bool,
     /// `mMainCounter`: dancers step in time with it (`GetDancerFrame`).
     pub main_counter: i32,
     /// `HasLevelAwardDropped`: the level's won.
@@ -291,6 +294,7 @@ impl ZombieEnv {
             zombie_count: 0,
             zombies_on_screen: 0,
             bowling: false,
+            tiny_zombies: false,
             main_counter: 0,
             award_dropped: false,
             pool_rows: [false; super::MAX_GRID_SIZE_Y],
@@ -545,6 +549,9 @@ pub struct Zombie {
     /// The plant it finished eating this tick (its type and column), for
     /// the board's count and advice.
     pub ate_plant: Option<(crate::plant::SeedType, i32)>,
+    /// `mScaleZombie`: 1, or 0.5 for Little Trouble's tiny zombies. Only the
+    /// body is drawn at this size; the zombie's rectangle stays the same.
+    pub scale: f32,
     pub body_health: i32,
     body_max_health: i32,
     pub phase: ZombiePhase,
@@ -688,6 +695,7 @@ impl Zombie {
             bitten_zombie: None,
             award_check: false,
             ate_plant: None,
+            scale: 1.0,
             body_health: 270,
             body_max_health: 270,
             phase: ZombiePhase::Normal,
@@ -961,6 +969,16 @@ impl Zombie {
                 z.setup_water_track(fx, track);
             }
         }
+        // Behaviour per ruslan831 decomp, Zombie::ZombieInitialize: Little
+        // Trouble's zombies are half size with a quarter of the health. The
+        // almanac's zombies keep theirs. The scale comes first: the walk's
+        // animation rate divides by it (`update_anim_speed`).
+        if env.tiny_zombies && from_wave != ZOMBIE_WAVE_UI {
+            z.scale = 0.5;
+            z.body_health /= 4;
+            z.helm_health /= 4;
+            z.shield_health /= 4;
+        }
         z.update_anim_speed(fx.effects);
         if z.variant {
             z.reanim_show_prefix(fx, "anim_tongue", RENDER_GROUP_NORMAL);
@@ -1116,8 +1134,9 @@ impl Zombie {
             }
             ZombieHeight::IntoPool => {
                 self.altitude -= 1.0;
-                if self.altitude <= -40.0 {
-                    self.altitude = -40.0;
+                let depth = -40.0 * self.scale;
+                if self.altitude <= depth {
+                    self.altitude = depth;
                     self.height = ZombieHeight::Normal;
                     self.start_walk_anim(0, env, fx);
                 }
@@ -1579,6 +1598,20 @@ impl Zombie {
                 }
                 charred.anim_rate *= fx.sounds.rng().range_f32(0.9, 1.1);
                 charred.render_order = self.render_order;
+                // Behaviour per ruslan831 decomp, Zombie::ApplyBurn: a tiny
+                // zombie's charred remains are scaled and dropped to its size.
+                let s = self.scale;
+                if s != 1.0 {
+                    charred.overlay.m00 = s;
+                    charred.overlay.m11 = s;
+                    charred.overlay.m02 += 20.0 - s * 20.0;
+                    charred.overlay.m12 += 120.0 - s * 120.0;
+                    charred.override_scale(s, s);
+                }
+                if self.is_walking_backwards() {
+                    charred.override_scale(-s, s);
+                    charred.overlay.m02 += 60.0 * s;
+                }
             }
             self.die_with_loot(fx);
         }
@@ -1613,7 +1646,7 @@ impl Zombie {
             let distance = frames[last].x - frames[body.frame_start].x;
             if distance >= 1e-6 {
                 let one_over_speed = body.frame_count as f32 / distance;
-                let rate = self.vel_x * one_over_speed * 47.0;
+                let rate = self.vel_x * one_over_speed * 47.0 / self.scale;
                 self.apply_anim_rate(effects, rate);
             }
         } else {
@@ -1740,11 +1773,11 @@ impl Zombie {
             ZombiePhase::Dying if self.zombie_type == ZombieType::DolphinRider => -self.altitude + 44.0,
             ZombiePhase::DolphinWalking | ZombiePhase::DolphinWalkingWithoutDolphin if out_of_pool => -self.altitude,
             _ if self.zombie_type == ZombieType::DolphinRider => CLIP_HEIGHT_OFF,
-            _ if self.zombie_type == ZombieType::Snorkel && self.in_pool => -self.altitude - 5.0,
+            _ if self.zombie_type == ZombieType::Snorkel && self.in_pool => -self.altitude - 5.0 + (20.0 - 20.0 * self.scale),
             ZombiePhase::RisingFromGrave => body_y + (self.phase_counter as f32).min(40.0),
             ZombiePhase::DancerRising => body_y,
             // Swimmers are cut off at the waterline.
-            _ if self.in_pool => -self.altitude - 7.0 + if self.is_eating { 7.0 } else { 0.0 },
+            _ if self.in_pool => -self.altitude - 7.0 + (10.0 - 10.0 * self.scale) + if self.is_eating { 7.0 } else { 0.0 },
             _ => CLIP_HEIGHT_OFF,
         };
         DrawPos { head_x, head_y, body_y, image_offset_x, image_offset_y, clip_height }
@@ -1893,12 +1926,35 @@ impl Zombie {
         self.update_reanim(fx.effects);
     }
 
-    /// `Zombie::WalkIntoHouse`, for the day and night lawns.
-    pub fn walk_into_house(&mut self) {
+    /// `Zombie::WalkIntoHouse`: the zombie that got in stands in the house's
+    /// doorway. Day, night, pool and fog lawns share one height; the pool
+    /// moves it 80 px left (10 for a football player) to the water's edge.
+    /// TODO: the roof and boss lawns end differently (their own positions
+    /// and chimney height); they still use the day's place.
+    pub fn walk_into_house(&mut self, background: BackgroundType, env: &ZombieEnv, fx: &mut Fx) {
         self.from_wave = ZOMBIE_WAVE_WINNER;
-        // TODO: the pool, roof and boss lawns end differently.
+        // Behaviour per ruslan831 decomp, Zombie::WalkIntoHouse.
+        if self.phase == ZombiePhase::PolePreVault {
+            // A vaulter that hasn't jumped yet walks on, as after a vault
+            // (PHASE_POLEVAULTER_POST_VAULT: the normal phase here).
+            self.phase = ZombiePhase::Normal;
+            self.attack_rect = IRect::new(50, 0, 20, 115);
+            self.start_walk_anim(0, env, fx);
+        }
         self.pos_y = 290.0;
         self.render_order = make_render_order(render_layer::ZOMBIE, 2, 0);
+        if matches!(background, BackgroundType::Day | BackgroundType::Night | BackgroundType::Pool | BackgroundType::Fog) {
+            // The reference's "+35 x for a pole vaulter still running up" can't
+            // happen: the vault ended above, so it's not in that phase any more.
+            if matches!(self.zombie_type, ZombieType::Gargantuar | ZombieType::RedeyeGargantuar) {
+                self.pos_y += 30.0;
+            } else if self.zombie_type == ZombieType::Zamboni {
+                self.pos_y += 15.0;
+            }
+            if background.has_pool() {
+                self.pos_x -= if self.zombie_type == ZombieType::Football { 10.0 } else { 80.0 };
+            }
+        }
     }
 
     /// `Zombie::UpdateMowered`: once the mower's done, it's over.
@@ -1993,7 +2049,9 @@ impl Zombie {
             if self.zombie_type == ZombieType::Gargantuar {
                 fx.sounds.play_foley(FoleyType::LowGroan);
             } else {
-                fx.sounds.play_foley_pitch(FoleyType::Groan, 0.0);
+                // Little Trouble's zombies groan higher (ruslan831 decomp, Zombie::UpdatePlaying).
+                let pitch = if env.tiny_zombies { fx.sounds.rng().range_f32(40.0, 50.0) } else { 0.0 };
+                fx.sounds.play_foley_pitch(FoleyType::Groan, pitch);
             }
             self.groan_counter = fx.sounds.rng().next_range(1000) as i32 + 500;
         }
@@ -3139,7 +3197,8 @@ impl Zombie {
             _ if matches!(self.phase, ZombiePhase::SnorkelWalkingInPool | ZombiePhase::DolphinRiding) => {
                 if self.is_moving_at_chilled_speed() { self.vel_x * 0.4 } else { self.vel_x }
             }
-            Some(body) if body.definition.find_track("_ground").is_some() => body.track_velocity("_ground"),
+            // Behaviour per ruslan831 decomp, Zombie::UpdateZombieWalking: the walk's speed is scaled too.
+            Some(body) if body.definition.find_track("_ground").is_some() => body.track_velocity("_ground") * self.scale,
             _ if self.is_moving_at_chilled_speed() => self.vel_x * 0.4,
             _ => self.vel_x,
         };
@@ -3376,11 +3435,17 @@ impl Zombie {
             facing_right = !self.is_eating && matches!(self.phase, DancerDancingIn | DancerRaiseRight1 | DancerRaiseRight2);
             facing_right ^= self.mind_controlled;
         }
+        // Behaviour per ruslan831 decomp, Zombie::UpdateReanim: the body is
+        // scaled about its middle, so it stays on the same spot on the lawn.
+        let s = self.scale;
         let mut offset_x = pos.image_offset_x + 15.0;
-        if facing_right {
-            offset_x += 90.0;
+        let mut offset_y = pos.image_offset_y + pos.body_y - 28.0 + 20.0;
+        if self.zombie_type == ZombieType::Football && s < 1.0 {
+            offset_y += 20.0 - 20.0 * s;
         }
-        let offset_y = pos.image_offset_y + pos.body_y - 28.0 + 20.0;
+        if facing_right {
+            offset_x += 90.0 * s;
+        }
         let fade = if self.zombie_fade >= 0 { (255 * self.zombie_fade / 10).clamp(0, 255) as u8 } else { 255 };
         // DrawReanim's colors: chilled zombies are blue, burned ones black,
         // and a zombie that was just hit flashes white.
@@ -3401,10 +3466,10 @@ impl Zombie {
         if let Some(body) = effects.get_mut(body_id) {
             body.overlay.m01 = 0.0;
             body.overlay.m10 = 0.0;
-            body.override_scale(1.0, 1.0);
-            body.set_position(offset_x, offset_y);
+            body.override_scale(s, s);
+            body.set_position(offset_x + 30.0 - 30.0 * s, offset_y + 120.0 - 120.0 * s);
             if facing_right {
-                body.overlay.m00 = -1.0;
+                body.overlay.m00 = -s;
             }
             body.color_override = [tint[0], tint[1], tint[2], fade];
             body.extra_additive = extra.map(|c| [c[0], c[1], c[2], 255]);
@@ -4393,13 +4458,23 @@ impl Zombie {
             ZombieType::Imp => (25.0, 7.0),
             _ => (23.0, 0.0),
         };
+        // Behaviour per ruslan831 decomp, Zombie::DrawShadow: the shadow moves
+        // with the zombie's scale (`aShadowOffsetX += mScaleZombie * 20 - 20`).
+        // The football's shadow also moves with it (`20 + 21 * scale` forward,
+        // `-11 * scale` back). At scale 1 this is the table above.
+        let s = self.scale;
+        let mut dx = dx + (s * 20.0 - 20.0);
+        if self.zombie_type == ZombieType::Football {
+            dx += if self.is_walking_backwards() { -11.0 * (s - 1.0) } else { 21.0 * (s - 1.0) };
+        }
         let (offset_x, mut offset_y) = (pos.image_offset_x + dx, pos.image_offset_y + pos.body_y + dy);
         // A climbing or dropping zombie's shadow stays on the ground.
         if matches!(self.height, ZombieHeight::UpLadder | ZombieHeight::Falling) {
             offset_y += self.altitude;
         }
         // A bungee zombie's shadow stays on the ground, growing as it drops.
-        let mut scale = match self.zombie_type {
+        // The shadow's size is the zombie's scale times the type's (`aScale`).
+        let mut scale = self.scale * match self.zombie_type {
             ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => 1.5,
             ZombieType::Imp => 0.6,
             _ => 1.0,

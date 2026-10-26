@@ -8,8 +8,8 @@
 //! and `CheckForGameEnd`.
 //!
 //! Not yet: the other awards (shovel, almanac, trophies, money bags), the
-//! money coins, the award screen between levels, and the pool, roof and
-//! boss lawns' endings.
+//! money coins, the award screen between levels, and the roof and boss
+//! lawns' endings (the pool lawn's house position is in `Zombie::walk_into_house`).
 
 use bevy::prelude::*;
 use sexy::tod::{TodCurve, animate_curve};
@@ -69,11 +69,17 @@ impl Board {
             }
             // Zombie::DropLoot.
             let blocked = self.level_award_spawned || self.board_fade_out_counter >= 0 || !self.can_drop_loot();
+            // Behaviour per ruslan831 decomp, Zombie::DropLoot: on Little
+            // Trouble only one zombie in four drops anything.
+            let little_trouble = self.is_little_trouble_level();
             let Some(zombie) = self.zombies.get_mut(id) else { continue };
             if zombie.dropped_loot() || blocked {
                 continue;
             }
             zombie.set_dropped_loot();
+            if little_trouble && sounds.rng().next_range(4) != 0 {
+                continue;
+            }
             let value = zombie.zombie_type.definition().zombie_value;
             let (x, y) = (center.0, zombie.zombie_rect().y + zombie.zombie_rect().h / 4);
             self.drop_loot_piece(x, y, value, effects, res, images, sounds);
@@ -189,17 +195,24 @@ impl Board {
     pub(super) fn zombies_won(
         &mut self,
         zombie: sexy::data_array::Id<super::zombie::Zombie>,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
         music: &mut Music,
         sounds: &mut Sounds,
-        res: &GameResources,
     ) {
         if self.scene == GameScene::ZombiesWon {
             return;
         }
         self.clear_advice(None);
         self.scene = GameScene::ZombiesWon;
-        if let Some(z) = self.zombies.get_mut(zombie) {
-            z.walk_into_house();
+        let env = self.zombie_env();
+        if self.zombies.get(zombie).is_some() {
+            let background = self.background;
+            let mut fx = super::zombie::Fx { effects, res, images, sounds };
+            if let Some(z) = self.zombies.get_mut(zombie) {
+                z.walk_into_house(background, &env, &mut fx);
+            }
         }
         // CutScene::StartZombiesWon.
         self.cut_scene.start_zombies_won();

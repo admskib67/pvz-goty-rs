@@ -19,6 +19,7 @@ mod options;
 mod plants;
 mod roof;
 mod roof_zombies;
+mod world3;
 mod zombies;
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -83,9 +84,20 @@ fn game_files() -> Option<GameFiles> {
 }
 
 /// Makes a [`TestBoard`], or skips the test when the game isn't installed.
+/// The optional second argument adjusts the player first, as
+/// [`TestBoard::with_player`] does.
 macro_rules! test_board {
     ($stage:expr) => {
         match $crate::board::tests::TestBoard::new($stage) {
+            Some(board) => board,
+            None => {
+                eprintln!("skipped: no main.pak (set PVZ_GAME_PATH or pick the game in the app)");
+                return;
+            }
+        }
+    };
+    ($stage:expr, $adjust:expr) => {
+        match $crate::board::tests::TestBoard::with_player($stage, $adjust) {
             Some(board) => board,
             None => {
                 eprintln!("skipped: no main.pak (set PVZ_GAME_PATH or pick the game in the app)");
@@ -115,6 +127,12 @@ impl TestBoard {
     /// reached it for the first time. The intro is skipped: the lawn mowers
     /// are out, the graves are up and play has started.
     pub fn new(stage: &str) -> Option<Self> {
+        Self::with_player(stage, |_| {})
+    }
+
+    /// Like [`Self::new`], with the player adjusted first (say, what they've
+    /// bought from the store).
+    pub fn with_player(stage: &str, adjust: impl FnOnce(&mut PlayerInfo)) -> Option<Self> {
         let (area, sub) = stage.split_once('-').expect("stage like \"2-1\"");
         let level = (area.parse::<i32>().unwrap() - 1) * 10 + sub.parse::<i32>().unwrap();
         let mut shared = shared()?;
@@ -124,7 +142,8 @@ impl TestBoard {
         world.insert_resource(UpdateCount::default());
         let sounds = SystemState::<Sounds>::new(&mut world);
 
-        let player = PlayerInfo { level, ..Default::default() };
+        let mut player = PlayerInfo { level, ..Default::default() };
+        adjust(&mut player);
         let Shared { resources, images } = &mut *shared;
         let mut rng = MtRand::new(1234);
         let mut board = Board::new(GameMode::Adventure, Some(&player), resources, images, &mut rng);

@@ -142,10 +142,18 @@ pub(super) fn crazy_dave_dialog_start(board: &Board) -> i32 {
         1551
     } else if board.is_wallnut_bowling_level() {
         if first_time { 2400 } else { 2411 }
+    } else if first_time && level == 21 {
+        // Behaviour per ruslan831 decomp, CutScene::StartLevelIntro: 3-1's talk
+        // about the zombies attacking the backyard. Levels 22-24 and 26-30 have
+        // no such talk (their seed-slot offers come from 1501/1551 above).
+        501
     } else if board.is_whack_a_zombie_level() {
         401
+    } else if board.is_little_trouble_level() {
+        // Behaviour per ruslan831 decomp, CutScene::StartLevelIntro: 3-5's talk
+        // about the zombies' small numbers, on every visit.
+        701
     } else {
-        // TODO: 3-1's (501) and the later levels' talks.
         -1
     }
 }

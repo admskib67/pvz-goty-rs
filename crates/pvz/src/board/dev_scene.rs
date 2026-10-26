@@ -1,6 +1,7 @@
 //! Development aid: `PVZ_DEV_SCENE=butter` skips the level intro and lines up
 //! buttered zombies of every ported type, so `PVZ_SCREENSHOT` can show where
-//! the butter is drawn on each of them.
+//! the butter is drawn on each of them. `PVZ_DEV_SCENE=pool` skips the intro
+//! and the seed chooser, and plants a few plants on the pool lawn of 3-1.
 
 use crate::audio::Music;
 use crate::zombie::ZombieType;
@@ -15,6 +16,7 @@ const ENV: &str = "PVZ_DEV_SCENE";
 pub(super) fn set_up(board: &mut Board, music: &mut Music, fx: &mut Fx) {
     match std::env::var(ENV).as_deref() {
         Ok("butter") => butter(board, music, fx),
+        Ok("pool") => pool(board, music, fx),
         Ok(other) => bevy::log::warn!("{ENV}: no scene called {other:?}"),
         Err(_) => {}
     }
@@ -38,6 +40,24 @@ fn skip_intro(board: &mut Board, music: &mut Music, fx: &mut Fx) {
     board.menu_button.no_draw = false;
     board.show_shovel = !board.is_whack_a_zombie_level();
     board.start_playing(music);
+}
+
+/// Plants on the water (lily pads under two of them, and one planted from
+/// the bank: the splash plays) and on the lawn, with a zombie wading in.
+fn pool(board: &mut Board, music: &mut Music, fx: &mut Fx) {
+    use crate::plant::SeedType::*;
+    skip_intro(board, music, fx);
+    board.seed_chooser = None;
+    board.add_plant(3, 2, Lilypad, fx.effects, fx.res, fx.images, fx.sounds);
+    board.add_plant(3, 2, Peashooter, fx.effects, fx.res, fx.images, fx.sounds);
+    board.add_plant(4, 3, Lilypad, fx.effects, fx.res, fx.images, fx.sounds);
+    board.add_plant(4, 3, Snowpea, fx.effects, fx.res, fx.images, fx.sounds);
+    board.add_plant(2, 0, Sunflower, fx.effects, fx.res, fx.images, fx.sounds);
+    board.add_plant(2, 1, Wallnut, fx.effects, fx.res, fx.images, fx.sounds);
+    let id = board.add_zombie_in_row(ZombieType::Normal, 3, 0, fx);
+    if let Some(zombie) = board.zombies.get_mut(id) {
+        zombie.place_x(560.0);
+    }
 }
 
 fn butter(board: &mut Board, music: &mut Music, fx: &mut Fx) {

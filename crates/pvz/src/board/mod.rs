@@ -28,6 +28,7 @@ mod lawn_mower;
 mod level_end;
 mod message;
 mod plant;
+mod pool;
 mod projectile;
 mod seed_bank;
 mod seed_chooser;
@@ -63,6 +64,7 @@ use crate::plant::{SeedType, seeds_available};
 use crate::particle::{ParticleEffect, draw_particle_system};
 use crate::reanim::{EffectSystem, ParticleSystemId, ReanimationType};
 use crate::resources::GameResources;
+use crate::store::StoreItem;
 use crate::widgets::draw_stone_button;
 use crate::{AppState, UiSet};
 
@@ -311,6 +313,8 @@ pub struct Board {
     /// How far the intro's sod has rolled out, 0..=1000.
     pub sod_position: i32,
     pub main_counter: i32,
+    /// The pool's animated water, on levels with a pool.
+    pub pool_water: Option<pool::PoolWater>,
     pub sun_count_down: i32,
     pub draw_count: u32,
     pub paused: bool,
@@ -325,6 +329,9 @@ pub struct Board {
     help_index: Option<AdviceType>,
     help_displayed: HashSet<AdviceType>,
     lawn_mowers: Vec<LawnMower>,
+    /// Whether the player has bought the pool cleaner (`StoreItem::PoolCleaner`),
+    /// which the pool rows' lawn mowers become.
+    pool_cleaner: bool,
     plants: DataArray<Plant>,
     zombies: DataArray<Zombie>,
     projectiles: DataArray<Projectile>,
@@ -450,6 +457,7 @@ impl Board {
             packet_offer_answer: None,
             sod_position: 0,
             main_counter: 0,
+            pool_water: None,
             sun_count_down: 0,
             draw_count: 0,
             paused: false,
@@ -462,6 +470,7 @@ impl Board {
             help_index: None,
             help_displayed: HashSet::new(),
             lawn_mowers: Vec::new(),
+            pool_cleaner: player.is_some_and(|p| p.purchases[StoreItem::PoolCleaner.slot()] != 0),
             plants: DataArray::default(),
             zombies: DataArray::default(),
             projectiles: DataArray::default(),
@@ -510,6 +519,7 @@ impl Board {
 
         // InitLevel.
         board.pick_background(resources, images);
+        board.pool_water = if board.stage_has_pool() { pool::PoolWater::new(resources, images) } else { None };
         board.init_fog();
         let level_seed = board.level_rand_seed(player.map_or(0, |p| p.id), player.map_or(0, |p| p.finished_adventure));
         board.add_level_grave_stones(&mut sexy::rand::MtRand::new(level_seed), rng);
@@ -540,7 +550,8 @@ impl Board {
             board.conveyor_belt_counter = 400;
             // The line appears when Crazy Dave mentions bowling (or play starts).
             board.show_bowling_line = !board.first_time_adventure;
-        } else if board.is_mini_boss_level() {
+        } else if board.is_mini_boss_level() || board.is_little_trouble_level() {
+            // Challenge::StartLevel: the belt starts running at once.
             board.conveyor_belt_counter = 200;
         }
         board
@@ -695,9 +706,15 @@ impl Board {
         self.mode == GameMode::Adventure && self.level == 5
     }
 
+    /// `LawnApp::IsLittleTroubleLevel`, for adventure mode: 3-5, Big Trouble
+    /// Little Zombie (adventure level 25).
+    pub fn is_little_trouble_level(&self) -> bool {
+        self.mode == GameMode::Adventure && self.level == 25
+    }
+
     /// `Board::HasConveyorBeltSeedBank`.
     pub fn has_conveyor_belt_seed_bank(&self) -> bool {
-        self.is_wallnut_bowling_level() || self.is_mini_boss_level()
+        self.is_wallnut_bowling_level() || self.is_mini_boss_level() || self.is_little_trouble_level()
     }
 
     /// `LawnApp::IsMiniBossLevel`: the conveyor belt levels at the end of each area.
@@ -715,9 +732,10 @@ impl Board {
         pos_y_based_on_row(self.background, x, row)
     }
 
-    /// `Board::InitLawnMowers`: one per row that zombies can walk down.
+    /// `Board::InitLawnMowers`: one per row that zombies can walk down. Pool
+    /// rows get the pool cleaner when it's been bought (see `LawnMower::new`).
     fn init_lawn_mowers(&mut self) {
-        // TODO: the roof needs the roof cleaner upgrade, and pool rows the pool cleaner.
+        // TODO: the roof needs the roof cleaner upgrade.
         if self.stage_has_roof() {
             return;
         }
@@ -749,7 +767,7 @@ impl Board {
 
     /// `Music::StartGameMusic`'s choice of tune.
     fn game_music(&self) -> MusicTune {
-        if self.is_wallnut_bowling_level() || self.is_whack_a_zombie_level() {
+        if self.is_wallnut_bowling_level() || self.is_whack_a_zombie_level() || self.is_little_trouble_level() {
             MusicTune::MinigameLoonboon
         } else if self.mode == GameMode::Adventure && matches!(self.level, 10 | 20 | 30) {
             MusicTune::Conveyer
@@ -823,6 +841,14 @@ fn new_game(
     let mode = if std::mem::take(&mut play_intro.0) { GameMode::Intro } else { GameMode::Adventure };
     let mut board = Board::new(mode, player, &mut resources, &mut images, sounds.rng());
     board.level_overridden = level_override.0.is_some();
+    // CutScene::PreloadResources: the pool's splash and cleaner.
+    if board.stage_has_pool() {
+        for ty in [ReanimationType::Splash, ReanimationType::PoolCleaner] {
+            if let Err(e) = resources.reanim_definition(ty.file(), &mut images) {
+                error!("{e}");
+            }
+        }
+    }
     for packet in &board.seed_bank.packets[..board.seed_bank.num_packets] {
         if let Some(seed) = packet.packet_type
             && let Err(e) = resources.reanim_definition(seed.definition().reanim.file(), &mut images)
@@ -831,8 +857,8 @@ fn new_game(
         }
     }
     // Conveyor belt levels hand out plants that must be drawable when they ride in.
-    if board.is_mini_boss_level() {
-        for seed in conveyor::mini_boss_seeds(board.level).iter().map(|&(seed, _)| seed) {
+    if board.is_mini_boss_level() || board.is_little_trouble_level() {
+        for seed in conveyor::belt_seeds(&board).iter().map(|&(seed, _)| seed) {
             if let Err(e) = resources.reanim_definition(seed.definition().reanim.file(), &mut images) {
                 error!("{e}");
             }
@@ -969,6 +995,7 @@ impl Board {
             outcome.intro_done = cutscene::update_intro(self, effects, resources, images, music, sounds);
             if !self.paused {
                 effects.update(sounds.rng());
+                self.update_pool_water(images);
             }
             self.flush_particle_requests(effects, resources, images, sounds.rng());
             return outcome;
@@ -983,6 +1010,7 @@ impl Board {
         if self.paused {
             return outcome;
         }
+        self.update_pool_water(images);
         if !self.menu_button.no_draw {
             self.menu_button.disabled = !self.can_interact_with_board_buttons();
         }
@@ -1003,7 +1031,7 @@ impl Board {
         self.update_game_objects(effects, resources, images, sounds);
         self.update_fog_offset();
         if let Some(zombie) = self.zombies_won_trigger.take() {
-            self.zombies_won(zombie, music, sounds, resources);
+            self.zombies_won(zombie, effects, resources, images, music, sounds);
         }
         if self.scene == GameScene::ZombiesWon && cutscene::update_zombies_won(self, effects, resources, images, sounds) {
             self.pending_game_over = true;
@@ -1085,7 +1113,7 @@ impl Board {
             let row_y: [i32; MAX_GRID_SIZE_Y] = std::array::from_fn(|row| self.grid_to_pixel_y(0, row as i32));
             let open_rows: [bool; MAX_GRID_SIZE_Y] = std::array::from_fn(|row| self.row_can_have_zombies(row as i32));
             for (_, plant) in self.plants.iter_mut() {
-                plant.update(&self.zombies, &mut self.plant_actions, effects, res, images, &row_y, &open_rows, sounds.rng());
+                plant.update(&self.zombies, &mut self.plant_actions, effects, res, images, &row_y, &open_rows, self.main_counter, sounds.rng());
             }
         }
         if playing {
@@ -1162,12 +1190,14 @@ impl Board {
                     projectile.update(&mut self.zombies, &mut self.plants, &env, &mut fx);
                 }
             }
+            let kelp_targets: Vec<_> = self.plants.iter().filter_map(|(_, plant)| plant.tangle_kelp_target()).collect();
             for mower in &mut self.lawn_mowers {
                 let background = self.background;
                 mower.update(
                     playing,
                     |x, row| pos_y_based_on_row(background, x, row),
                     &mut self.zombies,
+                    &kelp_targets,
                     self.waves.current_wave,
                     &mut self.waves.wave_row_got_lawn_mowered,
                     &mut fx,
@@ -1965,11 +1995,12 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
             }
         }
     }
-    // PoolEffectDraw's fallback: a picture of the water (the animated caustics aren't ported).
-    if board.stage_has_pool()
-        && let Some(pool) = image(if board.stage_is_night() { "IMAGE_POOL_NIGHT" } else { "IMAGE_POOL" })
-    {
-        g.draw_image(pool, 34.0, 278.0);
+    // PoolEffectDraw: the animated water, or the static picture if that can't be drawn.
+    if board.stage_has_pool() {
+        let animated = board.pool_water.as_ref().is_some_and(|water| water.draw(g, res, board.stage_is_night()));
+        if !animated && let Some(pool) = image(if board.stage_is_night() { "IMAGE_POOL_NIGHT" } else { "IMAGE_POOL" }) {
+            g.draw_image(pool, 34.0, 278.0);
+        }
     }
     // Challenge::DrawBackground: the line wall-nuts start behind.
     if board.is_wallnut_bowling_level()
@@ -1985,7 +2016,7 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
     {
         g.draw_image(graveyard, 1092.0, 40.0);
     }
-    // TODO: the pool's water effect and the level 1 tutorial's flashing sod row.
+    // TODO: the level 1 tutorial's flashing sod row.
 }
 
 /// `Board::DrawUIBottom`: the seed bank and the menu button.

@@ -607,9 +607,12 @@ impl Board {
         let mut plant = Plant::new(grid_x, grid_y, x, y, seed, bowling, effects, res, images, sounds.rng());
         // On the roof everything stands in a pot (or is one): it sits 5 px higher.
         plant.in_pot = self.stage_has_roof();
+        // A plant on water floats, and splashes in when it's planted
+        // (`Board::DoPlantingEffects`).
+        let on_water = self.grid_square_type[grid_x as usize][grid_y as usize] == GridSquareType::Pool;
+        plant.on_water = on_water;
         let id = self.plants.alloc(plant);
-        // TODO: water sounds and splashes in the pool.
-        sounds.play_foley(FoleyType::Plant);
+        sounds.play_foley(if on_water { FoleyType::PlantWater } else { FoleyType::Plant });
         if matches!(seed, SeedType::Cherrybomb | SeedType::Jalapeno) {
             sounds.play_foley(FoleyType::ReverseExplosion);
         }
@@ -631,8 +634,9 @@ impl Board {
             SeedType::Flowerpot => py + 30.0,
             _ => py,
         };
+        let splash = if on_water { ParticleEffect::PlantingPool } else { ParticleEffect::Planting };
         // The original passes the bare layer as the render order here.
-        effects.add_particle(px, py, render_layer::TOP, ParticleEffect::Planting, res, images, sounds.rng());
+        effects.add_particle(px, py, render_layer::TOP, splash, res, images, sounds.rng());
     }
 
     /// `CursorPreview::Update`: shows where the carried plant would go.
