@@ -1250,6 +1250,9 @@ impl Board {
             let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
             let mut placed_ladders = Vec::new();
             let mut basketballs = Vec::new();
+            let mut fired_peas = Vec::new();
+            let mut jack_blasts = Vec::new();
+            let mut jalapeno_rows = Vec::new();
             let mut imps = Vec::new();
             let mut shakes = Vec::new();
             let mut boss_requests = Vec::new();
@@ -1272,6 +1275,15 @@ impl Board {
                     }
                     if let Some(imp) = zombie.thrown_imp.take() {
                         imps.push((imp, zombie.from_wave));
+                    }
+                    if let Some(pea) = zombie.fired_pea.take() {
+                        fired_peas.push((pea, zombie.render_order));
+                    }
+                    if let Some(blast) = zombie.jack_blast.take() {
+                        jack_blasts.push(blast);
+                    }
+                    if let Some(blast) = zombie.jalapeno_blast.take() {
+                        jalapeno_rows.push(blast);
                     }
                     if let Some(shake) = zombie.shake.take() {
                         shakes.push(shake);
@@ -1314,6 +1326,58 @@ impl Board {
                 let mut ball = Projectile::new(shot.x as i32, shot.y as i32, render_order, row, shadow_y, projectile::ProjectileType::Basketball);
                 ball.launch_basketball(&shot, fx.sounds.rng());
                 self.projectiles.alloc(ball);
+            }
+            // A zombotany head's pea flies backwards at the plants (or at
+            // the zombies, when it's hypnotized).
+            for (pea, render_order) in fired_peas {
+                let shadow_y = self.projectile_shadow_y(pea.x as i32, pea.row);
+                let mut shot = Projectile::new(pea.x as i32, pea.y as i32, render_order, pea.row, shadow_y, projectile::ProjectileType::ZombiePea);
+                let motion = if pea.mind_controlled { projectile::ProjectileMotion::Straight } else { projectile::ProjectileMotion::Backwards };
+                shot.set_motion(motion, fx.sounds.rng());
+                self.projectiles.alloc(shot);
+            }
+            // A jack-in-the-box blows up everything around it.
+            for blast in jack_blasts {
+                use zombie::damage_range;
+                let range = damage_range::GROUND | damage_range::FLYING | damage_range::SUBMERGED | damage_range::OFF_GROUND | damage_range::DYING | damage_range::UNDERGROUND;
+                let env = self.zombie_env();
+                self.kill_all_zombies_in_radius(blast.row, blast.x, blast.y, 115, 1, true, range, &env, &mut fx);
+                self.kill_all_plants_in_radius(blast.x, blast.y, 90, fx.effects);
+                fx.sounds.play_foley(FoleyType::Cherrybomb);
+                self.add_particle(blast.x as f32, blast.y as f32, render_layer::TOP, ParticleEffect::Jackexplode);
+                self.shake_board(4, -6);
+            }
+            // A jalapeno head burns its row and the plants on it (or, when
+            // hypnotized, the zombies instead).
+            for blast in jalapeno_rows {
+                let row = blast.row;
+                if blast.mind_controlled {
+                    let env = self.zombie_env();
+                    for (_, zombie) in self.zombies.iter_mut() {
+                        if zombie.row == row && zombie.effected_by_damage(zombie::damage_range::EXPLOSION) {
+                            zombie.remove_cold_effects(fx.effects);
+                            zombie.apply_burn(&env, &mut fx);
+                        }
+                    }
+                } else {
+                    for (_, plant) in self.plants.iter_mut() {
+                        if plant.row == row && !plant.dead && !plant.not_on_ground() {
+                            plant.die(fx.effects);
+                        }
+                    }
+                }
+                for (_, item) in self.grid_items.iter_mut() {
+                    if item.item_type == grid_item::GridItemType::Ladder && item.grid_y == row {
+                        item.dead = true;
+                    }
+                }
+                for (_, zombie) in self.zombies.iter_mut() {
+                    if zombie.is_boss() {
+                        zombie.boss_destroy_iceball_in_row(row, &mut fx);
+                    }
+                }
+                self.do_fwoosh(row, fx.effects, fx.res, fx.images, fx.sounds.rng());
+                self.shake_board(3, -4);
             }
             if playing {
                 self.update_torchwoods(&mut fx);
@@ -1530,6 +1594,21 @@ impl Board {
                 } else {
                     zombie.take_damage(1800, 18, env, fx);
                 }
+            }
+        }
+    }
+
+    /// `Board::KillAllPlantsInRadius`: a jack-in-the-box takes the plants
+    /// around it with it.
+    fn kill_all_plants_in_radius(&mut self, x: i32, y: i32, radius: i32, effects: &mut EffectSystem) {
+        for (_, plant) in self.plants.iter_mut() {
+            if plant.dead {
+                continue;
+            }
+            let rect = plant.rect();
+            let (cx, cy) = (rect.x + rect.w / 2, rect.y + rect.h / 2);
+            if (cx - x).abs() <= radius && (cy - y).abs() <= radius {
+                plant.die(effects);
             }
         }
     }

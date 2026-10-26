@@ -132,6 +132,12 @@ pub enum HelmType {
     Football,
     /// The bobsled team's sled.
     Bobsled,
+    /// The wall-nut a WallnutHead wears.
+    Wallnut,
+    /// The tall-nut a TallnutHead wears.
+    Tallnut,
+    /// The digger's hard hat (its pickaxe is `has_object`).
+    Digger,
 }
 
 /// `ShieldType`, for what's ported so far.
@@ -164,6 +170,11 @@ const RENDER_GROUP_OVER_SHIELD: i32 = 3;
 pub const NUM_BACKUP_DANCERS: usize = 4;
 /// `ZOMBIE_BACKUP_DANCER_RISE_HEIGHT`.
 const BACKUP_DANCER_RISE_HEIGHT: i32 = -200;
+/// `POGO_BOUNCE_TIME`: ticks per bounce of the pogo stick.
+const POGO_BOUNCE_TIME: i32 = 80;
+/// `ZOMBIE_LIMP_SPEED_FACTOR`: the jack and jalapeno head fuses run twice
+/// as long as walking the distance would take.
+const ZOMBIE_LIMP_SPEED_FACTOR: i32 = 2;
 /// The bungee zombie's lower arms, drawn over the plant it carries.
 const RENDER_GROUP_ARMS: i32 = 2;
 /// `BUNGEE_ZOMBIE_HEIGHT`: how far up a bungee zombie starts its dive.
@@ -186,6 +197,38 @@ pub enum ZombiePhase {
     PoleInVault,
     /// Climbing out of a grave on the last wave of a night level.
     RisingFromGrave,
+    /// The jack-in-the-box running at the house, counting down...
+    JackRunning,
+    /// ...then popping its lid and blowing up.
+    JackPopping,
+    /// The digger underground, under the plants...
+    DiggerTunneling,
+    /// ...bursting out at the back of the lawn...
+    DiggerRising,
+    /// ...waiting out the loss of its pickaxe...
+    DiggerTunnelingPauseWithoutAxe,
+    DiggerRiseWithoutAxe,
+    /// ...dazed, then walking back through the defences.
+    DiggerStunned,
+    DiggerWalking,
+    DiggerWalkingWithoutAxe,
+    /// Bobbing over the street during the level intro.
+    DiggerCutscene,
+    /// The pogo zombie bouncing along...
+    PogoBouncing,
+    /// ...bouncing high to clear a plant...
+    PogoHighBounce,
+    /// ...then over it.
+    PogoForwardBounce,
+    /// The yeti fleeing the lawn.
+    YetiRunning,
+    /// The squash head's squash, in the air...
+    SquashRising,
+    SquashFalling,
+    /// ...and landed, squashing its square.
+    SquashDoneFalling,
+    /// The squash head's squash waiting for something to bite.
+    SquashPreLaunch,
     /// The newspaper zombie reading as it walks.
     NewspaperReading,
     /// Its paper's gone: it gasps...
@@ -668,7 +711,12 @@ pub struct Zombie {
     pub thrown_basketball: Option<Basketball>,
     /// The imp a gargantuar just flung, for the board to add.
     pub thrown_imp: Option<ThrownImp>,
-    /// A thrown imp's upward speed (`mVelZ`).
+    /// A pea a zombotany head just fired, for the board to spawn.
+    pub fired_pea: Option<FiredPea>,
+    /// A jack-in-the-box that just blew up, for the board to resolve.
+    pub jack_blast: Option<JackBlast>,
+    /// A jalapeno head that just went off, for the board to burn the row.
+    pub jalapeno_blast: Option<JalapenoBlast>,
     vel_z: f32,
     /// The board should shake (`ShakeBoard`), as a gargantuar lands a blow
     /// or falls.
@@ -693,6 +741,33 @@ pub struct Basketball {
     pub y: f32,
     pub vel_x: f32,
     pub vel_z: f32,
+}
+
+/// A pea a PeaHead or GatlingHead just fired: where it starts, which row it
+/// flies down, and whether it flies at the house or back at the zombies.
+#[derive(Debug, Clone, Copy)]
+pub struct FiredPea {
+    pub x: f32,
+    pub y: f32,
+    pub row: i32,
+    /// Hypnotized heads shoot peas at the zombies (`PROJECTILE_PEA`);
+    /// otherwise the pea flies backwards at the plants (`PROJECTILE_ZOMBIE_PEA`).
+    pub mind_controlled: bool,
+}
+
+/// A jack-in-the-box that just blew up: the board kills everything in range.
+#[derive(Debug, Clone, Copy)]
+pub struct JackBlast {
+    pub row: i32,
+    pub x: i32,
+    pub y: i32,
+}
+
+/// A jalapeno head that just went off: the board burns its row.
+#[derive(Debug, Clone, Copy)]
+pub struct JalapenoBlast {
+    pub row: i32,
+    pub mind_controlled: bool,
 }
 
 impl Zombie {
@@ -806,6 +881,9 @@ impl Zombie {
             placed_ladder: None,
             thrown_basketball: None,
             thrown_imp: None,
+            fired_pea: None,
+            jack_blast: None,
+            jalapeno_blast: None,
             vel_z: 0.0,
             shake: None,
         };
@@ -1083,7 +1161,115 @@ impl Zombie {
                 z.phase = ZombiePhase::DancerDancingLeft;
                 z.variant = false;
             }
-            _ => {}
+            ZombieType::JackInTheBox => {
+                // Behaviour per ruslan831 decomp, Zombie::ZombieInitialize.
+                z.body_health = 500;
+                z.anim_ticks_per_frame = 6;
+                let mut distance = 450.0 + fx.sounds.rng().next_range(300) as f32;
+                if fx.sounds.rng().next_range(20) == 0 {
+                    distance /= 3.0;
+                }
+                z.phase_counter = (distance / z.vel_x * ZOMBIE_LIMP_SPEED_FACTOR as f32) as i32;
+                z.attack_rect = IRect::new(20, 0, 50, 115);
+                if z.is_on_board() {
+                    z.phase = ZombiePhase::JackRunning;
+                }
+                z.variant = false;
+            }
+            ZombieType::Digger => {
+                // Behaviour per ruslan831 decomp, Zombie::ZombieInitialize.
+                z.helm_type = HelmType::Digger;
+                z.helm_health = 100;
+                z.variant = false;
+                z.has_object = true;
+                z.zombie_rect = IRect::new(50, 0, 28, 115);
+                if let Some(body) = z.body.and_then(|b| fx.effects.get_mut(b)) {
+                    for track in &mut body.tracks {
+                        track.truncate_disappearing_frames = false;
+                    }
+                }
+                if !z.is_on_board() {
+                    z.phase = ZombiePhase::DiggerCutscene;
+                } else {
+                    z.phase = ZombiePhase::DiggerTunneling;
+                    z.add_attached_particle(60.0, 100.0, ParticleEffect::DiggerTunnel, fx);
+                    z.play_zombie_reanim(fx.effects, "anim_dig", LoopType::LoopFullLastFrame, 0, 12.0);
+                    z.pick_random_speed(fx);
+                }
+            }
+            ZombieType::Pogo => {
+                // Behaviour per ruslan831 decomp, Zombie::ZombieInitialize.
+                z.variant = false;
+                z.phase = ZombiePhase::PogoBouncing;
+                z.pick_random_speed(fx);
+                z.phase_counter = fx.sounds.rng().next_range(POGO_BOUNCE_TIME as u32) as i32 + 1;
+                z.has_object = true;
+                z.body_health = 500;
+                z.attack_rect = IRect::new(10, 0, 30, 115);
+                z.play_zombie_reanim(fx.effects, "anim_pogo", LoopType::PlayOnceAndHold, 0, 40.0);
+                if let Some(body) = z.body.and_then(|b| fx.effects.get_mut(b)) {
+                    body.anim_time = 1.0;
+                }
+            }
+            ZombieType::Yeti => {
+                // Behaviour per ruslan831 decomp, Zombie::ZombieInitialize.
+                z.body_health = 1350;
+                z.phase_counter = fx.sounds.rng().range_int(1500, 2000);
+                z.has_object = true;
+                z.attack_rect = IRect::new(20, 0, 50, 115);
+                z.variant = false;
+            }
+            ZombieType::RedeyeGargantuar => {
+                // Behaviour per ruslan831 decomp, Zombie::ZombieInitialize: a
+                // gargantuar with red eyes and twice the health.
+                z.width = 180;
+                z.body_health = 6000;
+                z.anim_frames = 24;
+                z.anim_ticks_per_frame = 8;
+                z.pos_x = WIDE_BOARD_WIDTH + 45.0 + fx.sounds.rng().next_range(10) as f32;
+                z.zombie_rect = IRect::new(-17, -38, 125, 154);
+                z.attack_rect = IRect::new(-30, -38, 89, 154);
+                z.variant = false;
+                z.has_object = true;
+                if let Some(body) = z.body.and_then(|b| fx.effects.get_mut(b)) {
+                    body.set_image_override("anim_head1", Some("IMAGE_REANIM_ZOMBIE_GARGANTUAR_HEAD_REDEYE"));
+                }
+            }
+            ZombieType::PeaHead => {
+                z.attach_plant_head(&["anim_head2"], ReanimationType::Peashooter, "anim_head_idle", "anim_head1", true, (65.0, -5.0, 0.2, -1.0, 1.0), true, fx);
+                z.phase_counter = 150;
+                z.variant = false;
+            }
+            ZombieType::WallnutHead => {
+                z.attach_plant_head(&["anim_head", "Zombie_tie"], ReanimationType::Wallnut, "anim_idle", "Zombie_body", false, (50.0, 0.0, 0.2, -0.8, 0.8), false, fx);
+                z.helm_type = HelmType::Wallnut;
+                z.helm_health = 1100;
+                z.variant = false;
+            }
+            ZombieType::TallnutHead => {
+                z.attach_plant_head(&["anim_head", "Zombie_tie"], ReanimationType::Tallnut, "anim_idle", "Zombie_body", false, (37.0, 0.0, 0.2, -0.8, 0.8), false, fx);
+                z.helm_type = HelmType::Tallnut;
+                z.helm_health = 2200;
+                z.variant = false;
+                z.pos_x += 30.0;
+            }
+            ZombieType::JalapenoHead => {
+                z.attach_plant_head(&["anim_head", "Zombie_tie"], ReanimationType::Jalapeno, "anim_idle", "Zombie_body", false, (55.0, -5.0, 0.2, -1.0, 1.0), false, fx);
+                z.variant = false;
+                z.body_health = 500;
+                let distance = 275.0 + fx.sounds.rng().next_range(175) as f32;
+                z.phase_counter = (distance / z.vel_x * ZOMBIE_LIMP_SPEED_FACTOR as f32) as i32;
+            }
+            ZombieType::GatlingHead => {
+                z.attach_plant_head(&["anim_head2"], ReanimationType::Gatlingpea, "anim_head_idle", "anim_head1", true, (65.0, -5.0, 0.2, -1.0, 1.0), true, fx);
+                z.phase_counter = 150;
+                z.variant = false;
+            }
+            ZombieType::SquashHead => {
+                z.attach_plant_head(&["anim_head2"], ReanimationType::Squash, "anim_idle", "anim_head1", true, (55.0, -15.0, 0.2, -0.75, 0.75), true, fx);
+                z.phase = ZombiePhase::SquashPreLaunch;
+                z.variant = false;
+            }
         }
 
         // Behaviour per ruslan831 decomp, Zombie::LoadPlainZombieReanim: a zombie
@@ -1392,6 +1578,62 @@ impl Zombie {
         }
     }
 
+    /// Zombotany setup shared by the six plant-headed zombies
+    /// (`Zombie::ZombieInitialize`): a plain body with its head hidden, and
+    /// the plant head attached to `body_track` at `offset` (x, y, angle,
+    /// scale-x, scale-y, like `TodScaleRotateTransformMatrix`).
+    #[allow(clippy::too_many_arguments)]
+    fn attach_plant_head(
+        &mut self,
+        hide: &[&str],
+        head: ReanimationType,
+        head_anim: &str,
+        body_track: &str,
+        blank_body_head: bool,
+        offset: (f32, f32, f32, f32, f32),
+        walk2: bool,
+        fx: &mut Fx,
+    ) {
+        self.load_plain_zombie_reanim(fx);
+        self.reanim_show_prefix(fx, "anim_hair", RENDER_GROUP_HIDDEN);
+        for prefix in hide {
+            self.reanim_show_prefix(fx, prefix, RENDER_GROUP_HIDDEN);
+        }
+        if walk2
+            && self.is_on_board()
+            && let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b))
+        {
+            body.set_frames_for_layer("anim_walk2");
+        }
+        if blank_body_head
+            && let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b))
+        {
+            body.set_image_override("anim_head1", Some("IMAGE_BLANK"));
+        }
+        let Ok((head_id, head_reanim)) = fx.effects.add_reanimation(0.0, 0.0, head, fx.res, fx.images) else { return };
+        head_reanim.play(head_anim, LoopType::Loop, 0, 15.0);
+        head_reanim.render_order = self.render_order + 1;
+        self.special_head = Some(head_id);
+        if let Some(body) = self.body {
+            fx.effects.attach_to_another(head_id, body, body_track);
+        }
+        let (x, y, angle, sx, sy) = offset;
+        let (cos, sin) = (angle.cos(), angle.sin());
+        if let Some(head) = fx.effects.get_mut(head_id) {
+            head.attach_offset = sexy::matrix::Matrix3 {
+                m00: sx * cos,
+                m01: -sy * sin,
+                m02: x,
+                m10: sx * sin,
+                m11: sy * cos,
+                m12: y,
+            };
+        }
+        if let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b)) {
+            body.frame_base_pose = 0;
+        }
+    }
+
     /// `Zombie::ShowDoorArms`: the arms holding the door, or the plain ones
     /// while eating or once the door's gone.
     fn show_door_arms(&self, fx: &mut Fx, show: bool) {
@@ -1472,11 +1714,17 @@ impl Zombie {
     /// `Zombie::PickRandomSpeed`, for the plain zombies.
     fn pick_random_speed(&mut self, fx: &mut Fx) {
         let rng = fx.sounds.rng();
-        if matches!(self.zombie_type, ZombieType::Flag | ZombieType::Dancer | ZombieType::BackupDancer) {
+        if matches!(self.phase, ZombiePhase::DiggerWalking | ZombiePhase::DiggerWalkingWithoutAxe) {
+            self.vel_x = 0.12;
+        } else if self.phase == ZombiePhase::YetiRunning {
+            self.vel_x = 0.8;
+        } else if self.zombie_type == ZombieType::Yeti {
+            self.vel_x = 0.4;
+        } else if matches!(self.zombie_type, ZombieType::Flag | ZombieType::Dancer | ZombieType::BackupDancer | ZombieType::Pogo) {
             self.vel_x = 0.45;
-        } else if self.phase == ZombiePhase::PolePreVault || matches!(self.zombie_type, ZombieType::Football | ZombieType::Snorkel) {
+        } else if self.phase == ZombiePhase::PolePreVault || self.phase == ZombiePhase::DiggerTunneling || matches!(self.zombie_type, ZombieType::Football | ZombieType::Snorkel | ZombieType::JackInTheBox) {
             self.vel_x = rng.range_f32(0.66, 0.68);
-        } else if self.phase == ZombiePhase::LadderCarrying {
+        } else if self.phase == ZombiePhase::LadderCarrying || self.zombie_type == ZombieType::SquashHead {
             self.vel_x = rng.range_f32(0.79, 0.81);
         } else if matches!(self.phase, ZombiePhase::NewspaperMad | ZombiePhase::DolphinWalking | ZombiePhase::DolphinWalkingWithoutDolphin) {
             self.vel_x = rng.range_f32(0.89, 0.91);
@@ -1518,7 +1766,7 @@ impl Zombie {
         }
         // TODO: the dance mode's "anim_dance".
         let mut variant = fx.sounds.rng().next_range(2);
-        if self.zombie_type == ZombieType::Flag {
+        if self.zombie_type == ZombieType::Flag || self.zombie_type == ZombieType::PeaHead {
             variant = 0;
         }
         if variant == 0 && has_walk2 {
@@ -1550,14 +1798,33 @@ impl Zombie {
         }
     }
 
+    /// Whether it's still carrying what a magnet-shroom would take (a pogo
+    /// stick, a pickaxe, an imp).
+    #[cfg(test)]
+    pub(super) fn has_object(&self) -> bool {
+        self.has_object
+    }
+
     /// Whether a magnet-shroom would go for this zombie (the metal ones).
     pub fn is_magnet_target(&self) -> bool {
-        !self.mind_controlled
-            && self.has_head
-            && self.height == ZombieHeight::Normal
-            && self.phase != ZombiePhase::RisingFromGrave
-            && !self.is_dead_or_dying()
-            && (matches!(self.helm_type, HelmType::Pail | HelmType::Football) || matches!(self.shield_type, ShieldType::Door | ShieldType::Ladder))
+        if self.mind_controlled || !self.has_head || self.height != ZombieHeight::Normal || self.is_dead_or_dying() {
+            return false;
+        }
+        // A digger only shows its pickaxe once it's walking; a pogo stick
+        // only while it's bouncing along on it (`Plant::UpdateMagnetShroom`).
+        if matches!(self.zombie_type, ZombieType::Digger | ZombieType::Pogo) && !self.has_object {
+            return false;
+        }
+        if self.phase == ZombiePhase::RisingFromGrave {
+            return false;
+        }
+        if matches!(self.phase, ZombiePhase::DiggerTunneling | ZombiePhase::DiggerStunned | ZombiePhase::DiggerWalking) {
+            return self.has_object;
+        }
+        matches!(self.helm_type, HelmType::Pail | HelmType::Football)
+            || matches!(self.shield_type, ShieldType::Door | ShieldType::Ladder)
+            || self.zombie_type == ZombieType::Pogo
+            || self.phase == ZombiePhase::JackRunning
     }
 
     /// `Plant::MagnetShroomAttactItem`, the zombie's part: it loses its bucket,
@@ -1583,6 +1850,26 @@ impl Zombie {
             self.reanim_show_prefix(fx, "anim_hair", RENDER_GROUP_NORMAL);
             let image = ["IMAGE_REANIM_ZOMBIE_FOOTBALL_HELMET", "IMAGE_REANIM_ZOMBIE_FOOTBALL_HELMET2", "IMAGE_REANIM_ZOMBIE_FOOTBALL_HELMET3"][damage(index)];
             return Some(MagnetLoot { image: image.into(), x: x + 37.0, y: y - 60.0, centre: false, dest: (20.0, 20.0) });
+        }
+        // The magnet-shroom takes the pogo stick, the jack's box, and the
+        // digger's pickaxe (`Plant::MagnetShroomAttactItem`).
+        if self.zombie_type == ZombieType::Pogo && self.has_object {
+            self.pogo_break(damage::DOESNT_LEAVE_BODY, env, fx);
+            let (x, y) = self.track_position(fx.effects, "Zombie_pogo_stick");
+            return Some(MagnetLoot { image: "IMAGE_REANIM_ZOMBIE_POGO_STICK".into(), x: x + 40.0, y: y + 84.0, centre: false, dest: (30.0, 0.0) });
+        }
+        if self.zombie_type == ZombieType::Digger && self.has_object {
+            self.digger_lose_axe(fx);
+            let (x, y) = self.track_position(fx.effects, "Zombie_digger_pickaxe");
+            return Some(MagnetLoot { image: "IMAGE_REANIM_ZOMBIE_DIGGER_PICKAXE".into(), x, y, centre: false, dest: (45.0, 15.0) });
+        }
+        if self.phase == ZombiePhase::JackRunning {
+            self.reanim_show_prefix(fx, "Zombie_jackbox_box", RENDER_GROUP_HIDDEN);
+            self.reanim_show_prefix(fx, "Zombie_jackbox_handle", RENDER_GROUP_HIDDEN);
+            let (x, y) = self.track_position(fx.effects, "Zombie_jackbox_box");
+            self.phase = ZombiePhase::Normal;
+            self.pick_random_speed(fx);
+            return Some(MagnetLoot { image: "IMAGE_REANIM_ZOMBIE_JACKBOX_BOX".into(), x, y, centre: false, dest: (20.0, 15.0) });
         }
         match self.shield_type {
             ShieldType::Door => {
@@ -1724,6 +2011,11 @@ impl Zombie {
                     | GargantuarSmashing
                     | ImpGettingThrown
                     | ImpLanding
+                    | JackPopping
+                    | DiggerRising
+                    | DiggerTunnelingPauseWithoutAxe
+                    | DiggerRiseWithoutAxe
+                    | DiggerStunned
             )
     }
 
@@ -1739,7 +2031,7 @@ impl Zombie {
         self.zombie_type != ZombieType::Zamboni
             && !self.is_bobsled_team_with_sled()
             && !self.is_dead_or_dying()
-            && !matches!(self.phase, ZombiePhase::RisingFromGrave | ZombiePhase::DancerRising)
+            && !matches!(self.phase, ZombiePhase::RisingFromGrave | ZombiePhase::DancerRising | ZombiePhase::DiggerTunneling | ZombiePhase::DiggerRising | ZombiePhase::DiggerTunnelingPauseWithoutAxe | ZombiePhase::DiggerRiseWithoutAxe)
             && !self.mind_controlled
             // The boss only feels it when his head's down.
             && (!self.is_boss()
@@ -1754,7 +2046,7 @@ impl Zombie {
     fn can_be_frozen(&self) -> bool {
         use ZombiePhase::*;
         self.can_be_chilled()
-            && !matches!(self.phase, PoleInVault | DolphinIntoPool | DolphinInJump | SnorkelIntoPool | BobsledCrashing | ImpGettingThrown | ImpLanding)
+            && !matches!(self.phase, PoleInVault | DolphinIntoPool | DolphinInJump | SnorkelIntoPool | BobsledCrashing | ImpGettingThrown | ImpLanding | JackPopping | SquashRising | SquashFalling | SquashDoneFalling | PogoBouncing | PogoHighBounce | PogoForwardBounce)
             && !self.is_flying()
             && (self.zombie_type != ZombieType::Bungee || self.phase == BungeeAtBottom)
     }
@@ -1841,10 +2133,25 @@ impl Zombie {
             self.take_damage(1800, 18, env, fx);
             return;
         }
-        if matches!(self.phase, ZombiePhase::Dying | ZombiePhase::Mowered | ZombiePhase::PoleInVault) {
+        // A digger caught underground burns up where it is (`Zombie::ApplyBurn`).
+        if matches!(
+            self.phase,
+            ZombiePhase::Dying
+                | ZombiePhase::Mowered
+                | ZombiePhase::PoleInVault
+                | ZombiePhase::DiggerTunneling
+                | ZombiePhase::DiggerTunnelingPauseWithoutAxe
+                | ZombiePhase::DiggerRising
+                | ZombiePhase::DiggerRiseWithoutAxe
+        ) {
             self.die_with_loot(fx);
-        } else if !self.has_head || self.zombie_type == ZombieType::Bungee || self.is_flying() {
-            // Headless zombies (and bungee zombies) stay put, charred, for a few moments.
+        } else if !self.has_head
+            || matches!(self.zombie_type, ZombieType::Bungee | ZombieType::Yeti)
+            || self.zombie_type.is_zombotany()
+            || self.is_flying()
+        {
+            // Headless zombies (and bungee, yeti and zombotany zombies) stay
+            // put, charred, for a few moments.
             self.apply_anim_rate(fx.effects, 0.0);
             self.original_anim_rate = 0.0;
             self.phase = ZombiePhase::Burned;
@@ -1853,6 +2160,7 @@ impl Zombie {
             self.drop_loot();
         } else {
             let (ty, dx, dy) = match self.zombie_type {
+                ZombieType::Digger => (ReanimationType::ZombieCharredDigger, 0.0, 0.0),
                 ZombieType::Catapult => (ReanimationType::ZombieCharredCatapult, -36.0, -20.0),
                 ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => (ReanimationType::ZombieCharredGargantuar, -15.0, -10.0),
                 ZombieType::Imp => (ReanimationType::ZombieCharredImp, -6.0, 0.0),
@@ -1976,10 +2284,14 @@ impl Zombie {
         self.dropped_loot = true;
     }
 
-    /// `Zombie::IsWalkingBackwards`: not for the types so far.
-    /// Hypnotized zombies walk the other way.
+    /// `Zombie::IsWalkingBackwards`: hypnotized zombies walk the other way,
+    /// and so does a digger coming back through the defences it tunnelled under.
     pub(super) fn is_walking_backwards(&self) -> bool {
         self.mind_controlled
+            || matches!(
+                self.phase,
+                ZombiePhase::DiggerRising | ZombiePhase::DiggerStunned | ZombiePhase::DiggerWalking
+            )
     }
 
     /// `Zombie::StartMindControlled`, from `AnimateChewSound` biting a
@@ -2025,6 +2337,8 @@ impl Zombie {
             ZombieType::Balloon => image_offset_y += 17.0,
             ZombieType::Bungee => image_offset_x -= 18.0,
             ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => image_offset_y -= 8.0,
+            ZombieType::Pogo => image_offset_y += 16.0,
+            ZombieType::Yeti => image_offset_y -= 20.0,
             ZombieType::DolphinRider => match self.phase {
                 ZombiePhase::DolphinRiding => image_offset_x += 70.0,
                 ZombiePhase::DolphinInJump => image_offset_x += 70.0 + self.altitude,
@@ -2123,6 +2437,9 @@ impl Zombie {
                 | ZombiePhase::DolphinIntoPool
                 | ZombiePhase::DolphinInJump
                 | ZombiePhase::BalloonPopping
+                | ZombiePhase::DiggerRising
+                | ZombiePhase::DiggerTunnelingPauseWithoutAxe
+                | ZombiePhase::DiggerRiseWithoutAxe
         ) {
             return damage_range & damage_range::OFF_GROUND != 0;
         }
@@ -2130,7 +2447,10 @@ impl Zombie {
         if self.zombie_type == ZombieType::Snorkel && self.in_pool && !self.is_eating {
             return damage_range & damage_range::SUBMERGED != 0;
         }
-        // Nothing's underground yet.
+        // A tunnelling digger can only be reached by things that go under it.
+        if self.phase == ZombiePhase::DiggerTunneling {
+            return damage_range & damage_range::UNDERGROUND != 0;
+        }
         if self.is_flying() {
             return damage_range & damage_range::FLYING != 0;
         }
@@ -2413,6 +2733,14 @@ impl Zombie {
                 ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => self.update_zombie_gargantuar(plants, env, fx),
                 ZombieType::Imp => self.update_zombie_imp(env, fx),
                 ZombieType::Balloon => self.update_zombie_flyer(env, fx),
+                ZombieType::JackInTheBox => self.update_zombie_jack(fx),
+                ZombieType::Digger => self.update_zombie_digger(env, fx),
+                ZombieType::Pogo => self.update_zombie_pogo(plants, env, fx),
+                ZombieType::Yeti => self.update_yeti(fx),
+                ZombieType::PeaHead => self.update_zombie_pea_head(fx),
+                ZombieType::GatlingHead => self.update_zombie_gatling_head(fx),
+                ZombieType::JalapenoHead => self.update_zombie_jalapeno_head(fx),
+                ZombieType::SquashHead => self.update_zombie_squash_head(plants, env, fx),
                 _ => {}
             }
             self.update_zombie_position(fx, env);
@@ -2994,6 +3322,386 @@ impl Zombie {
         let range_x = (x - target_x - 20.0).max(40.0);
         let range_y = target_y - y;
         self.thrown_basketball = Some(Basketball { x, y, vel_x: -range_x / 120.0, vel_z: range_y / 120.0 - 7.0 });
+    }
+
+    /// `Zombie::PogoBreak`: the pogo stick breaks and it walks the rest.
+    fn pogo_break(&mut self, flags: u32, env: &ZombieEnv, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::PogoBreak.
+        if !self.has_object {
+            return;
+        }
+        if flags & damage::DOESNT_LEAVE_BODY == 0 {
+            let (x, y) = self.track_position(fx.effects, "Zombie_pogo_stick");
+            let rng = fx.sounds.rng();
+            fx.effects.add_particle(x, y + 30.0, self.render_order + 1, ParticleEffect::ZombiePogo, fx.res, fx.images, rng);
+        }
+        self.height = ZombieHeight::Falling;
+        self.phase = ZombiePhase::Normal;
+        self.start_walk_anim(0, env, fx);
+        self.zombie_rect = IRect::new(36, 17, 42, 115);
+        self.attack_rect = IRect::new(20, 17, 50, 115);
+        self.shield_health = 0;
+        self.shield_type = ShieldType::None;
+        self.has_object = false;
+    }
+
+    /// The headless half of `PogoBreak` for `DropHead`, which has no board
+    /// environment for a fresh walk animation: it plays the walk and picks
+    /// its speed directly.
+    fn pogo_break_on_head_loss(&mut self, fx: &mut Fx) {
+        if !self.has_object {
+            return;
+        }
+        self.height = ZombieHeight::Falling;
+        self.phase = ZombiePhase::Normal;
+        self.play_zombie_reanim(fx.effects, "anim_walk", LoopType::Loop, 0, 0.0);
+        self.pick_random_speed(fx);
+        self.zombie_rect = IRect::new(36, 17, 42, 115);
+        self.attack_rect = IRect::new(20, 17, 50, 115);
+        self.shield_health = 0;
+        self.shield_type = ShieldType::None;
+    }
+
+    /// `Zombie::DiggerLoseAxe`: the magnet-shroom takes its pickaxe, and
+    /// without it the digger comes up on its own.
+    pub fn digger_lose_axe(&mut self, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::DiggerLoseAxe.
+        if self.phase == ZombiePhase::DiggerTunneling {
+            self.phase = ZombiePhase::DiggerTunnelingPauseWithoutAxe;
+            self.phase_counter = 200;
+            self.apply_anim_rate(fx.effects, 0.0);
+            self.update_anim_speed(fx.effects);
+            let drop: Vec<_> = self.attached.iter().map(|(id, _, _)| *id).collect();
+            for id in drop {
+                fx.effects.remove_particle(id);
+            }
+            self.attached.clear();
+        }
+        self.has_object = false;
+        self.reanim_show_track(fx, "Zombie_digger_pickaxe", RENDER_GROUP_HIDDEN);
+        self.reanim_show_track(fx, "Zombie_digger_dirt", RENDER_GROUP_HIDDEN);
+    }
+
+    /// `Zombie::UpdateZombieJackInTheBox`: it runs at the house, then pops
+    /// its lid and blows everything around it up.
+    fn update_zombie_jack(&mut self, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::UpdateZombieJackInTheBox.
+        if self.phase == ZombiePhase::JackRunning {
+            if self.phase_counter <= 0 && self.has_head {
+                self.phase_counter = 110;
+                self.phase = ZombiePhase::JackPopping;
+                self.play_zombie_reanim(fx.effects, "anim_pop", LoopType::PlayOnceAndHold, 20, 28.0);
+                fx.sounds.play_sample("SOUND_BOING");
+            }
+        } else if self.phase == ZombiePhase::JackPopping {
+            if self.phase_counter == 80 {
+                fx.sounds.play_foley(FoleyType::JackSurprise);
+            }
+            if self.phase_counter <= 0 {
+                let r = self.zombie_rect();
+                let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+                self.jack_blast = Some(JackBlast { row: self.row, x, y });
+                self.die_no_loot(fx.effects);
+            }
+        }
+    }
+
+    /// `Zombie::UpdateZombieDigger`: underground to the back of the lawn,
+    /// then up and back through the defences.
+    fn update_zombie_digger(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::UpdateZombieDigger.
+        match self.phase {
+            ZombiePhase::DiggerTunneling => {
+                if self.pos_x < 10.0 {
+                    self.altitude = -120.0;
+                    self.phase = ZombiePhase::DiggerRising;
+                    self.phase_counter = 130;
+                    self.play_zombie_reanim(fx.effects, "anim_drill", LoopType::Loop, 0, 20.0);
+                    fx.sounds.play_foley(FoleyType::DirtRise);
+                    fx.sounds.play_foley(FoleyType::WakeUp);
+                    let drop: Vec<_> = self.attached.iter().map(|(id, _, _)| *id).collect();
+                    for id in drop {
+                        fx.effects.remove_particle(id);
+                    }
+                    self.attached.clear();
+                    let rng = fx.sounds.rng();
+                    fx.effects.add_particle(self.pos_x + 60.0, self.pos_y + 118.0, self.render_order + 1, ParticleEffect::DiggerRise, fx.res, fx.images, rng);
+                    if let Ok((_, dirt)) = fx.effects.add_reanimation(self.pos_x + 13.0, self.pos_y + 97.0, ReanimationType::DiggerDirt, fx.res, fx.images) {
+                        dirt.anim_rate = 24.0;
+                        dirt.render_order = self.render_order + 1;
+                    }
+                }
+            }
+            ZombiePhase::DiggerRising => {
+                if self.phase_counter > 40 {
+                    self.altitude = animate_curve_float(130, 40, self.phase_counter, -120.0, 20.0, TodCurve::EaseOut);
+                } else {
+                    self.altitude = animate_curve_float(30, 0, self.phase_counter, 20.0, 0.0, TodCurve::EaseIn);
+                }
+                if self.phase_counter == 30 {
+                    self.play_zombie_reanim(fx.effects, "anim_landing", LoopType::PlayOnceAndHold, 0, 12.0);
+                }
+                if self.phase_counter == 0 {
+                    self.altitude = 0.0;
+                    self.phase = ZombiePhase::DiggerStunned;
+                    self.play_zombie_reanim(fx.effects, "anim_dizzy", LoopType::Loop, 10, 12.0);
+                }
+            }
+            ZombiePhase::DiggerTunnelingPauseWithoutAxe => {
+                if self.phase_counter == 150 {
+                    use ReanimationType::ZombieSurprise;
+                    if let Ok((id, surprise)) = fx.effects.add_reanimation(23.0, 93.0, ZombieSurprise, fx.res, fx.images) {
+                        surprise.render_order = self.render_order;
+                        self.surprise = Some(id);
+                    }
+                }
+                if self.phase_counter == 0 {
+                    self.altitude = -120.0;
+                    self.phase = ZombiePhase::DiggerRiseWithoutAxe;
+                    self.phase_counter = 130;
+                    self.play_zombie_reanim(fx.effects, "anim_landing", LoopType::PlayOnceAndHold, 0, 0.0);
+                    fx.sounds.play_foley(FoleyType::DirtRise);
+                    let rng = fx.sounds.rng();
+                    fx.effects.add_particle(self.pos_x + 60.0, self.pos_y + 118.0, self.render_order + 1, ParticleEffect::DiggerRise, fx.res, fx.images, rng);
+                    if let Ok((_, dirt)) = fx.effects.add_reanimation(self.pos_x + 13.0, self.pos_y + 97.0, ReanimationType::DiggerDirt, fx.res, fx.images) {
+                        dirt.anim_rate = 24.0;
+                        dirt.render_order = self.render_order + 1;
+                    }
+                }
+            }
+            ZombiePhase::DiggerRiseWithoutAxe => {
+                if self.phase_counter > 40 {
+                    self.altitude = animate_curve_float(130, 40, self.phase_counter, -120.0, 20.0, TodCurve::EaseOut);
+                } else {
+                    self.altitude = animate_curve_float(30, 0, self.phase_counter, 20.0, 0.0, TodCurve::EaseIn);
+                }
+                if self.phase_counter == 30 {
+                    self.play_zombie_reanim(fx.effects, "anim_landing", LoopType::PlayOnceAndHold, 20, 12.0);
+                }
+                if self.phase_counter == 0 {
+                    self.altitude = 0.0;
+                    self.phase = ZombiePhase::DiggerWalkingWithoutAxe;
+                    self.start_walk_anim(20, env, fx);
+                }
+            }
+            ZombiePhase::DiggerStunned => {
+                let dizzy = self.body.and_then(|b| fx.effects.get(b)).is_some_and(|b| b.loop_count > 1);
+                if dizzy {
+                    self.phase = ZombiePhase::DiggerWalking;
+                    self.start_walk_anim(20, env, fx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `Zombie::UpdateZombiePogo`: it bounces along, hops high over the
+    /// first plant in its way, and lands past it (unless it's a tall-nut).
+    fn update_zombie_pogo(&mut self, plants: &DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::UpdateZombiePogo.
+        if self.is_dead_or_dying() || self.is_immobilized() {
+            return;
+        }
+        if !matches!(self.phase, ZombiePhase::PogoBouncing | ZombiePhase::PogoHighBounce | ZombiePhase::PogoForwardBounce) {
+            return;
+        }
+        if self.height == ZombieHeight::InToChimney {
+            return;
+        }
+        let height = match self.phase {
+            ZombiePhase::PogoHighBounce => 110.0,
+            ZombiePhase::PogoForwardBounce => 170.0,
+            _ => 40.0,
+        };
+        self.altitude = animate_curve_float(POGO_BOUNCE_TIME, 0, self.phase_counter, 9.0, height + 9.0, TodCurve::BounceSlowMiddle);
+        if self.phase_counter == 7
+            && let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b))
+        {
+            body.anim_time = 0.0;
+            body.loop_type = LoopType::PlayOnceAndHold;
+        }
+        if self.is_on_board() && self.phase_counter == 5 {
+            fx.sounds.play_foley(FoleyType::PogoZombie);
+        }
+        if self.phase == ZombiePhase::PogoForwardBounce && self.phase_counter == 70 {
+            let tallnut = self
+                .find_plant_target(plants)
+                .and_then(|id| plants.get(id))
+                .filter(|p| p.seed == crate::plant::SeedType::Tallnut);
+            if let Some(plant) = tallnut {
+                fx.sounds.play_foley(FoleyType::Bonk);
+                let order = self.render_order + 1;
+                let rng = fx.sounds.rng();
+                fx.effects.add_particle((plant.x + 60) as f32, (plant.y - 20) as f32, order, ParticleEffect::TallNutBlock, fx.res, fx.images, rng);
+                self.pogo_break(0, env, fx);
+                return;
+            }
+        }
+        if self.phase_counter != 0 {
+            return;
+        }
+        let target = if self.is_on_board() { self.find_plant_target_for(plants, AttackType::Vault) } else { None };
+        let Some(id) = target else {
+            self.phase = ZombiePhase::PogoBouncing;
+            self.pick_random_speed(fx);
+            self.phase_counter = POGO_BOUNCE_TIME;
+            return;
+        };
+        if self.phase == ZombiePhase::PogoHighBounce {
+            let plant_x = plants.get(id).map(|p| p.x).unwrap_or(self.x);
+            self.phase = ZombiePhase::PogoForwardBounce;
+            self.vel_x = (self.x - plant_x + 60) as f32 / POGO_BOUNCE_TIME as f32;
+            self.phase_counter = POGO_BOUNCE_TIME;
+        } else {
+            self.phase = ZombiePhase::PogoHighBounce;
+            self.vel_x = 0.0;
+            self.phase_counter = POGO_BOUNCE_TIME;
+        }
+    }
+
+    /// `Zombie::UpdateYeti`: it lumbers at the house, then gives up and runs.
+    fn update_yeti(&mut self, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::UpdateYeti.
+        if self.mind_controlled || !self.has_head || self.is_dead_or_dying() {
+            return;
+        }
+        if self.phase == ZombiePhase::Normal && self.phase_counter == 0 {
+            self.phase = ZombiePhase::YetiRunning;
+            self.has_object = false;
+            self.pick_random_speed(fx);
+        }
+    }
+
+    /// Where a zombotany head's pea leaves its plant head.
+    fn head_pea_origin(&self, effects: &EffectSystem) -> (f32, f32) {
+        let (mut dx, mut dy) = (-9.0, 6.0);
+        if let Some(body) = self.body.and_then(|b| effects.get(b)) {
+            let m = body.track_matrix(body.find_track("anim_head1"));
+            (dx, dy) = (m.m02 - 9.0, m.m12 + 6.0);
+        }
+        (self.pos_x + dx, self.pos_y + dy - self.altitude)
+    }
+
+    /// Fires a pea backwards at the plants, or at the zombies when
+    /// hypnotized (`Zombie::UpdateZombiePeaHead`'s shot).
+    fn fire_zombie_pea(&mut self, fx: &mut Fx) {
+        let (x, y) = self.head_pea_origin(fx.effects);
+        fx.sounds.play_foley(FoleyType::Throw);
+        self.fired_pea = Some(FiredPea { x, y, row: self.row, mind_controlled: self.mind_controlled });
+    }
+
+    /// `Zombie::UpdateZombiePeaHead`: a peashooter on a zombie's shoulders,
+    /// firing backwards every 150 ticks.
+    fn update_zombie_pea_head(&mut self, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::UpdateZombiePeaHead.
+        if !self.has_head {
+            return;
+        }
+        if self.phase_counter == 35 {
+            if let Some(head) = self.special_head.and_then(|id| fx.effects.get_mut(id)) {
+                head.play("anim_shooting", LoopType::PlayOnceAndHold, 20, 35.0);
+            }
+        } else if self.phase_counter == 0 {
+            if let Some(head) = self.special_head.and_then(|id| fx.effects.get_mut(id)) {
+                head.play("anim_head_idle", LoopType::PlayOnceAndHold, 20, 15.0);
+            }
+            self.fire_zombie_pea(fx);
+            self.phase_counter = 150;
+        }
+    }
+
+    /// `Zombie::UpdateZombieGatlingHead`: four peas per volley.
+    fn update_zombie_gatling_head(&mut self, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::UpdateZombieGatlingHead.
+        if !self.has_head {
+            return;
+        }
+        if self.phase_counter == 100 {
+            if let Some(head) = self.special_head.and_then(|id| fx.effects.get_mut(id)) {
+                head.play("anim_shooting", LoopType::PlayOnceAndHold, 20, 38.0);
+            }
+        } else if matches!(self.phase_counter, 18 | 35 | 51 | 68) {
+            self.fire_zombie_pea(fx);
+        } else if self.phase_counter == 0 {
+            if let Some(head) = self.special_head.and_then(|id| fx.effects.get_mut(id)) {
+                head.play("anim_head_idle", LoopType::PlayOnceAndHold, 20, 15.0);
+            }
+            self.phase_counter = 150;
+        }
+    }
+
+    /// `Zombie::UpdateZombieJalapenoHead`: it counts down, then burns its row.
+    fn update_zombie_jalapeno_head(&mut self, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::UpdateZombieJalapenoHead.
+        if !self.has_head || self.phase_counter != 0 {
+            return;
+        }
+        fx.sounds.play_foley(FoleyType::JalapenoIgnite);
+        fx.sounds.play_foley(FoleyType::Juicy);
+        self.jalapeno_blast = Some(JalapenoBlast { row: self.row, mind_controlled: self.mind_controlled });
+        self.die_no_loot(fx.effects);
+    }
+
+    /// `Zombie::UpdateZombieSquashHead`: its squash jumps on whatever it eats.
+    fn update_zombie_squash_head(&mut self, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Zombie::UpdateZombieSquashHead.
+        if self.has_head && self.is_eating && self.phase == ZombiePhase::SquashPreLaunch {
+            self.stop_eating(env, fx);
+            self.play_zombie_reanim(fx.effects, "anim_idle", LoopType::Loop, 20, 12.0);
+            self.has_head = false;
+            let order = self.render_order + 1;
+            if let Some(id) = self.special_head.take() {
+                fx.effects.kill(id);
+            }
+            let (sx, sy) = (self.pos_x + 6.0, self.pos_y - 21.0);
+            if let Ok((id, head)) = fx.effects.add_reanimation(sx, sy, ReanimationType::Squash, fx.res, fx.images) {
+                head.play("anim_jumpup", LoopType::PlayOnceAndHold, 20, 24.0);
+                head.render_order = order;
+                head.override_scale(0.75, 0.75);
+                self.special_head = Some(id);
+            }
+            self.phase = ZombiePhase::SquashRising;
+            self.phase_counter = 95;
+        }
+        if self.phase == ZombiePhase::SquashRising {
+            let col = ((self.x.max(80) - super::cursor::LAWN_XMIN) / 80).clamp(0, super::MAX_GRID_SIZE_X as i32 - 1);
+            let dest = super::cursor::LAWN_XMIN + col * 80;
+            let dx = animate_curve(95, 0, self.phase_counter, 0, dest - self.pos_x as i32, TodCurve::EaseInOut) as f32;
+            let dy = animate_curve(50, 20, self.phase_counter, 0, -20, TodCurve::EaseInOut) as f32;
+            if let Some(head) = self.special_head.and_then(|id| fx.effects.get_mut(id)) {
+                head.overlay = sexy::matrix::Matrix3::translation(self.pos_x + dx + 6.0, self.pos_y + dy - 21.0);
+            }
+            if self.phase_counter == 0 {
+                if let Some(head) = self.special_head.and_then(|id| fx.effects.get_mut(id)) {
+                    head.play("anim_jumpdown", LoopType::PlayOnceAndHold, 0, 60.0);
+                }
+                self.phase = ZombiePhase::SquashFalling;
+                self.phase_counter = 10;
+            }
+        }
+        if self.phase == ZombiePhase::SquashFalling {
+            let col = ((self.x.max(80) - super::cursor::LAWN_XMIN) / 80).clamp(0, super::MAX_GRID_SIZE_X as i32 - 1);
+            let dest = super::cursor::LAWN_XMIN + col * 80;
+            let dy = animate_curve(10, 0, self.phase_counter, -20, 74, TodCurve::Linear) as f32;
+            if let Some(head) = self.special_head.and_then(|id| fx.effects.get_mut(id)) {
+                head.overlay = sexy::matrix::Matrix3::translation(self.pos_x + 6.0 + dest as f32 - self.pos_x, self.pos_y - 21.0 + dy);
+            }
+            if self.phase_counter == 2 {
+                self.squish_all_in_square(plants, col, self.row, fx);
+            }
+            if self.phase_counter == 0 {
+                self.phase = ZombiePhase::SquashDoneFalling;
+                self.phase_counter = 100;
+                self.shake = Some((1, 4));
+                fx.sounds.play_foley(FoleyType::Thump);
+            }
+        }
+        if self.phase == ZombiePhase::SquashDoneFalling && self.phase_counter == 0 {
+            if let Some(id) = self.special_head.take() {
+                fx.effects.kill(id);
+            }
+            self.take_damage(1800, damage::HEADLESS, env, fx);
+        }
     }
 
     /// `Zombie::UpdateZombieGargantuar`: it brings its pole down on the
@@ -3594,8 +4302,25 @@ impl Zombie {
         let body = self.body.and_then(|b| fx.effects.get(b));
         let speed = match body {
             _ if self.is_vehicle() || self.is_bobsled_team_with_sled() => self.vel_x,
-            _ if matches!(self.phase, ZombiePhase::PoleInVault | ZombiePhase::SnorkelIntoPool | ZombiePhase::DolphinInJump) => self.vel_x,
-            _ if matches!(self.phase, ZombiePhase::SnorkelWalkingInPool | ZombiePhase::DolphinRiding | ZombiePhase::BalloonFlying) => {
+            // Behaviour per ruslan831 decomp, Zombie::UpdateZombieWalking: a
+            // bouncing pogo stick and a tunnelling digger move at their own
+            // speed, not the walk track's.
+            _ if matches!(
+                self.phase,
+                ZombiePhase::PoleInVault
+                    | ZombiePhase::SnorkelIntoPool
+                    | ZombiePhase::DolphinInJump
+                    | ZombiePhase::DiggerTunneling
+            ) => self.vel_x,
+            _ if matches!(
+                self.phase,
+                ZombiePhase::SnorkelWalkingInPool
+                    | ZombiePhase::DolphinRiding
+                    | ZombiePhase::BalloonFlying
+                    | ZombiePhase::PogoBouncing
+                    | ZombiePhase::PogoHighBounce
+                    | ZombiePhase::PogoForwardBounce
+            ) => {
                 if self.is_moving_at_chilled_speed() { self.vel_x * 0.4 } else { self.vel_x }
             }
             // Behaviour per ruslan831 decomp, Zombie::UpdateZombieWalking: the walk's speed is scaled too.
@@ -3635,6 +4360,23 @@ impl Zombie {
         if matches!(self.zombie_type, ZombieType::Bungee | ZombieType::Gargantuar | ZombieType::RedeyeGargantuar) || self.is_flying() {
             return;
         }
+        // A digger under the lawn walks straight past the plants, and so does
+        // one still coming up (`Zombie::CheckIfPreyCaught`); a bouncing pogo
+        // stick never stops to bite either.
+        if matches!(
+            self.phase,
+            ZombiePhase::DiggerTunneling
+                | ZombiePhase::DiggerCutscene
+                | ZombiePhase::DiggerRising
+                | ZombiePhase::DiggerTunnelingPauseWithoutAxe
+                | ZombiePhase::DiggerRiseWithoutAxe
+                | ZombiePhase::DiggerStunned
+                | ZombiePhase::PogoBouncing
+                | ZombiePhase::PogoHighBounce
+                | ZombiePhase::PogoForwardBounce
+        ) {
+            return;
+        }
         let ticks_between_eats = if self.chilled_counter > 0 { TICKS_BETWEEN_EATS * 2 } else { TICKS_BETWEEN_EATS };
         use ZombiePhase::*;
         let busy = matches!(
@@ -3642,6 +4384,11 @@ impl Zombie {
             NewspaperMaddening
                 | RisingFromGrave
                 | DancerRising
+                | DancerWalkToRaise
+                | DancerRaiseLeft1
+                | DancerRaiseRight1
+                | DancerRaiseLeft2
+                | DancerRaiseRight2
                 | DancerSnappingFingers
                 | DancerSnappingFingersWithLight
                 | DancerSnappingFingersHold
@@ -3947,7 +4694,8 @@ impl Zombie {
 
     /// `Zombie::TakeDamage`.
     pub fn take_damage(&mut self, damage: i32, flags: u32, env: &ZombieEnv, fx: &mut Fx) {
-        if self.is_dead_or_dying() {
+        // A popping jack-in-the-box can't be stopped (`Zombie::TakeDamage`).
+        if self.is_dead_or_dying() || self.phase == ZombiePhase::JackPopping {
             return;
         }
         let mut remaining = damage;
@@ -3984,6 +4732,10 @@ impl Zombie {
                 }
                 HelmType::TrafficCone | HelmType::Football => {
                     fx.sounds.play_foley(FoleyType::PlasticHit);
+                    self.take_helm_damage(900, 0, fx);
+                }
+                // A wall-nut, tall-nut or hard hat takes the blow silently.
+                HelmType::Wallnut | HelmType::Tallnut | HelmType::Digger => {
                     self.take_helm_damage(900, 0, fx);
                 }
                 HelmType::None | HelmType::Bobsled => self.take_damage(1800, 0, env, fx),
@@ -4130,6 +4882,39 @@ impl Zombie {
             return remaining;
         }
         let index_after = self.helm_damage_index();
+        // The wall-nut and tall-nut crack on their own heads; the hard hat
+        // cracks on the body (`Zombie::TakeHelmDamage`).
+        match self.helm_type {
+            HelmType::Wallnut | HelmType::Tallnut => {
+                if index_before != index_after && index_after >= 1 {
+                    let images = match self.helm_type {
+                        HelmType::Wallnut => ["IMAGE_REANIM_WALLNUT_CRACKED1", "IMAGE_REANIM_WALLNUT_CRACKED2"],
+                        _ => ["IMAGE_REANIM_TALLNUT_CRACKED1", "IMAGE_REANIM_TALLNUT_CRACKED2"],
+                    };
+                    let track = match self.helm_type {
+                        HelmType::Wallnut => "anim_face",
+                        _ => "anim_idle",
+                    };
+                    if let Some(head) = self.special_head.and_then(|id| fx.effects.get_mut(id)) {
+                        head.set_image_override(track, Some(images[index_after as usize - 1]));
+                    }
+                }
+                return remaining;
+            }
+            HelmType::Digger => {
+                if index_before != index_after
+                    && let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b))
+                    && index_after >= 1
+                {
+                    body.set_image_override(
+                        "Zombie_digger_hardhat",
+                        Some(["IMAGE_REANIM_ZOMBIE_DIGGER_HARDHAT2", "IMAGE_REANIM_ZOMBIE_DIGGER_HARDHAT3"][index_after as usize - 1]),
+                    );
+                }
+                return remaining;
+            }
+            _ => {}
+        }
         if index_before != index_after
             && let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b))
         {
@@ -4140,7 +4925,9 @@ impl Zombie {
                     "zombie_football_helmet",
                     ["IMAGE_REANIM_ZOMBIE_FOOTBALL_HELMET2", "IMAGE_REANIM_ZOMBIE_FOOTBALL_HELMET3"],
                 ),
-                HelmType::None | HelmType::Bobsled => return remaining,
+                HelmType::Wallnut | HelmType::Tallnut | HelmType::Digger | HelmType::None | HelmType::Bobsled => {
+                    return remaining
+                }
             };
             if index_after >= 1 {
                 body.set_image_override(track, Some(images[index_after as usize - 1]));
@@ -4151,6 +4938,22 @@ impl Zombie {
 
     /// `Zombie::DropHelm`.
     fn drop_helm(&mut self, flags: u32, fx: &mut Fx) {
+        // The wall-nut and tall-nut stay on, cracked (`Zombie::DropHelm`
+        // has no arm for them); the digger's hard hat comes off.
+        if matches!(self.helm_type, HelmType::Wallnut | HelmType::Tallnut) {
+            self.helm_type = HelmType::None;
+            return;
+        }
+        if self.helm_type == HelmType::Digger {
+            let (x, y) = self.track_position(fx.effects, "Zombie_digger_hardhat");
+            self.reanim_show_track(fx, "Zombie_digger_hardhat", RENDER_GROUP_HIDDEN);
+            if flags & damage::DOESNT_LEAVE_BODY == 0 {
+                let rng = fx.sounds.rng();
+                fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieHeadlight, fx.res, fx.images, rng);
+            }
+            self.helm_type = HelmType::None;
+            return;
+        }
         let (track, effect) = match self.helm_type {
             HelmType::TrafficCone => ("anim_cone", ParticleEffect::ZombieTrafficCone),
             HelmType::Pail => ("anim_bucket", ParticleEffect::ZombiePail),
@@ -4163,7 +4966,7 @@ impl Zombie {
                 self.helm_type = HelmType::None;
                 return;
             }
-            HelmType::None => return,
+            HelmType::Wallnut | HelmType::Tallnut | HelmType::Digger | HelmType::None => return,
         };
         let (x, y) = self.track_position(fx.effects, track);
         self.reanim_show_prefix(fx, track, RENDER_GROUP_HIDDEN);
@@ -4401,6 +5204,30 @@ impl Zombie {
                 Some(("Zombie_ladder_outerarm_upper", "IMAGE_REANIM_ZOMBIE_LADDER_OUTERARM_UPPER2")),
                 Some("IMAGE_REANIM_ZOMBIE_OUTERARM_HAND"),
             ),
+            ZombieType::Digger => (
+                &["Zombie_outerarm_lower", "Zombie_outerarm_hand"],
+                "Zombie_outerarm_lower",
+                Some(("Zombie_digger_outerarm_upper", "IMAGE_REANIM_ZOMBIE_DIGGER_OUTERARM_UPPER2")),
+                Some("IMAGE_REANIM_ZOMBIE_OUTERARM_HAND"),
+            ),
+            ZombieType::JackInTheBox => (
+                &["Zombie_outerarm_lower", "Zombie_outerarm_hand"],
+                "Zombie_jackbox_outerarm_lower",
+                Some(("Zombie_jackbox_outerarm_lower", "IMAGE_REANIM_ZOMBIE_JACKBOX_OUTERARM_LOWER2")),
+                Some("IMAGE_REANIM_ZOMBIE_OUTERARM_HAND"),
+            ),
+            ZombieType::Pogo => (
+                &["Zombie_outerarm_lower", "Zombie_outerarm_hand"],
+                "Zombie_outerarm_lower",
+                Some(("Zombie_outerarm_upper", "IMAGE_REANIM_ZOMBIE_POGO_OUTERARM_UPPER2")),
+                Some("IMAGE_REANIM_ZOMBIE_OUTERARM_HAND"),
+            ),
+            ZombieType::Yeti => (
+                &["Zombie_outerarm_lower", "Zombie_outerarm_hand"],
+                "Zombie_outerarm_lower",
+                Some(("Zombie_yeti_outerarm_upper", "IMAGE_REANIM_ZOMBIE_YETI_OUTERARM_UPPER2")),
+                Some("IMAGE_REANIM_ZOMBIE_YETI_OUTERARM_HAND"),
+            ),
             _ => (
                 &["Zombie_outerarm_lower", "Zombie_outerarm_hand"],
                 "Zombie_outerarm_lower",
@@ -4430,6 +5257,14 @@ impl Zombie {
             {
                 flag.set_image_override("Zombie_flag", Some("IMAGE_REANIM_ZOMBIE_FLAG3"));
             }
+            // The pogo stick takes its share of the beating (`Zombie::DropArm`).
+            if self.zombie_type == ZombieType::Pogo
+                && let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b))
+            {
+                body.set_image_override("Zombie_pogo_stickhands", Some("IMAGE_REANIM_ZOMBIE_POGO_STICKHANDS2"));
+                body.set_image_override("Zombie_pogo_stick", Some("IMAGE_REANIM_ZOMBIE_POGO_STICKDAMAGE2"));
+                body.set_image_override("Zombie_pogo_stick2", Some("IMAGE_REANIM_ZOMBIE_POGO_STICK2DAMAGE2"));
+            }
         }
         if flags & damage::DOESNT_LEAVE_BODY == 0 {
             let rng = fx.sounds.rng();
@@ -4449,11 +5284,25 @@ impl Zombie {
             return;
         }
         self.has_head = false;
+        // A zombotany head's plant head dies with it (`Zombie::DropHead`).
+        if self.zombie_type.is_zombotany() {
+            self.reanim_show_prefix(fx, "anim_head", RENDER_GROUP_HIDDEN);
+            self.reanim_show_prefix(fx, "anim_hair", RENDER_GROUP_HIDDEN);
+            self.reanim_show_prefix(fx, "anim_tongue", RENDER_GROUP_HIDDEN);
+            if let Some(id) = self.special_head.take() {
+                fx.effects.kill(id);
+            }
+            return;
+        }
         self.reanim_show_prefix(fx, "anim_head", RENDER_GROUP_HIDDEN);
         self.reanim_show_prefix(fx, "anim_hair", RENDER_GROUP_HIDDEN);
         self.reanim_show_prefix(fx, "anim_tongue", RENDER_GROUP_HIDDEN);
         if flags & damage::DOESNT_LEAVE_BODY != 0 {
             return;
+        }
+        // Losing its head breaks the pogo stick too (`Zombie::DropHead`).
+        if self.zombie_type == ZombieType::Pogo {
+            self.pogo_break_on_head_loss(fx);
         }
         if self.zombie_type == ZombieType::Balloon {
             self.reanim_show_prefix(fx, "anim_hat", RENDER_GROUP_HIDDEN);
@@ -4479,6 +5328,7 @@ impl Zombie {
             ZombieType::Newspaper => (ParticleEffect::ZombieNewspaperHead, self.render_order + 1),
             ZombieType::Dancer => (ParticleEffect::ZombieHead, self.render_order - 1),
             ZombieType::Balloon => (ParticleEffect::ZombieBalloonHead, self.render_order + 1),
+            ZombieType::Pogo => (ParticleEffect::ZombiePogoHead, self.render_order + 1),
             _ => (ParticleEffect::ZombieHead, self.render_order + 1),
         };
         let image = match self.zombie_type {
@@ -4741,10 +5591,17 @@ impl Zombie {
         }
         // DrawIceTrap: the zombie stands in a block of ice.
         let ice_y = self.draw_pos().body_y + 92.0;
+        // Behaviour per ruslan831 decomp, Zombie::DrawIceTrap: the block
+        // sits differently on a pogo stick or a digger.
+        let (ice_x, ice_y) = match self.zombie_type {
+            ZombieType::Pogo => (36.0, ice_y + 20.0),
+            ZombieType::Digger => (19.0, ice_y),
+            _ => (46.0, ice_y),
+        };
         if self.ice_trap_counter > 0
             && let Some(back) = res.image("IMAGE_ICETRAP2")
         {
-            g.draw_image(back, 46.0, ice_y);
+            g.draw_image(back, ice_x, ice_y);
         }
         let spotlight = self.dancer_spotlight();
         if let Some(color) = spotlight
@@ -4804,7 +5661,7 @@ impl Zombie {
         if self.ice_trap_counter > 0
             && let Some(front) = res.image("IMAGE_ICETRAP")
         {
-            g.draw_image(front, 46.0, ice_y);
+            g.draw_image(front, ice_x, ice_y);
         }
         if let Some((x, y, scale)) = self.butter_position(effects, res)
             && let Some(butter) = res.image("IMAGE_REANIM_CORNPULT_BUTTER_SPLAT")
@@ -4906,6 +5763,10 @@ impl Zombie {
         // A gargantuar's head takes a bigger pat.
         Some(match self.zombie_type {
             ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => (x - 5.0, y - 15.0, 1.2),
+            ZombieType::Pogo => (x, y - 5.0, 1.0),
+            ZombieType::SquashHead => (x + 6.0, y - 9.0, 1.0),
+            ZombieType::WallnutHead => (x - 6.0, y - 1.0, 1.0),
+            ZombieType::TallnutHead => (x - 24.0, y - 39.0, 1.0),
             _ => (x, y, 1.0),
         })
     }

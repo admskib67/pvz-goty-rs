@@ -19,6 +19,7 @@ mod credits;
 mod fog;
 mod levels;
 mod options;
+mod new_zombies;
 mod plants;
 mod roof;
 mod roof_zombies;

@@ -492,6 +492,10 @@ pub enum FoleyType {
     /// A pea passing a torchwood, and a fire pea hitting.
     FirePea,
     Ignite,
+    /// `FOLEY_JACK_SURPRISE`: the jack-in-the-box's lid springs open.
+    JackSurprise,
+    /// `FOLEY_POGO_ZOMBIE`: a pogo zombie bouncing.
+    PogoZombie,
 }
 
 struct FoleyParams {
@@ -603,6 +607,11 @@ impl FoleyType {
                 sounds: &["SOUND_IGNITE", "SOUND_IGNITE", "SOUND_IGNITE", "SOUND_IGNITE2"],
                 flags: 0,
             },
+            // Behaviour per ruslan831 decomp, `TodFoley.cpp` (`FOLEY_JACK_SURPRISE`, `FOLEY_POGO_ZOMBIE`).
+            Self::JackSurprise => {
+                FoleyParams { pitch_range: 1.0, sounds: &["SOUND_JACK_SURPRISE", "SOUND_JACK_SURPRISE", "SOUND_JACK_SURPRISE2"], flags: 0 }
+            }
+            Self::PogoZombie => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_POGO_ZOMBIE"], flags: 0 },
             Self::JalapenoIgnite => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_JALAPENO"], flags: 0 },
             Self::Thump => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_GARGANTUAR_THUMP"], flags: 0 },
             Self::ZombieSplash => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_PLANT_WATER", "SOUND_ZOMBIE_ENTERING_WATER"], flags: 0 },

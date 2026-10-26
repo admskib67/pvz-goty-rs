@@ -28,6 +28,9 @@ use super::{make_render_order, render_layer};
 pub enum ProjectileType {
     Pea,
     Snowpea,
+    /// A zombotany head's pea, fired backwards at the plants
+    /// (`PROJECTILE_ZOMBIE_PEA`).
+    ZombiePea,
     Puff,
     /// A pea that has passed a torchwood (`PROJECTILE_FIREBALL`).
     Fire,
@@ -54,7 +57,7 @@ impl ProjectileType {
     /// `ProjectileDefinition::mDamage`.
     fn damage(self) -> i32 {
         match self {
-            Self::Pea | Self::Snowpea | Self::Puff | Self::Spike | Self::Star => 20,
+            Self::Pea | Self::Snowpea | Self::Puff | Self::Spike | Self::Star | Self::ZombiePea => 20,
             Self::Fire | Self::Cabbage | Self::Butter => 40,
             Self::Kernel => 20,
             Self::Melon | Self::Wintermelon => 80,
@@ -212,6 +215,7 @@ impl Projectile {
             | ProjectileType::Cob
             | ProjectileType::Spike
             | ProjectileType::Star
+            | ProjectileType::ZombiePea
             | ProjectileType::Basketball => None,
         }
     }
@@ -260,10 +264,10 @@ impl Projectile {
     /// `Projectile::GetProjectileRect`.
     pub(super) fn rect(&self) -> IRect {
         match self.ty {
-            ProjectileType::Fire => IRect::new(self.x, self.y, self.width - 10, self.height),
-            ProjectileType::Pea | ProjectileType::Snowpea => IRect::new(self.x - 15, self.y, self.width + 15, self.height),
+            ProjectileType::Pea | ProjectileType::Snowpea | ProjectileType::ZombiePea => IRect::new(self.x - 15, self.y, self.width + 15, self.height),
             ProjectileType::Spike | ProjectileType::Star => IRect::new(self.x, self.y, self.width, self.height),
             ProjectileType::Melon | ProjectileType::Wintermelon => IRect::new(self.x + 20, self.y, 60, self.height),
+            ProjectileType::Fire => IRect::new(self.x, self.y, self.width - 10, self.height),
             ProjectileType::Cob => IRect::new(self.x + self.width / 2 - 115, self.y + self.height / 2 - 115, 230, 230),
             ProjectileType::Puff | ProjectileType::Cabbage | ProjectileType::Kernel | ProjectileType::Butter | ProjectileType::Basketball => {
                 IRect::new(self.x, self.y, self.width, self.height)
@@ -350,7 +354,7 @@ impl Projectile {
         if self.lobbed {
             self.update_lob_motion(zombies, plants, env, fx);
         } else {
-            self.update_normal_motion(zombies, env, fx);
+            self.update_normal_motion(zombies, plants, env, fx);
         }
         let slope = super::pos_y_based_on_row(env.background, self.pos_x, old_row) - old_y;
         if self.lobbed {
@@ -368,7 +372,7 @@ impl Projectile {
     }
 
     /// `Projectile::UpdateNormalMotion`.
-    fn update_normal_motion(&mut self, zombies: &mut DataArray<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
+    fn update_normal_motion(&mut self, zombies: &mut DataArray<Zombie>, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
         match self.motion {
             ProjectileMotion::Backwards => self.pos_x -= 3.33,
             ProjectileMotion::Homing(target) => {
@@ -403,7 +407,7 @@ impl Projectile {
                 }
             }
         }
-        self.check_for_collision(zombies, env, fx);
+        self.check_for_collision(zombies, plants, env, fx);
     }
 
     /// `Projectile::UpdateLobMotion`: up and over, landing on the first zombie
@@ -462,7 +466,7 @@ impl Projectile {
     }
 
     /// `Projectile::CheckForCollision`.
-    fn check_for_collision(&mut self, zombies: &mut DataArray<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
+    fn check_for_collision(&mut self, zombies: &mut DataArray<Zombie>, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
         // Puffs only go so far.
         if self.short_range && self.age >= 75 {
             self.die(fx);
@@ -485,6 +489,14 @@ impl Projectile {
         // Stars fall off the top and bottom of the lawn.
         if self.ty == ProjectileType::Star && (self.pos_y > 600.0 || self.pos_y < 40.0) {
             self.die(fx);
+            return;
+        }
+        // A zombotany head's pea flies backwards into the plants (or, when
+        // hypnotized, into the zombies like any pea).
+        if self.ty == ProjectileType::ZombiePea && self.motion == ProjectileMotion::Backwards {
+            if let Some(id) = self.find_collision_target_plant(plants) {
+                self.zombie_pea_impact(plants, id, fx);
+            }
             return;
         }
         // Peas lifted well off the ground go over everyone.
@@ -565,6 +577,40 @@ impl Projectile {
         self.die(fx);
     }
 
+    /// `Projectile::CheckForCollision` for a zombotany head's pea: it hurts
+    /// the plant, unless an umbrella leaf next to it is up (or goes up).
+    fn zombie_pea_impact(&mut self, plants: &mut DataArray<Plant>, plant: sexy::data_array::Id<Plant>, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Projectile::CheckForCollision.
+        let Some((col, row)) = plants.get(plant).map(|p| (p.col, p.row)) else {
+            return;
+        };
+        if let Some(umbrella) = find_umbrella_plant(plants, col, row).and_then(|id| plants.get_mut(id)) {
+            match umbrella.state() {
+                PlantState::UmbrellaReflecting => {
+                    fx.sounds.play_foley(FoleyType::Splat);
+                    let rng = fx.sounds.rng();
+                    let order = make_render_order(render_layer::TOP, 0, 1);
+                    fx.effects.add_particle(self.pos_x + 20.0, self.pos_y + 20.0, order, ParticleEffect::UmbrellaReflect, fx.res, fx.images, rng);
+                    self.die(fx);
+                }
+                PlantState::UmbrellaTriggered => {}
+                _ => {
+                    fx.sounds.play_foley(FoleyType::Umbrella);
+                    umbrella.open_umbrella(fx.effects);
+                }
+            }
+            return;
+        }
+        if let Some(plant) = plants.get_mut(plant) {
+            plant.health -= self.ty.damage();
+            plant.eaten_flash_countdown = plant.eaten_flash_countdown.max(25);
+        }
+        fx.sounds.play_foley(FoleyType::Splat);
+        let rng = fx.sounds.rng();
+        fx.effects.add_particle(self.pos_x - 3.0, self.pos_y + 17.0, self.render_order + 1, ParticleEffect::PeaSplat, fx.res, fx.images, rng);
+        self.die(fx);
+    }
+
     /// `Projectile::PlayImpactSound`.
     fn play_impact_sound(&self, zombie: &Zombie, fx: &mut Fx) {
         let mut splat = true;
@@ -574,6 +620,7 @@ impl Projectile {
                 splat = false;
             }
             HelmType::TrafficCone | HelmType::Football => fx.sounds.play_foley(FoleyType::PlasticHit),
+            HelmType::Wallnut | HelmType::Tallnut | HelmType::Digger => {}
             HelmType::None | HelmType::Bobsled => {}
         }
         if splat {
@@ -599,7 +646,7 @@ impl Projectile {
 
         // The splat sits on the zombie and moves with it.
         let (splat_offset, effect) = match self.ty {
-            ProjectileType::Pea => (-15.0, ParticleEffect::PeaSplat),
+            ProjectileType::Pea | ProjectileType::ZombiePea => (-15.0, ParticleEffect::PeaSplat),
             ProjectileType::Snowpea => (-15.0, ParticleEffect::SnowpeaSplat),
             ProjectileType::Puff => (-20.0, ParticleEffect::PuffSplat),
             ProjectileType::Spike | ProjectileType::Star => {
@@ -785,7 +832,7 @@ impl Projectile {
             return;
         }
         let id = match self.ty {
-            ProjectileType::Pea => "IMAGE_PROJECTILEPEA",
+            ProjectileType::Pea | ProjectileType::ZombiePea => "IMAGE_PROJECTILEPEA",
             ProjectileType::Snowpea => "IMAGE_PROJECTILESNOWPEA",
             ProjectileType::Spike => "IMAGE_PROJECTILECACTUS",
             ProjectileType::Star => "IMAGE_PROJECTILE_STAR",

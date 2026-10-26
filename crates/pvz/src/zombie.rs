@@ -128,11 +128,18 @@ impl ZombieType {
             Self::Bungee => Some(ReanimationType::Bungee),
             Self::Ladder => Some(ReanimationType::Ladder),
             Self::Catapult => Some(ReanimationType::Catapult),
-            Self::Gargantuar => Some(ReanimationType::Gargantuar),
+            Self::Gargantuar | Self::RedeyeGargantuar => Some(ReanimationType::Gargantuar),
             Self::Imp => Some(ReanimationType::Imp),
             Self::Balloon => Some(ReanimationType::Balloon),
             Self::Boss => Some(ReanimationType::Boss),
-            _ => None,
+            Self::JackInTheBox => Some(ReanimationType::Jackinthebox),
+            Self::Digger => Some(ReanimationType::Digger),
+            Self::Pogo => Some(ReanimationType::Pogo),
+            Self::Yeti => Some(ReanimationType::Yeti),
+            // The Zombotany heads wear plant heads on plain bodies.
+            Self::PeaHead | Self::WallnutHead | Self::JalapenoHead | Self::GatlingHead | Self::SquashHead | Self::TallnutHead => {
+                Some(ReanimationType::Zombie)
+            }
         }
     }
 
@@ -158,7 +165,13 @@ impl ZombieType {
         matches!(self, Self::BackupDancer | Self::Bobsled | Self::Imp)
     }
 
-    /// `Zombie::ZombieTypeCanGoInPool`: who can wade into the water.
+    /// `Zombie::IsZombotany`: the zombies with plant heads.
+    pub fn is_zombotany(self) -> bool {
+        matches!(
+            self,
+            Self::PeaHead | Self::WallnutHead | Self::JalapenoHead | Self::GatlingHead | Self::SquashHead | Self::TallnutHead
+        )
+    }
     pub fn can_go_in_pool(self) -> bool {
         matches!(
             self,
