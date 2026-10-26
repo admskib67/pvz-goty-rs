@@ -34,6 +34,40 @@ fn the_roof_has_no_lawn_mowers() {
 }
 
 #[test]
+fn a_bought_roof_cleaner_gives_every_row_a_mower() {
+    use super::super::lawn_mower::{LawnMowerState, LawnMowerType};
+    let mut t = test_board!("5-1", |p| p.purchases[crate::store::StoreItem::RoofCleaner.slot()] = 1);
+    assert_eq!(t.board.lawn_mowers.len(), 5, "one for each of the five rows");
+    assert!(t.board.lawn_mowers.iter().all(|m| m.kind == LawnMowerType::Roof));
+    let zombie = t.zombie(ZombieType::Normal, 2, 0.0);
+    assert!(t.run_until(100, |b| b.zombies.get(zombie).is_none_or(|z| z.is_dead_or_dying())), "it mows the zombie down");
+    let mower = t.board.lawn_mowers.iter().find(|m| m.row == 2).unwrap();
+    assert_eq!(mower.state, LawnMowerState::Triggered);
+    let (x, y) = (mower.pos_x, mower.pos_y);
+    t.ticks(60);
+    let mower = t.board.lawn_mowers.iter().find(|m| m.row == 2).unwrap();
+    assert!(mower.pos_x > x + 100.0 && mower.pos_y != y, "it runs along the slope");
+}
+
+#[test]
+fn a_squished_mower_stays_flat_then_goes() {
+    use super::super::lawn_mower::LawnMowerState;
+    let mut t = test_board!("5-1", |p| p.purchases[crate::store::StoreItem::RoofCleaner.slot()] = 1);
+    t.with(|board, effects, res, images, sounds| {
+        let mut fx = super::super::zombie::Fx { effects, res, images, sounds };
+        board.lawn_mowers.iter_mut().find(|m| m.row == 1).unwrap().squish(&mut fx);
+    });
+    let mower = t.board.lawn_mowers.iter().find(|m| m.row == 1).unwrap();
+    assert_eq!(mower.state, LawnMowerState::Squished);
+    let x = mower.pos_x;
+    t.ticks(499);
+    let mower = t.board.lawn_mowers.iter().find(|m| m.row == 1).unwrap();
+    assert_eq!(mower.pos_x, x, "it doesn't move");
+    t.ticks(2);
+    assert!(t.board.lawn_mowers.iter().all(|m| m.row != 1), "and is gone after five seconds");
+}
+
+#[test]
 fn zombies_eat_the_plant_then_the_pot() {
     let mut t = test_board!("5-1");
     t.plant(SeedType::Flowerpot, 3, 2);
@@ -341,4 +375,34 @@ fn an_umbrella_leaf_only_shelters_the_squares_next_to_it() {
     let bungee = bungee_on(&mut t, 4);
     assert_eq!(t.zombie_ref(bungee).unwrap().row, 1);
     assert!(t.run_until(1000, |b| b.zombies.get(bungee).is_some_and(|z| z.phase == ZombiePhase::BungeeAtBottom)), "two squares away, it lands");
+}
+
+/// Crazy Dave talks on a first visit to 4-1 (the fog) and 5-1 (the roof) only.
+#[test]
+fn crazy_dave_talks_at_the_start_of_the_fog_and_the_roof() {
+    use super::super::cutscene;
+    let mut t = test_board!("5-1");
+    assert_eq!(cutscene::crazy_dave_dialog_start(&t.board), 1201, "5-1: they found a way onto the roof");
+    t.board.level = 31;
+    assert_eq!(cutscene::crazy_dave_dialog_start(&t.board), 801, "4-1: Fog Man");
+    t.board.first_time_adventure = false;
+    assert_eq!(cutscene::crazy_dave_dialog_start(&t.board), -1, "4-1 replayed: no talk");
+    t.board.level = 41;
+    assert_eq!(cutscene::crazy_dave_dialog_start(&t.board), -1, "5-1 replayed: no talk");
+}
+
+/// A zombie that gets into the house on the roof drops down the chimney.
+/// Behaviour per ruslan831 decomp, Zombie::WalkIntoHouse and UpdateZombieChimney.
+#[test]
+fn a_zombie_that_wins_on_the_roof_drops_down_the_chimney() {
+    use super::super::GameScene;
+    let mut t = test_board!("5-1");
+    let id = t.zombie(ZombieType::Normal, 2, -90.0);
+    assert!(t.run_until(500, |b| b.scene == GameScene::ZombiesWon), "it gets in");
+    let zombie = t.zombie_ref(id).unwrap();
+    assert_eq!((zombie.pos_x, zombie.pos_y), (-180.0, 250.0), "at the chimney");
+    t.tick();
+    assert!(t.zombie_ref(id).unwrap().altitude() > 100.0, "high above the chimney to begin with");
+    assert!(t.run_until(1200, |b| b.cut_scene.time() > 5200), "the lost scene runs its course");
+    assert_eq!(t.zombie_ref(id).unwrap().altitude(), 0.0, "and it's all the way down");
 }

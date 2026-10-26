@@ -130,6 +130,8 @@ impl ZombieType {
             Self::Catapult => Some(ReanimationType::Catapult),
             Self::Gargantuar => Some(ReanimationType::Gargantuar),
             Self::Imp => Some(ReanimationType::Imp),
+            Self::Balloon => Some(ReanimationType::Balloon),
+            Self::Boss => Some(ReanimationType::Boss),
             _ => None,
         }
     }
@@ -139,11 +141,9 @@ impl ZombieType {
     pub fn almanac_reanim(self) -> Option<ReanimationType> {
         self.reanim().or(match self {
             Self::JackInTheBox => Some(ReanimationType::Jackinthebox),
-            Self::Balloon => Some(ReanimationType::Balloon),
             Self::Digger => Some(ReanimationType::Digger),
             Self::Pogo => Some(ReanimationType::Pogo),
             Self::Yeti => Some(ReanimationType::Yeti),
-            Self::Boss => Some(ReanimationType::Boss),
             _ => None,
         })
     }

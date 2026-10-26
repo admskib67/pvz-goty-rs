@@ -168,3 +168,14 @@ fn a_gargantuar_flings_its_imp_at_half_health() {
         assert_eq!(imps(&t.board).len(), 1, "{stage}: one imp only");
     }
 }
+
+#[test]
+fn a_gargantuar_leaves_a_flat_plant_that_can_be_replanted() {
+    let mut t = test_board!("1-6");
+    let flower = t.plant(SeedType::Sunflower, 4, 2);
+    t.zombie(ZombieType::Gargantuar, 2, 520.0);
+    assert!(t.run_until(2000, |b| b.plants.get(flower).is_some_and(|p| p.squished)), "the sunflower is stamped flat");
+    assert!(!t.plant_ref(flower).unwrap().dead, "but still there");
+    assert_eq!(t.board.can_plant_at(4, 2, SeedType::Wallnut), super::super::cursor::PlantingReason::Ok, "the square is free again");
+    assert!(t.run_until(600, |b| b.plants.get(flower).is_none()), "and the flat plant goes after five seconds");
+}

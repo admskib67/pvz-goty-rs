@@ -491,17 +491,26 @@ impl EffectSystem {
     /// `Reanimation::Draw` with its attachments, each drawn right after the
     /// track it's attached to (`DrawRenderGroup` + `AttachmentDraw`).
     pub fn draw(&self, g: &mut Graphics, id: ReanimationId, resources: &GameResources) {
+        self.draw_group(g, id, RENDER_GROUP_NORMAL, resources);
+    }
+
+    /// `Reanimation::DrawRenderGroup` with its attachments: the tracks of one
+    /// render group, each followed by what's attached to it.
+    pub fn draw_group(&self, g: &mut Graphics, id: ReanimationId, group: i32, resources: &GameResources) {
         let Some(reanim) = self.reanimations.get(id) else { return };
         let attached = self.attachments.get(&id);
         if reanim.dead {
             return;
         }
         for (i, inst) in reanim.tracks.iter().enumerate() {
-            if inst.render_group != RENDER_GROUP_NORMAL {
+            if inst.render_group != group {
                 continue;
             }
             draw_track(g, reanim, i, resources);
             for &(_, child) in attached.into_iter().flatten().filter(|(t, _)| *t == i) {
+                if self.reanimations.get(child).is_some_and(|c| c.dont_draw_if_parent_hidden) && reanim.current_transform(i).frame() < 0 {
+                    continue;
+                }
                 self.draw(g, child, resources);
             }
         }

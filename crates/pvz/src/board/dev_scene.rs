@@ -2,6 +2,9 @@
 //! buttered zombies of every ported type, so `PVZ_SCREENSHOT` can show where
 //! the butter is drawn on each of them. `PVZ_DEV_SCENE=pool` skips the intro
 //! and the seed chooser, and plants a few plants on the pool lawn of 3-1.
+//! `PVZ_DEV_SCENE=boss` (on 5-10) skips the intro and has Dr. Zomboss lower his
+//! head over a few plants; `boss-stomp`, `boss-rv`, `boss-bungee` and
+//! `boss-spit` make him start that attack at once.
 
 use crate::audio::Music;
 use crate::zombie::ZombieType;
@@ -17,6 +20,7 @@ pub(super) fn set_up(board: &mut Board, music: &mut Music, fx: &mut Fx) {
     match std::env::var(ENV).as_deref() {
         Ok("butter") => butter(board, music, fx),
         Ok("pool") => pool(board, music, fx),
+        Ok(name) if name.starts_with("boss") => boss(board, music, fx, name),
         Ok(other) => bevy::log::warn!("{ENV}: no scene called {other:?}"),
         Err(_) => {}
     }
@@ -78,6 +82,34 @@ fn butter(board: &mut Board, music: &mut Music, fx: &mut Fx) {
                 zombie.apply_butter(fx);
                 zombie.dev_hold_butter();
             }
+        }
+    }
+}
+
+/// The boss level with some plants out, and the boss about to do `name`'s thing.
+fn boss(board: &mut Board, music: &mut Music, fx: &mut Fx, name: &str) {
+    use crate::plant::SeedType::*;
+    skip_intro(board, music, fx);
+    board.seed_chooser = None;
+    for (col, row, seed) in [(0, 0, Peashooter), (0, 2, Repeater), (1, 4, Sunflower), (2, 1, Wallnut), (5, 2, Wallnut), (6, 3, Wallnut), (7, 1, Wallnut), (3, 3, Peashooter)] {
+        if board.can_plant_at(col, row, Flowerpot) == super::cursor::PlantingReason::Ok {
+            board.add_plant(col, row, Flowerpot, fx.effects, fx.res, fx.images, fx.sounds);
+        }
+        board.add_plant(col, row, seed, fx.effects, fx.res, fx.images, fx.sounds);
+    }
+    board.play_boss_enter(fx);
+    if let Some(boss) = board.boss_zombie().and_then(|id| board.zombies.get_mut(id)) {
+        let (stomp, bungee, head, summon) = match name {
+            "boss-stomp" => (Some(1), None, Some(100_000), Some(100_000)),
+            "boss-bungee" => (Some(100_000), Some(1), Some(100_000), Some(100_000)),
+            "boss-spit" | "boss" => (Some(100_000), Some(100_000), Some(1), Some(100_000)),
+            _ => (Some(100_000), Some(100_000), Some(100_000), Some(100_000)),
+        };
+        boss.boss_set_counters(stomp, bungee, head, summon);
+        match name {
+            "boss-rv" => boss.boss_rv_attack(fx),
+            "boss-bungee" => boss.boss_bungee_attack(fx),
+            _ => {}
         }
     }
 }

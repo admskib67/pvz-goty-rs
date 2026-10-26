@@ -399,6 +399,8 @@ pub enum FoleyType {
     /// Putting a carried plant back.
     Drop,
     Splat,
+    /// `FOLEY_SQUISH`: a flattened mower or plant.
+    Squish,
     Throw,
     Chomp,
     ChompSoft,
@@ -447,6 +449,13 @@ pub enum FoleyType {
     LowGroan,
     /// A gargantuar going down.
     GargantuDeath,
+    /// The boss's hydraulics, short and long.
+    HydraulicShort,
+    Hydraulic,
+    /// The boss spitting a fireball or an iceball.
+    BossBoulderAttack,
+    /// A small explosion on the boss.
+    BossExplosionSmall,
     /// An imp being flung.
     Imp,
     /// The whack-a-zombie mallet swinging, and hitting.
@@ -505,6 +514,7 @@ impl FoleyType {
                 sounds: &["SOUND_SPLAT", "SOUND_SPLAT2", "SOUND_SPLAT3"],
                 flags: 0,
             },
+            Self::Squish => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_CHOMP", "SOUND_CHOMP2"], flags: 0 },
             Self::Throw => FoleyParams {
                 pitch_range: 10.0,
                 sounds: &["SOUND_THROW", "SOUND_THROW", "SOUND_THROW", "SOUND_THROW2"],
@@ -609,6 +619,10 @@ impl FoleyType {
             Self::Basketball => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_BASKETBALL"], flags: 0 },
             Self::LowGroan => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_LOWGROAN", "SOUND_LOWGROAN2"], flags: 0 },
             Self::GargantuDeath => FoleyParams { pitch_range: 3.0, sounds: &["SOUND_GARGANTUDEATH"], flags: 0 },
+            Self::HydraulicShort => FoleyParams { pitch_range: 3.0, sounds: &["SOUND_HYDRAULIC_SHORT"], flags: 0 },
+            Self::Hydraulic => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_HYDRAULIC"], flags: 0 },
+            Self::BossBoulderAttack => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_BOSSBOULDERATTACK"], flags: 0 },
+            Self::BossExplosionSmall => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_EXPLOSION"], flags: 0 },
             Self::Imp => FoleyParams { pitch_range: 5.0, sounds: &["SOUND_IMP", "SOUND_IMP2"], flags: 0 },
             Self::Fume => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_FUME"], flags: 0 },
             Self::NewspaperRip => FoleyParams { pitch_range: -2.0, sounds: &["SOUND_NEWSPAPER_RIP"], flags: 0 },

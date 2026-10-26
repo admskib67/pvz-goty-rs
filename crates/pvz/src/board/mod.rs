@@ -18,6 +18,7 @@
 mod bungee;
 mod coin;
 mod crazy_dave;
+mod boss;
 mod conveyor;
 mod cursor;
 mod cutscene;
@@ -332,6 +333,8 @@ pub struct Board {
     /// Whether the player has bought the pool cleaner (`StoreItem::PoolCleaner`),
     /// which the pool rows' lawn mowers become.
     pool_cleaner: bool,
+    /// Whether the player has bought the roof cleaner (`StoreItem::RoofCleaner`).
+    roof_cleaner: bool,
     plants: DataArray<Plant>,
     zombies: DataArray<Zombie>,
     projectiles: DataArray<Projectile>,
@@ -373,6 +376,8 @@ pub struct Board {
     board_fade_out_counter: i32,
     /// The award was picked up; the board will fade out the level next tick.
     pending_fade_out: bool,
+    /// The boss fell: the music fades out.
+    boss_music_fade: bool,
     /// The level is over and the app should move on (`mLevelComplete`).
     level_complete: bool,
     /// The lost-level cutscene is over: show the game over dialog.
@@ -471,6 +476,7 @@ impl Board {
             help_displayed: HashSet::new(),
             lawn_mowers: Vec::new(),
             pool_cleaner: player.is_some_and(|p| p.purchases[StoreItem::PoolCleaner.slot()] != 0),
+            roof_cleaner: player.is_some_and(|p| p.purchases[StoreItem::RoofCleaner.slot()] != 0),
             plants: DataArray::default(),
             zombies: DataArray::default(),
             projectiles: DataArray::default(),
@@ -496,6 +502,7 @@ impl Board {
             board_fade_out_counter: -1,
             pending_fade_out: false,
             level_complete: false,
+            boss_music_fade: false,
             pending_game_over: false,
             coins: DataArray::default(),
             cursor: CursorObject::default(),
@@ -553,6 +560,12 @@ impl Board {
         } else if board.is_mini_boss_level() || board.is_little_trouble_level() {
             // Challenge::StartLevel: the belt starts running at once.
             board.conveyor_belt_counter = 200;
+        } else if board.is_final_boss_level() {
+            // Challenge::InitLevel: four packets are on the belt from the start.
+            for seed in [SeedType::Cabbagepult, SeedType::Jalapeno, SeedType::Cabbagepult, SeedType::Iceshroom] {
+                board.seed_bank.add_seed(seed);
+            }
+            board.conveyor_belt_counter = 1000;
         }
         board
     }
@@ -714,7 +727,7 @@ impl Board {
 
     /// `Board::HasConveyorBeltSeedBank`.
     pub fn has_conveyor_belt_seed_bank(&self) -> bool {
-        self.is_wallnut_bowling_level() || self.is_mini_boss_level() || self.is_little_trouble_level()
+        self.is_wallnut_bowling_level() || self.is_mini_boss_level() || self.is_little_trouble_level() || self.is_final_boss_level()
     }
 
     /// `LawnApp::IsMiniBossLevel`: the conveyor belt levels at the end of each area.
@@ -735,8 +748,8 @@ impl Board {
     /// `Board::InitLawnMowers`: one per row that zombies can walk down. Pool
     /// rows get the pool cleaner when it's been bought (see `LawnMower::new`).
     fn init_lawn_mowers(&mut self) {
-        // TODO: the roof needs the roof cleaner upgrade.
-        if self.stage_has_roof() {
+        // The roof has mowers only once the player has bought the roof cleaner.
+        if self.stage_has_roof() && !self.roof_cleaner {
             return;
         }
         for row in 0..MAX_GRID_SIZE_Y as i32 {
@@ -762,7 +775,10 @@ impl Board {
         if self.is_whack_a_zombie_level() {
             self.start_whack_a_zombie();
         }
-        music.make_sure_music_is_playing(self.game_music());
+        // The final boss's music starts during the intro (`CutScene`).
+        if !self.is_final_boss_level() {
+            music.make_sure_music_is_playing(self.game_music());
+        }
     }
 
     /// `Music::StartGameMusic`'s choice of tune.
@@ -857,7 +873,7 @@ fn new_game(
         }
     }
     // Conveyor belt levels hand out plants that must be drawable when they ride in.
-    if board.is_mini_boss_level() || board.is_little_trouble_level() {
+    if board.is_mini_boss_level() || board.is_little_trouble_level() || board.is_final_boss_level() {
         for seed in conveyor::belt_seeds(&board).iter().map(|&(seed, _)| seed) {
             if let Err(e) = resources.reanim_definition(seed.definition().reanim.file(), &mut images) {
                 error!("{e}");
@@ -969,7 +985,13 @@ fn update_board(
         let (first_time, level) = (board.first_time_adventure, board.level);
         board.finish_level(&mut profiles);
         let next_level = if board.level_overridden { level + 1 } else { profiles.player().map_or(level + 1, |p| p.level) };
-        match first_time.then(|| crate::award::AwardScreen::new(next_level)).flatten() {
+        let award = if first_time && level == FINAL_LEVEL && !board.level_overridden {
+            // The last level's trophy.
+            Some(crate::award::AwardScreen::trophy())
+        } else {
+            first_time.then(|| crate::award::AwardScreen::new(next_level)).flatten()
+        };
+        match award {
             Some(screen) => {
                 commands.insert_resource(screen);
                 next_state.set(AppState::Award);
@@ -1056,6 +1078,9 @@ impl Board {
         if self.pending_fade_out {
             self.fade_out_level(music, sounds, resources);
         }
+        if std::mem::take(&mut self.boss_music_fade) {
+            music.fade_out(200);
+        }
         self.update_level_end_sequence(sounds);
         self.process_delete_queue();
         outcome.game_over = std::mem::take(&mut self.pending_game_over);
@@ -1107,6 +1132,7 @@ impl Board {
         sounds: &mut Sounds,
     ) {
         let playing = self.scene == GameScene::Playing;
+        let intro = self.scene == GameScene::LevelIntro;
         let zombies_won = self.scene == GameScene::ZombiesWon;
         // Plants wait for the level to start, except the lawn's on the bowling level.
         if playing || (self.scene == GameScene::LevelIntro && self.is_wallnut_bowling_level()) {
@@ -1123,15 +1149,20 @@ impl Board {
         }
         let env = self.zombie_env();
         let show_walking = self.cut_scene.show_zombie_walking();
+        let cutscene_time = self.cut_scene.time();
         {
             let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
             let mut placed_ladders = Vec::new();
             let mut basketballs = Vec::new();
             let mut imps = Vec::new();
             let mut shakes = Vec::new();
+            let mut boss_requests = Vec::new();
             for (id, zombie) in self.zombies.iter_mut() {
-                if playing {
+                if playing || (intro && zombie.is_boss()) {
                     zombie.update(&mut self.plants, &env, &mut fx);
+                    if zombie.is_boss() {
+                        boss_requests.extend(zombie.take_boss_requests().into_iter().map(|r| (id, r)));
+                    }
                     if zombie.ice_keep {
                         zombie.ice_keep = false;
                         let row = zombie.row as usize;
@@ -1159,7 +1190,7 @@ impl Board {
                         self.zombies_won_trigger.get_or_insert(id);
                     }
                 } else if zombies_won && zombie.is_winner() {
-                    zombie.update_winner(show_walking, &mut self.plants, &mut fx);
+                    zombie.update_winner(show_walking, cutscene_time, &mut self.plants, &mut fx);
                 }
                 if !zombie.is_on_board() {
                     zombie.update_street(fx.effects);
@@ -1167,6 +1198,10 @@ impl Board {
             }
             for (col, row) in placed_ladders {
                 self.add_a_ladder(col, row);
+            }
+            self.handle_boss_requests(boss_requests, &mut fx);
+            if self.is_final_boss_level() {
+                self.update_boss_cord_clips(fx.effects);
             }
             for (imp, wave) in imps {
                 let id = self.add_zombie_in_row(crate::zombie::ZombieType::Imp, imp.row, wave, &mut fx);
@@ -1387,7 +1422,7 @@ impl Board {
             if !zombie.effected_by_damage(damage_range) {
                 continue;
             }
-            let row_dist = zombie.row - row;
+            let row_dist = if zombie.is_boss() { 0 } else { zombie.row - row };
             if row_dist.abs() <= row_range && circle_rect_overlap(x, y, radius, zombie.zombie_rect()) {
                 if burn {
                     zombie.apply_burn(env, fx);
@@ -1442,7 +1477,7 @@ impl Board {
                 let env = self.zombie_env();
                 let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
                 for (_, zombie) in self.zombies.iter_mut() {
-                    if zombie.row == row
+                    if zombie.in_row(row)
                         && zombie.effected_by_damage(zombie::damage_range::GROUND)
                         && zombie::rect_overlap(rect, zombie.zombie_rect()) > 0
                     {
@@ -1455,9 +1490,15 @@ impl Board {
                 let env = self.zombie_env();
                 let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
                 for (_, zombie) in self.zombies.iter_mut() {
-                    if zombie.row == row && zombie.effected_by_damage(zombie::damage_range::EXPLOSION) {
+                    if zombie.in_row(row) && zombie.effected_by_damage(zombie::damage_range::EXPLOSION) {
                         zombie.remove_cold_effects(fx.effects);
                         zombie.apply_burn(&env, &mut fx);
+                    }
+                }
+                // Plant::BurnRow: the boss's iceball in this row melts.
+                for (_, zombie) in self.zombies.iter_mut() {
+                    if zombie.is_boss() {
+                        zombie.boss_destroy_iceball_in_row(row, &mut fx);
                     }
                 }
                 // Plant::BurnRow: the row's ladders burn too.
@@ -1473,7 +1514,7 @@ impl Board {
                 let env = self.zombie_env();
                 let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
                 for (_, zombie) in self.zombies.iter_mut() {
-                    if zombie.row == row && zombie.effected_by_damage(13) {
+                    if zombie.in_row(row) && zombie.effected_by_damage(13) {
                         let reach = if zombie.zombie_type == crate::zombie::ZombieType::Football { -20 } else { 0 };
                         if zombie::rect_overlap(rect, zombie.zombie_rect()) > reach {
                             zombie.take_damage(1800, 18, &env, &mut fx);
@@ -1489,6 +1530,9 @@ impl Board {
                 }
             }
             PlantAction::BlowFog => {
+                for (_, zombie) in self.zombies.iter_mut() {
+                    zombie.blow_away_if_flying();
+                }
                 sounds.play_sample("SOUND_BLOVER");
                 self.fog.blown_count_down = fog::BLOVER_BLOW_TIME;
             }
@@ -1513,6 +1557,10 @@ impl Board {
                 let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
                 for (_, zombie) in self.zombies.iter_mut() {
                     zombie.hit_ice_trap(&env, &mut fx);
+                    // The boss's fireball goes out.
+                    if zombie.is_boss() {
+                        zombie.boss_destroy_fireball(&mut fx);
+                    }
                 }
                 self.add_particle(x as f32, y as f32, render_layer::TOP, ParticleEffect::IceTrap);
             }
@@ -1576,7 +1624,7 @@ impl Board {
     fn process_delete_queue(&mut self) {
         // Behaviour per ruslan831 decomp, Plant::Die: a ladder goes with the
         // plant it leant on.
-        let gone: Vec<_> = self.plants.iter().filter(|(_, p)| p.dead && p.seed != SeedType::InstantCoffee).map(|(_, p)| (p.col, p.row)).collect();
+        let gone: Vec<_> = self.plants.iter().filter(|(_, p)| (p.dead || p.squished) && p.seed != SeedType::InstantCoffee).map(|(_, p)| (p.col, p.row)).collect();
         for (col, row) in gone {
             if let Some(ladder) = self.ladder_at(col, row).and_then(|id| self.grid_items.get_mut(id)) {
                 ladder.dead = true;
@@ -1783,6 +1831,7 @@ enum RenderItem {
     Reanimation(crate::reanim::ReanimationId),
     Plant(sexy::data_array::Id<Plant>),
     Zombie(sexy::data_array::Id<Zombie>),
+    BossPart(sexy::data_array::Id<Zombie>, zombie::BossPart),
     ZombieShadow(sexy::data_array::Id<Zombie>),
     BungeeTarget(sexy::data_array::Id<Zombie>),
     Projectile(sexy::data_array::Id<Projectile>),
@@ -1816,9 +1865,14 @@ fn draw_board(
         items.push((coin.render_order, RenderItem::Coin(id)));
     }
     for (id, zombie) in board.zombies.iter() {
+        if zombie.is_boss() {
+            // The boss is drawn in parts, each among the lawn's objects.
+            items.extend(zombie.boss_part_orders(&effects).into_iter().map(|(order, part)| (order, RenderItem::BossPart(id, part))));
+            continue;
+        }
         items.push((zombie.render_order, RenderItem::Zombie(id)));
         items.push((make_render_order(render_layer::GROUND, zombie.row, 3), RenderItem::ZombieShadow(id)));
-        if zombie.zombie_type == crate::zombie::ZombieType::Bungee {
+        if zombie.zombie_type == crate::zombie::ZombieType::Bungee && !board.is_final_boss_level() {
             items.push((make_render_order(render_layer::PROJECTILE, zombie.row, 1), RenderItem::BungeeTarget(id)));
         }
     }
@@ -1908,6 +1962,11 @@ fn draw_board(
                 if let Some(zombie) = board.zombies.get(id).filter(|z| !z.is_winner() || board.cut_scene.show_zombie_walking()) {
                     let carried = zombie.target_plant.and_then(|p| board.plants.get(p)).filter(|p| !p.dead && p.on_bungee != plant::OnBungee::No);
                     zombie.draw(&mut g, &effects, &resources, carried, board.stage_is_night(), board.stage_has_roof());
+                }
+            }
+            RenderItem::BossPart(id, part) => {
+                if let Some(zombie) = board.zombies.get(id) {
+                    zombie.draw_boss_part(&mut g, &effects, &resources, part);
                 }
             }
             RenderItem::BungeeTarget(id) => {

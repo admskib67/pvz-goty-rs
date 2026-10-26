@@ -9,8 +9,9 @@
 //! Behaviour per ruslan831 decomp, `Lawn/LawnMower.cpp`
 //! (`LawnMowerInitialize`, `UpdatePool`, `MowZombie`, `Update`, `Die`,
 //! `Draw`, `StartMower`, `GetLawnMowerAttackRect`) and
-//! `ReanimatorCache::MakeCachedMowerFrame`/`DrawCachedMower`. The roof's
-//! cleaner and the super mower aren't ported, and a mower can't be squished.
+//! `ReanimatorCache::MakeCachedMowerFrame`/`DrawCachedMower`, `SquishMower`.
+//! On the roof (once the store's Roof Cleaner is bought) it's the roof cleaner,
+//! and the boss's fireballs squish a mower flat. The super mower isn't ported.
 
 use sexy::data_array::{DataArray, Id};
 use sexy::reanim::LoopType;
@@ -31,6 +32,8 @@ pub enum LawnMowerState {
     RollingIn,
     Ready,
     Triggered,
+    /// Flattened by the boss's fireball; it goes after a while.
+    Squished,
 }
 
 /// `LawnMowerType`, the kinds ported so far.
@@ -39,6 +42,8 @@ pub enum LawnMowerType {
     Lawn,
     /// The pool cleaner: it drives through the water and eats zombies there.
     Pool,
+    /// The roof cleaner, which follows the roof's slope.
+    Roof,
 }
 
 /// `MowerHeight`: where a pool cleaner is between the lawn and the water.
@@ -66,6 +71,7 @@ pub struct LawnMower {
     pub dead: bool,
     rolling_in_counter: i32,
     chomp_counter: i32,
+    squished_counter: i32,
     altitude: f32,
     /// The mower's animation, once it's running.
     reanim: Option<ReanimationId>,
@@ -76,7 +82,9 @@ impl LawnMower {
     /// player has bought it, and any other row a lawn mower.
     pub fn new(board: &Board, row: i32) -> Self {
         let pool_row = board.plant_row[row as usize] == PlantRowType::Pool;
-        let kind = if pool_row && board.pool_cleaner {
+        let kind = if board.stage_has_roof() {
+            LawnMowerType::Roof
+        } else if pool_row && board.pool_cleaner {
             LawnMowerType::Pool
         } else {
             LawnMowerType::Lawn
@@ -95,6 +103,7 @@ impl LawnMower {
             dead: false,
             rolling_in_counter: 0,
             chomp_counter: 0,
+            squished_counter: 0,
             altitude: 0.0,
             reanim: None,
         }
@@ -119,6 +128,13 @@ impl LawnMower {
         wave_row_got_lawn_mowered: &mut [i32],
         fx: &mut Fx,
     ) {
+        if self.state == LawnMowerState::Squished {
+            self.squished_counter -= 1;
+            if self.squished_counter <= 0 {
+                self.die(fx.effects);
+            }
+            return;
+        }
         if self.state == LawnMowerState::RollingIn {
             self.rolling_in_counter += 1;
             self.pos_x = animate_curve_float(
@@ -142,7 +158,7 @@ impl LawnMower {
         for (id, zombie) in zombies.iter_mut() {
             // Behaviour per ruslan831 decomp, LawnMower::Update: a zombie a
             // tangle kelp is dragging under isn't mowed.
-            if zombie.row != self.row || zombie.phase == ZombiePhase::Mowered || kelp_targets.contains(&id) {
+            if zombie.row != self.row || zombie.is_boss() || zombie.phase == ZombiePhase::Mowered || kelp_targets.contains(&id) {
                 continue;
             }
             if !zombie.effected_by_damage(127) {
@@ -288,7 +304,7 @@ impl LawnMower {
                 self.chomp_counter = 25;
             }
             LawnMowerState::Triggered => self.chomp_counter = 50,
-            LawnMowerState::RollingIn => {}
+            LawnMowerState::RollingIn | LawnMowerState::Squished => {}
         }
         match self.kind {
             LawnMowerType::Pool => {
@@ -302,7 +318,7 @@ impl LawnMower {
                 self.play_track(fx, track, LoopType::PlayOnceAndHold, 10, 35.0);
                 zombie.die_with_loot(fx);
             }
-            LawnMowerType::Lawn => {
+            LawnMowerType::Lawn | LawnMowerType::Roof => {
                 fx.sounds.play_foley(FoleyType::Splat);
                 zombie.mow_down(fx);
             }
@@ -319,29 +335,57 @@ impl LawnMower {
         if self.state == LawnMowerState::Triggered {
             return;
         }
-        // The running mower is a reanimation of its own.
-        let (ty, track, scale, rate) = match self.kind {
-            LawnMowerType::Lawn => (ReanimationType::LawnMower, "anim_normal", 0.85, 70.0),
-            LawnMowerType::Pool => (ReanimationType::PoolCleaner, "anim_land", 0.8, 35.0),
+        let rate = if self.kind == LawnMowerType::Pool { 35.0 } else { 70.0 };
+        self.make_reanim(fx);
+        if let Some(reanim) = self.reanim.and_then(|id| fx.effects.get_mut(id)) {
+            reanim.anim_rate = rate;
+        }
+        match self.kind {
+            LawnMowerType::Lawn | LawnMowerType::Roof => fx.sounds.play_foley(FoleyType::Lawnmower),
+            LawnMowerType::Pool => fx.sounds.play_foley(FoleyType::PoolCleaner),
+        }
+        wave_row_got_lawn_mowered[self.row as usize] = current_wave;
+        self.state = LawnMowerState::Triggered;
+    }
+
+    /// The running mower is a reanimation of its own (`LawnMowerInitialize`);
+    /// it stands still until the mower starts.
+    fn make_reanim(&mut self, fx: &mut Fx) {
+        if self.reanim.is_some() {
+            return;
+        }
+        let (ty, track, scale) = match self.kind {
+            LawnMowerType::Lawn => (ReanimationType::LawnMower, Some("anim_normal"), 0.85),
+            LawnMowerType::Pool => (ReanimationType::PoolCleaner, Some("anim_land"), 0.8),
+            LawnMowerType::Roof => (ReanimationType::RoofCleaner, None, 0.85),
         };
         if let Ok((id, reanim)) = fx.effects.add_reanimation(0.0, 18.0, ty, fx.res, fx.images) {
-            reanim.anim_rate = rate;
+            reanim.anim_rate = 0.0;
             reanim.loop_type = LoopType::Loop;
             reanim.is_attachment = true;
             reanim.override_scale(scale, scale);
-            reanim.set_frames_for_layer(track);
+            if let Some(track) = track {
+                reanim.set_frames_for_layer(track);
+            }
             if self.kind == LawnMowerType::Pool {
                 // Its tracks keep their last frame, so it stays whole in the water.
                 reanim.set_truncate_disappearing_frames(None, false);
             }
             self.reanim = Some(id);
         }
-        match self.kind {
-            LawnMowerType::Lawn => fx.sounds.play_foley(FoleyType::Lawnmower),
-            LawnMowerType::Pool => fx.sounds.play_foley(FoleyType::PoolCleaner),
+    }
+
+    /// `LawnMower::SquishMower`: the boss's fireball flattens it.
+    #[allow(dead_code, reason = "the boss isn't ported yet; tests squish a mower")]
+    pub fn squish(&mut self, fx: &mut Fx) {
+        self.make_reanim(fx);
+        if let Some(reanim) = self.reanim.and_then(|id| fx.effects.get_mut(id)) {
+            reanim.override_scale(0.85, 0.22);
+            reanim.set_position(-11.0, 65.0);
         }
-        wave_row_got_lawn_mowered[self.row as usize] = current_wave;
-        self.state = LawnMowerState::Triggered;
+        self.state = LawnMowerState::Squished;
+        self.squished_counter = 500;
+        fx.sounds.play_foley(FoleyType::Squish);
     }
 
     /// `LawnMower::Die`.
@@ -364,29 +408,43 @@ impl LawnMower {
         if !self.visible {
             return;
         }
-        if self.height == MowerHeight::Land {
+        if self.height == MowerHeight::Land && self.state != LawnMowerState::Squished {
             let shadow = if board.stage_is_night() {
                 "IMAGE_PLANTSHADOW2"
             } else {
                 "IMAGE_PLANTSHADOW"
             };
             // The pool cleaner's shadow sits up and to the left of a mower's.
-            let (dx, dy) = if self.kind == LawnMowerType::Pool {
-                (-17.0, -8.0)
-            } else {
-                (0.0, 0.0)
+            let (dx, dy) = match self.kind {
+                LawnMowerType::Pool => (-17.0, -8.0),
+                LawnMowerType::Roof if self.state == LawnMowerState::Triggered => (-9.0, 0.0),
+                LawnMowerType::Roof => (-9.0, -36.0),
+                LawnMowerType::Lawn => (0.0, 0.0),
             };
+            let scale_y = if self.kind == LawnMowerType::Roof { 1.2 } else { 1.0 };
             if let Some(shadow) = res.image(shadow) {
-                g.draw_image(
+                g.draw_image_cel_center_scaled(
                     shadow,
                     self.pos_x - 7.0 + dx,
                     self.pos_y - self.altitude + 47.0 + dy,
+                    0,
+                    1.0,
+                    scale_y,
                 );
             }
         }
 
         let triggered = self.state == LawnMowerState::Triggered;
+        let running = triggered || self.state == LawnMowerState::Squished;
         let (mut x, mut y) = (self.pos_x + 6.0, self.pos_y - self.altitude);
+        if self.kind == LawnMowerType::Roof {
+            if triggered {
+                x -= 10.0;
+                y -= 4.0;
+            } else {
+                y -= 40.0;
+            }
+        }
         if self.kind == LawnMowerType::Pool {
             if triggered {
                 x -= 10.0;
@@ -403,7 +461,7 @@ impl LawnMower {
         {
             g.clip_rect(-50.0, -50.0, 150.0, 132.0 + self.altitude);
         }
-        match self.reanim.filter(|_| triggered) {
+        match self.reanim.filter(|_| running) {
             Some(id) => effects.draw(g, id, res),
             // DrawCachedMower: the cached frame is drawn 20 left of the mower's
             // origin, and the mower sits 10 into it (and 25 down in the pool).
@@ -417,6 +475,7 @@ impl LawnMower {
                     Some("anim_normal"),
                     0.85,
                 ),
+                LawnMowerType::Roof => draw_reanimator_frame(g, res, -10.0, 19.0, ReanimationType::RoofCleaner, None, 0.85),
                 LawnMowerType::Pool => draw_reanimator_frame(
                     g,
                     res,

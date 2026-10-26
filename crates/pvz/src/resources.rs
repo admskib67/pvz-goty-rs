@@ -106,6 +106,14 @@ impl GameResources {
         })
     }
 
+    /// Reads `LawnStrings.txt` now, as the loading thread does (for tests).
+    #[cfg(test)]
+    pub fn load_strings_now(&mut self) -> Result<(), String> {
+        let strings = self.files.read(STRINGS_PATH).ok_or(format!("{STRINGS_PATH} is missing"))?;
+        self.strings = StringTable::parse(&latin1_to_string(&strings)).map_err(|e| format!("{STRINGS_PATH}: {e}"))?;
+        Ok(())
+    }
+
     /// Raw bytes of a game file (pak first, then loose files).
     pub fn read_file(&self, path: &str) -> Option<Vec<u8>> {
         self.files.read(path).map(|b| b.into_owned())

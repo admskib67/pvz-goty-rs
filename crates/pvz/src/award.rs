@@ -47,6 +47,8 @@ pub(crate) enum AwardKind {
     WateringCan,
     /// `AWARD_HELP_ZOMBIENOTE`: the main menu's help, a note on how to play.
     HelpNote,
+    /// Adventure's end: the silver sunflower trophy.
+    Trophy,
 }
 
 impl AwardKind {
@@ -87,6 +89,12 @@ impl AwardScreen {
         Some(Self { level, kind, fade_in: 180, start_over: false, menu_over: false })
     }
 
+    /// The silver sunflower trophy for finishing adventure for the first time
+    /// (the player's level is back to 1).
+    pub fn trophy() -> Self {
+        Self { level: 1, kind: AwardKind::Trophy, fade_in: 180, start_over: false, menu_over: false }
+    }
+
     /// The help note from the main menu (`ShowAwardScreen(AWARD_HELP_ZOMBIENOTE)`).
     pub fn help(level: i32) -> Self {
         Self { level, kind: AwardKind::HelpNote, fade_in: 180, start_over: false, menu_over: false }
@@ -94,7 +102,7 @@ impl AwardScreen {
 
     fn menu_visible(&self) -> bool {
         // Hidden for the first few levels, and on the help note.
-        self.level > 3 && self.kind != AwardKind::HelpNote
+        self.level > 3 && !matches!(self.kind, AwardKind::HelpNote | AwardKind::Trophy)
     }
 
     /// `mStartButton`: x, y, width, height.
@@ -105,7 +113,7 @@ impl AwardScreen {
     const MENU_RECT: (f32, f32, f32, f32) = (677.0, 16.0, 111.0, 26.0);
 
     fn start_label(&self) -> &'static str {
-        if self.kind == AwardKind::HelpNote {
+        if matches!(self.kind, AwardKind::HelpNote | AwardKind::Trophy) {
             return "[MAIN_MENU_BUTTON]";
         }
         match self.level {
@@ -166,7 +174,8 @@ fn in_rect(p: Vec2, (x, y, w, h): (f32, f32, f32, f32)) -> bool {
 /// it closes), and the others go on to the next level.
 fn start_pressed(screen: &AwardScreen, next_state: &mut NextState<AppState>, dialogs: &mut Dialogs, res: &GameResources) {
     match screen.kind {
-        AwardKind::HelpNote => next_state.set(AppState::GameSelector),
+        // TODO: after the trophy come the credits.
+        AwardKind::HelpNote | AwardKind::Trophy => next_state.set(AppState::GameSelector),
         AwardKind::Almanac => do_almanac_dialog(dialogs, res, AlmanacStart::Index),
         _ => next_state.set(AppState::Board),
     }
@@ -294,6 +303,12 @@ fn draw_award(screen: Res<AwardScreen>, resources: Res<GameResources>, mut g: Re
             }
             if let Some(font) = res.font("FONT_DWARVENTODCRAFT24") {
                 g.tod_draw_string(font, 400, 70, &tr("[FOUND_NOTE]"), SexyColor::rgba(255, 200, 0, 255), Justify::Center);
+            }
+        }
+        AwardKind::Trophy => {
+            draw_bottom(g, res, &tr("[WIN_MESSAGE1]"), &tr("[SILVER_SUNFLOWER_TROPHY]"), &tr("[WIN_MESSAGE2]"));
+            if let Some(trophy) = res.image("IMAGE_SUNFLOWER_TROPHY") {
+                g.draw_image_cel_center_scaled(trophy, 325.0, 65.0, 0, 0.7, 0.7);
             }
         }
         AwardKind::HelpNote => {

@@ -40,6 +40,8 @@ pub enum CoinType {
     CarKeys,
     Taco,
     WateringCan,
+    /// The silver sunflower trophy the last level ends with (`COIN_AWARD_SILVER_SUNFLOWER`).
+    SilverSunflower,
     /// Worth 1, 5 and 100 coins (`COIN_SILVER`, `COIN_GOLD`, `COIN_DIAMOND`).
     Silver,
     Gold,
@@ -55,6 +57,7 @@ impl CoinType {
             Self::CarKeys => Some("IMAGE_CARKEYS"),
             Self::Taco => Some("IMAGE_TACO"),
             Self::WateringCan => Some("IMAGE_WATERINGCAN"),
+            Self::SilverSunflower => Some("IMAGE_SUNFLOWER_TROPHY"),
             _ => None,
         }
     }
@@ -70,6 +73,8 @@ pub enum CoinMotion {
     FromPlant,
     /// Money and awards that pop out of a dead zombie (`COIN_MOTION_COIN`).
     Coin,
+    /// What the boss drops as he falls (`COIN_MOTION_FROM_BOSS`).
+    FromBoss,
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +168,7 @@ impl Coin {
             let image = match ty {
                 CoinType::Shovel => "IMAGE_SHOVEL",
                 CoinType::FinalSeedPacket => "IMAGE_SEEDS",
+                CoinType::SilverSunflower => "IMAGE_SUNFLOWER_TROPHY",
                 _ => ty.award_image().unwrap_or("IMAGE_SEEDS"),
             };
             if let Some(image) = res.image(image) {
@@ -225,6 +231,13 @@ impl Coin {
                 coin.ground_y = y + 15.0 + rng.next_range(20) as f32;
                 coin.scale = 0.4;
             }
+            CoinMotion::FromBoss => {
+                coin.vel_y = -5.0;
+                coin.vel_x = -3.0;
+                coin.pos_x = 750.0;
+                coin.pos_y = if ty == CoinType::SilverSunflower { 130.0 } else { 245.0 };
+                coin.ground_y = coin.pos_y + 40.0;
+            }
             CoinMotion::Coin => {
                 coin.vel_y = -3.0 - rng.range_f32(0.0, 2.0);
                 coin.vel_x = -0.5 + rng.range_f32(0.0, 1.0);
@@ -258,6 +271,7 @@ impl Coin {
                 | CoinType::CarKeys
                 | CoinType::Taco
                 | CoinType::WateringCan
+                | CoinType::SilverSunflower
         )
     }
 
@@ -407,11 +421,11 @@ impl Coin {
             self.pos_y += self.vel_y;
             if self.motion == CoinMotion::FromPlant {
                 self.vel_y += 0.09;
-            } else if self.motion == CoinMotion::Coin {
+            } else if matches!(self.motion, CoinMotion::Coin | CoinMotion::FromBoss) {
                 self.vel_y += 0.15;
             }
             self.pos_x += self.vel_x;
-            if self.pos_x > BOARD_WIDTH as f32 - self.width {
+            if self.pos_x > BOARD_WIDTH as f32 - self.width && self.motion != CoinMotion::FromBoss {
                 self.pos_x = BOARD_WIDTH as f32 - self.width;
                 self.vel_x = -0.4 - rng.range_f32(0.0, 0.4);
             } else if self.pos_x < 0.0 {
@@ -545,7 +559,13 @@ impl Coin {
                 g.set_colorize_images(true);
                 g.set_color(crate::graphics::SexyColor::rgba(v, v, v, 255));
             }
-            g.draw_image_cel_center_scaled(image, self.pos_x, self.pos_y, 0, self.scale, self.scale);
+            if self.ty == CoinType::SilverSunflower {
+                // Behaviour per ruslan831 decomp, Coin::Draw: the trophy is drawn at 0.6.
+                let scale = self.scale * 0.6;
+                g.draw_image_cel_center_scaled(image, self.pos_x - 5.0, self.pos_y, 0, scale, scale);
+            } else {
+                g.draw_image_cel_center_scaled(image, self.pos_x, self.pos_y, 0, self.scale, self.scale);
+            }
             g.pop_state();
         }
         if self.ty == CoinType::FinalSeedPacket

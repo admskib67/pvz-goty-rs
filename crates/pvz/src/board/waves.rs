@@ -29,7 +29,7 @@ use super::tutorial::{AdviceType, TutorialState};
 use super::zombie::{Fx, NUM_BACKUP_DANCERS, Zombie, ZombieEnv};
 use crate::graphics::{Graphics, SexyRect};
 
-use super::{BackgroundType, Board, MAX_GRID_SIZE_Y, PlantRowType, make_render_order, render_layer};
+use super::{BackgroundType, Board, GameScene, MAX_GRID_SIZE_Y, PlantRowType, make_render_order, render_layer};
 
 const ZOMBIE_COUNTDOWN_FIRST_WAVE: i32 = 1800;
 const ZOMBIE_COUNTDOWN: i32 = 2500;
@@ -668,6 +668,10 @@ impl Board {
             pool_rows: self.plant_row.map(|r| r == PlantRowType::Pool),
             ice_min_x: self.ice_min_x,
             ladders: self.ladder_grid(),
+            scene_intro: self.scene == GameScene::LevelIntro,
+            open_rows: std::array::from_fn(|row| self.row_can_have_zombie_type(row as i32, ZombieType::Normal)),
+            boss_bungees_done: self.boss_bungees_done(),
+            final_boss: self.is_final_boss_level(),
             zombies_on_screen: self
                 .zombies
                 .iter()
@@ -755,6 +759,10 @@ impl Board {
         if self.has_level_award_dropped() {
             return;
         }
+        // Challenge::UpdateSpawning: the boss level has no waves.
+        if self.is_final_boss_level() {
+            return;
+        }
         if self.is_whack_a_zombie_level() {
             let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
             self.whack_spawning(&mut fx);
@@ -827,16 +835,21 @@ impl Board {
 impl Board {
     /// `Board::HasProgressMeter`.
     pub fn has_progress_meter(&self) -> bool {
-        self.waves.progress_meter_width != 0
+        self.is_final_boss_level() || self.waves.progress_meter_width != 0
     }
 
     /// `Board::ProgressMeterHasFlags`.
     fn progress_meter_has_flags(&self) -> bool {
-        !(self.first_time_adventure && self.level == 1)
+        !(self.first_time_adventure && self.level == 1) && !self.is_final_boss_level()
     }
 
     /// `Board::UpdateProgressMeter`: creeps towards where the level is.
     pub(super) fn update_progress_meter(&mut self) {
+        // The final boss level's meter is his health.
+        if self.is_final_boss_level() {
+            self.waves.progress_meter_width = self.boss_progress();
+            return;
+        }
         let w = &mut self.waves;
         if w.current_wave == 0 || w.num_waves < 2 {
             return;
@@ -913,7 +926,10 @@ impl Board {
         if let Some(label) = res.image("IMAGE_FLAGMETERLEVELPROGRESS") {
             g.draw_image(label, 638.0, 589.0);
         }
-        // The zombie head marks how far along it is.
+        // The zombie head marks how far along it is (not on the boss's bar).
+        if self.is_final_boss_level() {
+            return;
+        }
         let head = sexy::tod::animate_curve(0, 150, self.waves.progress_meter_width, 0, 135, sexy::tod::TodCurve::Linear);
         g.draw_image_cel(parts, (cel_w - head + 580) as f32, 572.0, 0, 0);
     }

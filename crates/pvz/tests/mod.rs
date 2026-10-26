@@ -12,6 +12,8 @@
 //! repeat exactly.
 
 mod almanac;
+mod balloon;
+mod boss;
 mod butter;
 mod fog;
 mod levels;
@@ -63,6 +65,7 @@ fn shared() -> Option<MutexGuard<'static, Shared>> {
         let files = game_files()?;
         let mut resources = GameResources::new(files).map_err(|e| eprintln!("can't read the game's resources: {e}")).ok()?;
         let mut images = Assets::<Image>::default();
+        resources.load_strings_now().map_err(|e| eprintln!("can't load the strings: {e}")).ok()?;
         for group in [INIT_GROUP, "LoadingImages"] {
             if let Err(e) = resources.load_group_now(group, &mut images) {
                 eprintln!("can't load {group}: {e}");
@@ -133,6 +136,15 @@ impl TestBoard {
     /// Like [`Self::new`], with the player adjusted first (say, what they've
     /// bought from the store).
     pub fn with_player(stage: &str, adjust: impl FnOnce(&mut PlayerInfo)) -> Option<Self> {
+        Self::build(stage, adjust, false)
+    }
+
+    /// Adventure level `stage` as the intro starts, to be run through.
+    pub fn at_intro(stage: &str) -> Option<Self> {
+        Self::build(stage, |_| {}, true)
+    }
+
+    fn build(stage: &str, adjust: impl FnOnce(&mut PlayerInfo), intro: bool) -> Option<Self> {
         let (area, sub) = stage.split_once('-').expect("stage like \"2-1\"");
         let level = (area.parse::<i32>().unwrap() - 1) * 10 + sub.parse::<i32>().unwrap();
         let mut shared = shared()?;
@@ -147,6 +159,22 @@ impl TestBoard {
         let Shared { resources, images } = &mut *shared;
         let mut rng = MtRand::new(1234);
         let mut board = Board::new(GameMode::Adventure, Some(&player), resources, images, &mut rng);
+        if intro {
+            board.draw_count = 1;
+            let mut music = Music::silent();
+            super::cutscene::start_level_intro(&mut board, resources, &mut music, "Tester");
+            let first_wave_count_down = board.waves.zombie_count_down;
+            return Some(Self {
+                board,
+                effects: EffectSystem::default(),
+                music,
+                world,
+                sounds,
+                shared,
+                waves: false,
+                first_wave_count_down,
+            });
+        }
         board.init_lawn_mowers();
         // Where the intro leaves the mowers.
         for mower in &mut board.lawn_mowers {

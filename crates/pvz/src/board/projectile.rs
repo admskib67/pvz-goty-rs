@@ -368,7 +368,7 @@ impl Projectile {
         let rect = self.rect();
         let mut best: Option<(i32, sexy::data_array::Id<Zombie>)> = None;
         for (id, zombie) in zombies.iter() {
-            if zombie.row != self.row || !zombie.effected_by_damage(self.damage_range_flags) {
+            if !zombie.in_row(self.row) || !zombie.effected_by_damage(self.damage_range_flags) {
                 continue;
             }
             // A snorkel swimming under the water is only hit by shots coming down on it.

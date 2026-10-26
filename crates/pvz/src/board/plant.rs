@@ -194,6 +194,9 @@ pub struct Plant {
     pub health: i32,
     max_health: i32,
     pub dead: bool,
+    /// `mSquished`: flattened by a gargantuar or a vehicle; it goes after `disappear_countdown`.
+    pub squished: bool,
+    disappear_countdown: i32,
     shake_offset_x: f32,
     state: PlantState,
     state_countdown: i32,
@@ -249,6 +252,7 @@ pub struct Lob {
 struct LobTarget {
     lead_x: f32,
     top: i32,
+    boss: bool,
     riding_dolphin: bool,
     swimming_snorkel: bool,
 }
@@ -310,6 +314,8 @@ impl Plant {
             health: 300,
             max_health: 300,
             dead: false,
+            squished: false,
+            disappear_countdown: 0,
             shake_offset_x: 0.0,
             state: PlantState::NotReady,
             state_countdown: 0,
@@ -521,6 +527,13 @@ impl Plant {
     ) {
         // Floating plants bob while the board runs (`PlantDrawHeightOffset`).
         self.bob = if self.on_water { pool_bob_offset(main_counter, self.col, self.row) } else { 0.0 };
+        if self.squished {
+            self.disappear_countdown -= 1;
+            if self.disappear_countdown < 0 {
+                self.die(effects);
+                return;
+            }
+        }
         self.update_abilities(zombies, actions, effects, row_y, open_rows, rng);
         self.animate(actions, effects, res, images, rng);
         if self.health < 0 {
@@ -649,9 +662,46 @@ impl Plant {
     /// `Plant::NotOnGround`: a jumping or landed squash, or a plant flying
     /// off with a bungee zombie, can't be reached.
     pub fn not_on_ground(&self) -> bool {
-        self.on_bungee == OnBungee::Rising
+        self.squished
+            || self.dead
+            || self.on_bungee == OnBungee::Rising
             || self.seed == SeedType::Squash
                 && matches!(self.state, PlantState::SquashRising | PlantState::SquashFalling | PlantState::SquashDoneFalling)
+    }
+
+    /// `Plant::Squish`: stamped flat by a gargantuar or a vehicle. The instant
+    /// plants go off instead (and a mine that's armed), a squash that's ready
+    /// shrugs it off, and everything else stays flat for 5 s.
+    pub fn squish(&mut self, effects: &mut EffectSystem) -> bool {
+        if self.not_on_ground() {
+            return false;
+        }
+        if !self.is_asleep {
+            let goes_off = match self.seed {
+                SeedType::Cherrybomb | SeedType::Jalapeno | SeedType::Doomshroom | SeedType::Iceshroom => true,
+                SeedType::Potatomine => self.state != PlantState::NotReady,
+                _ => false,
+            };
+            if goes_off {
+                // It goes off on the plant's next update.
+                self.do_special_countdown = 1;
+                return false;
+            }
+        }
+        if self.seed == SeedType::Squash && self.state != PlantState::NotReady {
+            return false;
+        }
+        self.render_order = make_render_order(render_layer::GRAVE_STONE, self.row, 8);
+        self.squished = true;
+        self.disappear_countdown = 500;
+        // RemoveEffects: the plant stops moving, with nothing glowing on it.
+        if let Some(light) = self.light.take() {
+            effects.remove_particle(light);
+        }
+        if let Some(body) = self.body.and_then(|b| effects.get_mut(b)) {
+            body.anim_rate = 0.0;
+        }
+        true
     }
 
     /// A squash that is still looking or crouching can't be eaten (`Zombie::EatPlant`).
@@ -707,7 +757,7 @@ impl Plant {
         let attack = IRect::new(self.x + 80, self.y, 40, PLANT_SIZE);
         let mut best: Option<(i32, sexy::data_array::Id<Zombie>)> = None;
         for (id, zombie) in zombies.iter() {
-            if zombie.row != self.row || !zombie.effected_by_damage(9) || !zombie.has_head {
+            if !zombie.in_row(self.row) || !zombie.effected_by_damage(9) || !zombie.has_head {
                 continue;
             }
             let extra = if zombie.is_eating || self.state == PlantState::ChomperBiting { 60 } else { 0 };
@@ -796,7 +846,7 @@ impl Plant {
     fn find_potato_target(&self, zombies: &DataArray<Zombie>) -> bool {
         let attack = IRect::new(self.x, self.y, PLANT_SIZE - 25, PLANT_SIZE);
         zombies.iter().any(|(_, z)| {
-            if z.row != self.row || !z.effected_by_damage(77) || !z.has_head || z.is_vaulting() {
+            if !z.in_row(self.row) || !z.effected_by_damage(77) || !z.has_head || z.is_vaulting() {
                 return false;
             }
             let extra = if z.is_eating { 30 } else { 0 };
@@ -880,7 +930,7 @@ impl Plant {
         open_rows: &[bool; super::MAX_GRID_SIZE_Y],
         rng: &mut MtRand,
     ) {
-        if self.dead || self.is_asleep || self.on_bungee != OnBungee::No {
+        if self.dead || self.squished || self.is_asleep || self.on_bungee != OnBungee::No {
             return;
         }
         self.update_shooting(zombies, actions, effects);
@@ -1026,7 +1076,7 @@ impl Plant {
         let attack = self.attack_rect();
         let mut closest: Option<(i32, sexy::data_array::Id<Zombie>)> = None;
         for (id, zombie) in zombies.iter() {
-            if zombie.row != self.row || !zombie.has_head || !zombie.effected_by_damage(Self::SQUASH_DAMAGE_RANGE) {
+            if !zombie.in_row(self.row) || !zombie.has_head || !zombie.effected_by_damage(Self::SQUASH_DAMAGE_RANGE) {
                 continue;
             }
             let rect = zombie.zombie_rect();
@@ -1234,7 +1284,7 @@ impl Plant {
             return;
         }
         let nearby = zombies.iter().any(|(_, z)| {
-            (z.row - self.row).abs() <= 1
+            (z.is_boss() || (z.row - self.row).abs() <= 1)
                 && !z.is_dead_or_dying()
                 && !z.mind_controlled
                 && super::circle_rect_overlap(self.x, self.y + 20, 120, z.zombie_rect())
@@ -1369,6 +1419,7 @@ impl Plant {
         Some(LobTarget {
             lead_x: zombie.target_lead_x(50.0),
             top: zombie.zombie_rect().y,
+            boss: zombie.is_boss(),
             riding_dolphin: zombie.phase == super::zombie::ZombiePhase::DolphinRiding,
             swimming_snorkel: zombie.phase == super::zombie::ZombiePhase::SnorkelWalkingInPool,
         })
@@ -1379,7 +1430,7 @@ impl Plant {
         let attack = self.attack_rect();
         let mut best: Option<(i32, sexy::data_array::Id<Zombie>)> = None;
         for (id, zombie) in zombies.iter() {
-            if zombie.row != row || !zombie.effected_by_damage(self.target_flags()) {
+            if !zombie.in_row(row) || !zombie.effected_by_damage(self.target_flags()) {
                 continue;
             }
             if self.seed == SeedType::ExplodeONut && zombie.phase == super::zombie::ZombiePhase::PoleInVault {
@@ -1614,7 +1665,9 @@ impl Plant {
                     if t.swimming_snorkel {
                         range_x -= 40.0;
                     }
-                    (range_x, (t.top - y) as f32)
+                    // At the boss, the shot flies to the level of the lawn's right end (`Plant::Fire`).
+                    let range_y = if t.boss { (self.y - (5 - self.col).max(0) * 20 - y) as f32 } else { (t.top - y) as f32 };
+                    (range_x, range_y)
                 }
                 None => (700.0 - x as f32, 0.0),
             };
@@ -1655,6 +1708,12 @@ impl Plant {
                 offset_y += 12.0;
             }
             _ => {}
+        }
+        // Behaviour per ruslan831 decomp, Plant::Draw: a squished plant is drawn
+        // at a quarter of its height, lying on the ground.
+        if self.squished {
+            scale_y *= 0.25;
+            offset_y += 70.0 + if self.seed == SeedType::Flowerpot { -15.0 } else { 0.0 } + if self.seed == SeedType::InstantCoffee { -20.0 } else { 0.0 };
         }
         // A grave buster sinks into the grave it's eating.
         if self.state == PlantState::GravebusterEating {
@@ -1788,7 +1847,9 @@ impl Plant {
         let airborne = self.seed == SeedType::Squash
             && matches!(self.state, PlantState::SquashRising | PlantState::SquashFalling | PlantState::SquashDoneFalling);
         let (shadow_x, shadow_y) = if airborne { ((self.home.0 - self.x) as f32, (self.home.1 - self.y) as f32) } else { (0.0, 0.0) };
-        self.draw_shadow(g, shadow_x, shadow_y + offset_y, stage_is_night, res);
+        if !self.squished {
+            self.draw_shadow(g, shadow_x, shadow_y + offset_y, stage_is_night, res);
+        }
         if let Some(body) = self.body {
             effects.draw(g, body, res);
         }

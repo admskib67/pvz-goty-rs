@@ -15,6 +15,7 @@ use sexy::tod::{TodCurve, animate_curve};
 
 use crate::audio::{FoleyType, Music, MusicTune, Sounds};
 use crate::particle::ParticleEffect;
+use crate::plant::SeedType;
 use crate::reanim::{EffectSystem, ReanimationType};
 use crate::resources::GameResources;
 
@@ -22,7 +23,7 @@ use super::message::MessageStyle;
 use super::tutorial::TutorialState;
 use super::{
     BOARD_IMAGE_WIDTH_OFFSET, BOARD_OFFSET, BOARD_WIDTH, BackgroundType, Board, GameScene, SEED_BANK_OFFSET_X,
-    SEED_BANK_OFFSET_X_END, make_render_order, render_layer,
+    SEED_BANK_OFFSET_X_END, GameMode, make_render_order, render_layer,
 };
 
 const TIME_PAN_RIGHT_START: i32 = 1500;
@@ -68,6 +69,7 @@ pub struct CutScene {
     scrolled_left: bool,
     lawn_mower_time: i32,
     placed_lawn_items: bool,
+    placed_flower_pots: bool,
     /// `mSeedChoosing`: the intro's clock waits while seeds are picked.
     pub(super) seed_choosing: bool,
     /// The brains graphic of the lost-level cutscene.
@@ -82,6 +84,10 @@ impl CutScene {
 
     /// `ShowZombieWalking`: the zombie that won walks in once the view has
     /// panned to the house.
+    pub fn time(&self) -> i32 {
+        self.cutscene_time
+    }
+
     pub fn show_zombie_walking(&self) -> bool {
         self.cutscene_time > TIME_PAN_RIGHT_START
     }
@@ -153,6 +159,17 @@ pub(super) fn crazy_dave_dialog_start(board: &Board) -> i32 {
         // Behaviour per ruslan831 decomp, CutScene::StartLevelIntro: 3-5's talk
         // about the zombies' small numbers, on every visit.
         701
+    } else if first_time && level == 31 {
+        // Behaviour per ruslan831 decomp, CutScene::StartLevelIntro: 4-1's
+        // fog story, and 5-1's roof warning.
+        801
+    } else if first_time && level == 41 {
+        1201
+    } else if board.is_final_boss_level() {
+        // Behaviour per ruslan831 decomp, CutScene::StartLevelIntro: on the
+        // last level he warns about the boss and is carried off. (The
+        // original skips it when the level is replayed after losing it.)
+        2300
     } else {
         -1
     }
@@ -198,8 +215,12 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
     // TODO: fog and the boss.
     cs.crazy_dave_dialog_start = dave_start;
     cs.crazy_dave_time = if cs.crazy_dave_dialog_start != -1 { TIME_EARLY_DAVE_LEAVE_END - TIME_PAN_RIGHT_START } else { 0 };
+    if cs.crazy_dave_time > 0 && level == super::FINAL_LEVEL {
+        // He's taken a good while: the bungee carries him off.
+        cs.crazy_dave_time += 4000;
+    }
     cs.fog_time = 0;
-    cs.boss_time = 0;
+    cs.boss_time = if level == super::FINAL_LEVEL && board.mode == GameMode::Adventure { 4000 } else { 0 };
 
     board.x = if cs.is_scrolled_left_at_start() { BOARD_OFFSET } else { 0 };
     board.player_name = player_name.to_owned();
@@ -348,7 +369,35 @@ fn place_lawn_items(board: &mut Board) {
     }
     board.cut_scene.placed_lawn_items = true;
     board.init_lawn_mowers();
-    // TODO: flower pots on the roof, and the rake.
+    // TODO: the rake.
+}
+
+/// `CutScene::AddFlowerPots`: the roof starts with pots in its first columns.
+fn add_flower_pots(
+    board: &mut Board,
+    effects: &mut EffectSystem,
+    res: &mut GameResources,
+    images: &mut Assets<Image>,
+    sounds: &mut Sounds,
+) {
+    if board.cut_scene.placed_flower_pots {
+        return;
+    }
+    board.cut_scene.placed_flower_pots = true;
+    let columns = match board.level {
+        41 => 5,
+        42 => 4,
+        43..=50 => 3,
+        _ if board.stage_has_roof() => 3,
+        _ => 0,
+    };
+    for x in 0..columns {
+        for y in 0..super::MAX_GRID_SIZE_Y as i32 {
+            if board.can_plant_at(x, y, SeedType::Flowerpot) == super::cursor::PlantingReason::Ok {
+                board.new_plant(x, y, SeedType::Flowerpot, effects, res, images, sounds.rng());
+            }
+        }
+    }
 }
 
 /// The start of `CutScene::AnimateBoard`: Dave walks in, starts talking and
@@ -403,6 +452,13 @@ pub(super) fn advance_crazy_dave_dialog(
     let vars = board.dave_vars();
     if !board.dave.advance_text(&vars, effects, res, images, sounds) {
         board.dave.leave(effects, sounds);
+        if board.is_final_boss_level() {
+            // Behaviour per ruslan831 decomp, CutScene::AdvanceCrazyDaveDialog: a
+            // zombie reaches in and grabs him.
+            board.dave.grab(effects);
+            sounds.play_sample("SOUND_BUNGEE_SCREAM");
+            return true;
+        }
         return !board.cut_scene.is_scrolled_left_at_start();
     }
     match board.dave.message_index {
@@ -536,8 +592,19 @@ fn animate_board(
         board.add_grave_stone_particles(sounds);
     }
 
-    if time == pan_left_start {
+    // The final boss level sets up its lawn before anything else.
+    if time == pan_left_start || (board.is_final_boss_level() && time > 0) {
         place_lawn_items(board);
+        add_flower_pots(board, effects, res, images, sounds);
+    }
+
+    // Dr. Zomboss steps onto the lawn.
+    if cs.boss_time > 0 && time == TIME_READY_SET_PLANT_START + cs.lawn_mower_time + dave {
+        let mut fx = super::zombie::Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+        board.play_boss_enter(&mut fx);
+    }
+    if board.is_final_boss_level() && time == bank_on_start {
+        music.make_sure_music_is_playing(board.game_music());
     }
 
     // The mowers roll in, bottom row first.
@@ -567,9 +634,11 @@ fn animate_board(
             Err(e) => error!("{e}"),
         }
         sounds.play_sample("SOUND_READYSETPLANT");
-        music.fade_out(150);
+        if !board.is_final_boss_level() {
+            music.fade_out(150);
+        }
     }
-    if cs.ready_set_plant_time == 0 && time == ready_set_plant - 2000 {
+    if cs.ready_set_plant_time == 0 && time == ready_set_plant - 2000 && !board.is_final_boss_level() {
         music.fade_out(200);
     }
 }

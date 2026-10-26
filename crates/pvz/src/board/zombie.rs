@@ -43,6 +43,9 @@ use crate::zombie::ZombieType;
 use super::plant::Plant;
 use super::{BackgroundType, make_render_order, render_layer};
 
+mod boss;
+pub use boss::{BossPart, BossRequest, BossState, NUM_BOSS_BUNGEES};
+
 /// `ZOMBIE_START_RANDOM_OFFSET`.
 const START_RANDOM_OFFSET: u32 = 40;
 /// `TICKS_BETWEEN_EATS` and `DAMAGE_PER_EAT`.
@@ -255,6 +258,33 @@ pub enum ZombiePhase {
     ImpGettingThrown,
     /// ...and landing on its feet.
     ImpLanding,
+    /// The balloon zombie floating over the plants...
+    BalloonFlying,
+    /// ...its balloon popped, it drops...
+    BalloonPopping,
+    /// ...and walks on foot.
+    BalloonWalking,
+    /// Dr. Zomboss coming in at the start of the level...
+    BossEnter,
+    /// ...standing about between attacks...
+    BossIdle,
+    /// ...dropping a zombie in a row...
+    BossSpawning,
+    /// ...stomping the back rows...
+    BossStomping,
+    /// ...lowering three bungee zombies...
+    BossBungeesEnter,
+    BossBungeesDrop,
+    BossBungeesLeave,
+    /// ...dropping the vehicle on a block of plants...
+    BossDropRv,
+    /// ...and lowering his head, spitting a fireball or an iceball, and
+    /// raising it again. Only then can he be hurt.
+    BossHeadEnter,
+    BossHeadIdleBeforeSpit,
+    BossHeadSpit,
+    BossHeadIdleAfterSpit,
+    BossHeadLeave,
 }
 
 /// What the board tells its zombies each tick.
@@ -282,6 +312,14 @@ pub struct ZombieEnv {
     pub ice_min_x: [i32; super::MAX_GRID_SIZE_Y],
     /// The ladders on the lawn.
     pub ladders: LadderGrid,
+    /// The level intro is playing (the boss stamps in while it does).
+    pub scene_intro: bool,
+    /// Which rows zombies can walk down (`RowCanHaveZombieType`).
+    pub open_rows: [bool; super::MAX_GRID_SIZE_Y],
+    /// `BossAreBungeesDone`: the bungees the boss dropped have come and gone.
+    pub boss_bungees_done: bool,
+    /// `IsFinalBossLevel`.
+    pub final_boss: bool,
 }
 
 impl ZombieEnv {
@@ -300,6 +338,10 @@ impl ZombieEnv {
             pool_rows: [false; super::MAX_GRID_SIZE_Y],
             ice_min_x: [super::BOARD_ICE_START; super::MAX_GRID_SIZE_Y],
             ladders: [[false; super::MAX_GRID_SIZE_Y]; super::MAX_GRID_SIZE_X],
+            scene_intro: false,
+            open_rows: [true; super::MAX_GRID_SIZE_Y],
+            boss_bungees_done: false,
+            final_boss: false,
         }
     }
 
@@ -320,6 +362,8 @@ pub enum ZombieHeight {
     UpLadder,
     /// ...and dropping down the other side.
     Falling,
+    /// The zombie that won on the roof, dropping down the chimney.
+    InToChimney,
 }
 
 /// The things a zombie touches besides itself and the plants.
@@ -565,6 +609,20 @@ pub struct Zombie {
     body: Option<ReanimationId>,
     /// The flag zombie's flag.
     special_head: Option<ReanimationId>,
+    /// The balloon zombie's propeller hat.
+    propeller: Option<ReanimationId>,
+    /// Dr. Zomboss's state, and what he's asked the board for.
+    boss: BossState,
+    boss_requests: Vec<BossRequest>,
+    /// A bungee zombie's cord is cut off above this y while the boss holds it (`DrawBungeeCord`).
+    cord_clip: Option<f32>,
+    /// Where the zombie that won vanishes into the house: the left edge and
+    /// the height it's cut off at (`SetupDrawZombieWon`).
+    win_clip: (f32, f32),
+    /// `mFlyingHealth`: the balloon's, which must go before the zombie is hurt.
+    flying_health: i32,
+    /// `mBlowingAway`: a blover is blowing the zombie off the right of the lawn.
+    blowing_away: bool,
     /// Counts down to 0 as a dead zombie fades out, or -1.
     zombie_fade: i32,
     original_anim_rate: f32,
@@ -708,6 +766,13 @@ impl Zombie {
             attack_rect: IRect::new(50, 0, 20, 115),
             body: None,
             special_head: None,
+            propeller: None,
+            boss: BossState::default(),
+            boss_requests: Vec::new(),
+            cord_clip: None,
+            win_clip: (-123.0, 600.0),
+            flying_health: 0,
+            blowing_away: false,
             zombie_fade: -1,
             original_anim_rate: 0.0,
             mowered_reanim: None,
@@ -946,6 +1011,54 @@ impl Zombie {
                 z.zombie_rect = IRect::new(-20, 22, 110, 94);
                 z.attack_rect = IRect::new(0, 0, 0, 0);
             }
+            ZombieType::Balloon => {
+                // Behaviour per ruslan831 decomp, Zombie::ZombieInitialize (ZOMBIE_BALLOON).
+                if let Some(body) = z.body.and_then(|b| fx.effects.get_mut(b)) {
+                    for track in &mut body.tracks {
+                        track.truncate_disappearing_frames = false;
+                    }
+                }
+                if z.is_on_board() {
+                    z.altitude = 25.0;
+                    z.phase = ZombiePhase::BalloonFlying;
+                    let rate = z.body_anim_rate(fx.effects);
+                    z.play_zombie_reanim(fx.effects, "anim_idle", LoopType::Loop, 0, rate);
+                } else {
+                    let rate = fx.sounds.rng().range_f32(8.0, 10.0);
+                    z.original_anim_rate = rate;
+                    z.apply_anim_rate(fx.effects, rate);
+                }
+                if let Ok((propeller, reanim)) = fx.effects.add_reanimation(0.0, 0.0, ReanimationType::Balloon, fx.res, fx.images) {
+                    reanim.set_frames_for_layer("Propeller");
+                    reanim.loop_type = LoopType::LoopFullLastFrame;
+                    z.propeller = Some(propeller);
+                    if let Some(body) = z.body {
+                        fx.effects.attach_to_another(propeller, body, "hat");
+                    }
+                }
+                z.flying_health = 20;
+                z.zombie_rect = IRect::new(36, 30, 42, 115);
+                z.attack_rect = IRect::new(20, 30, 50, 115);
+                z.variant = false;
+            }
+            ZombieType::Boss => {
+                // Behaviour per ruslan831 decomp, Zombie::ZombieInitialize (ZOMBIE_BOSS).
+                z.pos_x = 0.0;
+                z.pos_y = 0.0;
+                z.zombie_rect = IRect::new(700, 80, 90, 430);
+                z.attack_rect = IRect::new(0, 0, 0, 0);
+                z.body_health = 40000;
+                z.variant = false;
+                if z.is_on_board() {
+                    z.play_zombie_reanim(fx.effects, "anim_enter", LoopType::PlayOnceAndHold, 0, 12.0);
+                    z.summon_counter = 500;
+                    z.boss.head_counter = 5000;
+                    z.phase = ZombiePhase::BossEnter;
+                } else {
+                    z.play_zombie_reanim(fx.effects, "anim_head_idle", LoopType::Loop, 0, 12.0);
+                }
+                z.boss_setup_reanim(fx);
+            }
             ZombieType::BackupDancer => {
                 if !z.is_on_board() {
                     z.play_zombie_reanim(fx.effects, "anim_armraise", LoopType::Loop, 0, 12.0);
@@ -999,6 +1112,7 @@ impl Zombie {
             ZombieType::Zamboni | ZombieType::Gargantuar => (render_layer::ZOMBIE, 8),
             ZombieType::Bobsled => (render_layer::ZOMBIE, 3),
             ZombieType::Bungee => (render_layer::GRAVE_STONE, 7),
+            ZombieType::Boss => (render_layer::TOP, 0),
             _ => (render_layer::ZOMBIE, 4),
         };
         make_render_order(layer, self.row, offset)
@@ -1141,13 +1255,14 @@ impl Zombie {
                     self.start_walk_anim(0, env, fx);
                 }
             }
-            ZombieHeight::Normal | ZombieHeight::UpLadder | ZombieHeight::Falling => {}
+            ZombieHeight::Normal | ZombieHeight::UpLadder | ZombieHeight::Falling | ZombieHeight::InToChimney => {}
         }
     }
 
     /// `Zombie::GetPosYBasedOnRow`.
     fn pos_y_based_on_row(&self, row: i32, env: &ZombieEnv) -> f32 {
-        super::pos_y_based_on_row(env.background, self.pos_x + 40.0, row) - 30.0
+        let y = super::pos_y_based_on_row(env.background, self.pos_x + 40.0, row) - 30.0;
+        if self.zombie_type == ZombieType::Balloon { y - 30.0 } else { y }
     }
 
     /// `Zombie::LoadReanim`: the body reanimation, walking.
@@ -1479,6 +1594,13 @@ impl Zombie {
             && !self.is_bobsled_team_with_sled()
             && !self.is_dead_or_dying()
             && !matches!(self.phase, ZombiePhase::RisingFromGrave | ZombiePhase::DancerRising)
+            && !self.mind_controlled
+            // The boss only feels it when his head's down.
+            && (!self.is_boss()
+                || matches!(
+                    self.phase,
+                    ZombiePhase::BossHeadIdleBeforeSpit | ZombiePhase::BossHeadIdleAfterSpit | ZombiePhase::BossHeadSpit
+                ))
     }
 
     /// `Zombie::CanBeFrozen`: frozen solid or buttered. Not in mid-leap or
@@ -1487,6 +1609,7 @@ impl Zombie {
         use ZombiePhase::*;
         self.can_be_chilled()
             && !matches!(self.phase, PoleInVault | DolphinIntoPool | DolphinInJump | SnorkelIntoPool | BobsledCrashing | ImpGettingThrown | ImpLanding)
+            && !self.is_flying()
             && (self.zombie_type != ZombieType::Bungee || self.phase == BungeeAtBottom)
     }
 
@@ -1514,8 +1637,7 @@ impl Zombie {
     }
 
     /// Whether it's stuck in butter.
-    #[cfg(test)]
-    pub(super) fn is_buttered(&self) -> bool {
+    pub fn is_buttered(&self) -> bool {
         self.buttered_counter > 0
     }
 
@@ -1569,13 +1691,13 @@ impl Zombie {
             self.die_with_loot(fx);
             return;
         }
-        if self.body_health >= 1800 {
+        if self.body_health >= 1800 || self.is_boss() {
             self.take_damage(1800, 18, env, fx);
             return;
         }
         if matches!(self.phase, ZombiePhase::Dying | ZombiePhase::Mowered | ZombiePhase::PoleInVault) {
             self.die_with_loot(fx);
-        } else if !self.has_head || self.zombie_type == ZombieType::Bungee {
+        } else if !self.has_head || self.zombie_type == ZombieType::Bungee || self.is_flying() {
             // Headless zombies (and bungee zombies) stay put, charred, for a few moments.
             self.apply_anim_rate(fx.effects, 0.0);
             self.original_anim_rate = 0.0;
@@ -1637,7 +1759,7 @@ impl Zombie {
         } else if self.is_dead_or_dying() {
             self.apply_anim_rate(effects, self.original_anim_rate);
         } else if self.is_eating {
-            self.apply_anim_rate(effects, if matches!(self.zombie_type, ZombieType::Polevaulter | ZombieType::Snorkel) { 20.0 } else { 36.0 });
+            self.apply_anim_rate(effects, if matches!(self.zombie_type, ZombieType::Polevaulter | ZombieType::Snorkel | ZombieType::Balloon) { 20.0 } else { 36.0 });
         } else if self.zombie_not_walking() {
             self.apply_anim_rate(effects, self.original_anim_rate);
         } else if let Some(track) = body.definition.find_track("_ground") {
@@ -1745,6 +1867,7 @@ impl Zombie {
                 image_offset_y -= 11.0;
             }
             ZombieType::Football => image_offset_y -= 16.0,
+            ZombieType::Balloon => image_offset_y += 17.0,
             ZombieType::Bungee => image_offset_x -= 18.0,
             ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => image_offset_y -= 8.0,
             ZombieType::DolphinRider => match self.phase {
@@ -1818,6 +1941,20 @@ impl Zombie {
         if self.zombie_type == ZombieType::Bungee && !matches!(self.phase, ZombiePhase::BungeeAtBottom | ZombiePhase::BungeeGrabbing) {
             return false;
         }
+        // Behaviour per ruslan831 decomp, Zombie::EffectedByDamage: the boss can
+        // only be hurt while his head is down, and not while it's on its way.
+        if self.is_boss() {
+            let time = self.body_anim_time;
+            if (self.phase == ZombiePhase::BossHeadEnter && time < 0.5) || (self.phase == ZombiePhase::BossHeadLeave && time > 0.5) {
+                return false;
+            }
+            if !matches!(
+                self.phase,
+                ZombiePhase::BossHeadIdleBeforeSpit | ZombiePhase::BossHeadIdleAfterSpit | ZombiePhase::BossHeadSpit
+            ) {
+                return false;
+            }
+        }
         if self.zombie_type != ZombieType::Bobsled && self.zombie_rect().x > WIDE_BOARD_WIDTH as i32 {
             return false;
         }
@@ -1830,6 +1967,7 @@ impl Zombie {
                 | ZombiePhase::SnorkelIntoPool
                 | ZombiePhase::DolphinIntoPool
                 | ZombiePhase::DolphinInJump
+                | ZombiePhase::BalloonPopping
         ) {
             return damage_range & damage_range::OFF_GROUND != 0;
         }
@@ -1837,7 +1975,10 @@ impl Zombie {
         if self.zombie_type == ZombieType::Snorkel && self.in_pool && !self.is_eating {
             return damage_range & damage_range::SUBMERGED != 0;
         }
-        // Nothing's flying or underground yet.
+        // Nothing's underground yet.
+        if self.is_flying() {
+            return damage_range & damage_range::FLYING != 0;
+        }
         damage_range & damage_range::GROUND != 0
     }
 
@@ -1881,7 +2022,7 @@ impl Zombie {
                 }
                 self.update_playing(plants, env, fx);
                 if self.zombie_type == ZombieType::Bungee {
-                    self.update_zombie_bungee(plants, fx);
+                    self.update_zombie_bungee(plants, env, fx);
                 }
                 self.animate(plants, fx);
             }
@@ -1914,8 +2055,12 @@ impl Zombie {
 
     /// `Zombie::Update` for the zombie that's walking into the house after
     /// the level was lost: the others stand still.
-    pub fn update_winner(&mut self, show_walking: bool, plants: &mut DataArray<Plant>, fx: &mut Fx) {
+    pub fn update_winner(&mut self, show_walking: bool, cutscene_time: i32, plants: &mut DataArray<Plant>, fx: &mut Fx) {
         self.age += 1;
+        // UpdateZombieChimney: on the roof it drops down the chimney.
+        if self.height == ZombieHeight::InToChimney {
+            self.altitude = animate_curve_float(4000, 5000, cutscene_time, 200.0, 0.0, TodCurve::EaseIn);
+        }
         if show_walking {
             self.update_zombie_walking(fx);
         }
@@ -1929,8 +2074,6 @@ impl Zombie {
     /// `Zombie::WalkIntoHouse`: the zombie that got in stands in the house's
     /// doorway. Day, night, pool and fog lawns share one height; the pool
     /// moves it 80 px left (10 for a football player) to the water's edge.
-    /// TODO: the roof and boss lawns end differently (their own positions
-    /// and chimney height); they still use the day's place.
     pub fn walk_into_house(&mut self, background: BackgroundType, env: &ZombieEnv, fx: &mut Fx) {
         self.from_wave = ZOMBIE_WAVE_WINNER;
         // Behaviour per ruslan831 decomp, Zombie::WalkIntoHouse.
@@ -1940,6 +2083,29 @@ impl Zombie {
             self.phase = ZombiePhase::Normal;
             self.attack_rect = IRect::new(50, 0, 20, 115);
             self.start_walk_anim(0, env, fx);
+        }
+        self.win_clip = match background {
+            BackgroundType::Day | BackgroundType::Night => (-123.0, 600.0),
+            BackgroundType::Pool | BackgroundType::Fog => (-172.0, 600.0),
+            BackgroundType::Roof | BackgroundType::Boss => (-220.0, 187.0),
+        };
+        if matches!(background, BackgroundType::Roof | BackgroundType::Boss) {
+            // The roof's house is a chimney the zombie drops into.
+            self.pos_x = -180.0;
+            self.pos_y = 250.0;
+            self.height = ZombieHeight::InToChimney;
+            self.render_order = make_render_order(render_layer::GRAVE_STONE, 0, 2);
+            match self.zombie_type {
+                ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => self.pos_y += 5.0,
+                ZombieType::Football => self.pos_x -= 14.0,
+                ZombieType::Zamboni => self.pos_x -= 28.0,
+                _ => {}
+            }
+            let has_idle = self.body.and_then(|b| fx.effects.get(b)).is_some_and(|b| b.definition.find_track("anim_idle").is_some());
+            if has_idle && self.zombie_type != ZombieType::Polevaulter {
+                self.play_zombie_reanim(fx.effects, "anim_idle", LoopType::Loop, 0, 15.0);
+            }
+            return;
         }
         self.pos_y = 290.0;
         self.render_order = make_render_order(render_layer::ZOMBIE, 2, 0);
@@ -1969,7 +2135,7 @@ impl Zombie {
 
     /// `Zombie::MowDown`.
     pub fn mow_down(&mut self, fx: &mut Fx) {
-        if self.dead || self.phase == ZombiePhase::Mowered {
+        if self.dead || self.phase == ZombiePhase::Mowered || self.is_boss() {
             return;
         }
         if self.zombie_type == ZombieType::Catapult {
@@ -2045,6 +2211,7 @@ impl Zombie {
         if self.groan_counter == 0
             && fx.sounds.rng().next_range(env.zombie_count.max(1) as u32) == 0
             && self.has_head
+            && !self.is_boss()
         {
             if self.zombie_type == ZombieType::Gargantuar {
                 fx.sounds.play_foley(FoleyType::LowGroan);
@@ -2087,6 +2254,7 @@ impl Zombie {
                 ZombieType::Catapult => self.update_zombie_catapult(plants, fx),
                 ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => self.update_zombie_gargantuar(plants, env, fx),
                 ZombieType::Imp => self.update_zombie_imp(env, fx),
+                ZombieType::Balloon => self.update_zombie_flyer(env, fx),
                 _ => {}
             }
             self.update_zombie_position(fx, env);
@@ -2097,6 +2265,10 @@ impl Zombie {
             } else if !self.is_bobsled_team_with_sled() {
                 self.check_if_prey_caught(plants, env, fx);
             }
+        }
+
+        if self.is_boss() {
+            self.update_boss(plants, env, fx);
         }
 
         // A zombie that's lost its head dies slowly.
@@ -2300,12 +2472,7 @@ impl Zombie {
             .find(|(_, p)| p.row == self.row && rect_overlap(attack, p.rect()) >= 20 && squishable(p))
             .map(|(_, p)| (p.col, p.row));
         if let Some((col, row)) = target {
-            for (_, plant) in plants.iter_mut() {
-                if plant.col == col && plant.row == row && !plant.dead {
-                    plant.die(fx.effects);
-                    fx.sounds.play_sample("SOUND_CHOMP");
-                }
-            }
+            self.squish_all_in_square(plants, col, row, fx);
         }
     }
 
@@ -2746,9 +2913,10 @@ impl Zombie {
     fn squish_all_in_square(&mut self, plants: &mut DataArray<Plant>, col: i32, row: i32, fx: &mut Fx) {
         for (_, plant) in plants.iter_mut() {
             if plant.col == col && plant.row == row && !plant.dead && plant.seed != crate::plant::SeedType::Spikerock {
-                // TODO: Plant::Squish leaves the plant flat for a moment.
-                plant.die(fx.effects);
                 self.ate_plant = Some((plant.seed, plant.col));
+                if plant.squish(fx.effects) {
+                    fx.sounds.play_foley(FoleyType::Squish);
+                }
             }
         }
     }
@@ -2853,6 +3021,54 @@ impl Zombie {
     }
 
     /// `Zombie::UpdateZombieFalling`.
+    /// `Zombie::IsFlying`: the balloon is up, or just popped.
+    pub fn is_flying(&self) -> bool {
+        matches!(self.phase, ZombiePhase::BalloonFlying | ZombiePhase::BalloonPopping)
+    }
+
+    /// `Zombie::TakeFlyingDamage`: the balloon takes the blow first; once it
+    /// is gone the zombie lands.
+    fn take_flying_damage(&mut self, damage: i32, flags: u32, env: &ZombieEnv, fx: &mut Fx) -> i32 {
+        if flags & damage::DOESNT_CAUSE_FLASH == 0 {
+            self.just_got_shot_counter = 25;
+        }
+        let actual = self.flying_health.min(damage);
+        self.flying_health -= actual;
+        if self.flying_health == 0 {
+            self.land_flyer(flags, env, fx);
+        }
+        damage - actual
+    }
+
+    /// `Zombie::LandFlyer`: the balloon pops and the zombie drops (or drowns).
+    fn land_flyer(&mut self, flags: u32, env: &ZombieEnv, fx: &mut Fx) {
+        if flags & damage::DOESNT_LEAVE_BODY == 0 && self.phase == ZombiePhase::BalloonFlying {
+            fx.sounds.play_sample("SOUND_BALLOON_POP");
+            self.phase = ZombiePhase::BalloonPopping;
+            self.play_zombie_reanim(fx.effects, "anim_pop", LoopType::PlayOnceAndHold, 20, 24.0);
+        }
+        if env.pool_rows.get(self.row as usize).copied().unwrap_or(false) {
+            self.die_with_loot(fx);
+        } else {
+            self.height = ZombieHeight::Falling;
+        }
+    }
+
+    /// `Zombie::UpdateZombieFlyer`: once the balloon's popped, it walks on.
+    fn update_zombie_flyer(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        if self.phase == ZombiePhase::BalloonPopping && self.body.and_then(|b| fx.effects.get(b)).is_some_and(|b| b.loop_count > 0) {
+            self.phase = ZombiePhase::BalloonWalking;
+            self.start_walk_anim(0, env, fx);
+        }
+    }
+
+    /// A blover blows the flyers away (`Plant::BlowAwayFliers`).
+    pub fn blow_away_if_flying(&mut self) {
+        if !self.is_dead_or_dying() && self.phase == ZombiePhase::BalloonFlying {
+            self.blowing_away = true;
+        }
+    }
+
     fn update_zombie_falling(&mut self) {
         self.altitude -= 1.0;
         if self.phase == ZombiePhase::PolePreVault {
@@ -2865,7 +3081,7 @@ impl Zombie {
     }
 
     /// `Zombie::UpdateZombieBungee`: dive, wait, grab, and spring back up.
-    fn update_zombie_bungee(&mut self, plants: &mut DataArray<Plant>, fx: &mut Fx) {
+    fn update_zombie_bungee(&mut self, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
         // Behaviour per ruslan831 decomp, Zombie::UpdateZombieBungee.
         if self.is_dead_or_dying() || self.is_immobilized() {
             return;
@@ -2878,7 +3094,7 @@ impl Zombie {
                 if self.altitude <= thud && old_altitude > thud {
                     fx.sounds.play_foley(FoleyType::GrassStep);
                 }
-                self.bungee_landing(plants, fx);
+                self.bungee_landing(plants, env, fx);
             }
             ZombiePhase::BungeeAtBottom if self.phase_counter <= 0 => {
                 self.bungee_steal_target(plants, fx);
@@ -2903,8 +3119,9 @@ impl Zombie {
 
     /// `Zombie::BungeeLanding`: an umbrella leaf next to its square bounces
     /// it back up before it touches down.
-    fn bungee_landing(&mut self, plants: &mut DataArray<Plant>, fx: &mut Fx) {
-        if self.phase == ZombiePhase::BungeeDiving && self.altitude < 1500.0 {
+    fn bungee_landing(&mut self, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
+        // (The boss's bungees don't scream.)
+        if self.phase == ZombiePhase::BungeeDiving && self.altitude < 1500.0 && !env.final_boss {
             fx.sounds.play_foley(FoleyType::BungeeScream);
             self.phase = ZombiePhase::BungeeDivingScreaming;
         }
@@ -3172,10 +3389,19 @@ impl Zombie {
 
     /// `Zombie::UpdateZombiePosition`.
     fn update_zombie_position(&mut self, fx: &mut Fx, env: &ZombieEnv) {
-        if self.zombie_type == ZombieType::Bungee {
+        if matches!(self.zombie_type, ZombieType::Bungee | ZombieType::Boss) {
             return;
         }
         self.update_zombie_walking(fx);
+        // Behaviour per ruslan831 decomp, Zombie::UpdateZombiePosition: a
+        // blover sweeps the balloon off the lawn.
+        if self.blowing_away {
+            self.pos_x += 10.0;
+            if self.pos_x as i32 > 850 {
+                self.die_with_loot(fx);
+                return;
+            }
+        }
         let desired = self.pos_y_based_on_row(self.row, env);
         if self.pos_y < desired {
             self.pos_y += (desired - self.pos_y).min(1.0);
@@ -3187,14 +3413,14 @@ impl Zombie {
     /// `Zombie::UpdateZombieWalking`: the walk animation's `_ground` track
     /// says how far to move each tick.
     fn update_zombie_walking(&mut self, fx: &mut Fx) {
-        if self.zombie_not_walking() {
+        if self.zombie_not_walking() || self.is_boss() {
             return;
         }
         let body = self.body.and_then(|b| fx.effects.get(b));
         let speed = match body {
             _ if self.is_vehicle() || self.is_bobsled_team_with_sled() => self.vel_x,
             _ if matches!(self.phase, ZombiePhase::PoleInVault | ZombiePhase::SnorkelIntoPool | ZombiePhase::DolphinInJump) => self.vel_x,
-            _ if matches!(self.phase, ZombiePhase::SnorkelWalkingInPool | ZombiePhase::DolphinRiding) => {
+            _ if matches!(self.phase, ZombiePhase::SnorkelWalkingInPool | ZombiePhase::DolphinRiding | ZombiePhase::BalloonFlying) => {
                 if self.is_moving_at_chilled_speed() { self.vel_x * 0.4 } else { self.vel_x }
             }
             // Behaviour per ruslan831 decomp, Zombie::UpdateZombieWalking: the walk's speed is scaled too.
@@ -3231,7 +3457,7 @@ impl Zombie {
     /// `Zombie::CheckIfPreyCaught`: every few ticks, bite whatever's in reach.
     fn check_if_prey_caught(&mut self, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
         // The gargantuar smashes rather than bites.
-        if matches!(self.zombie_type, ZombieType::Bungee | ZombieType::Gargantuar | ZombieType::RedeyeGargantuar) {
+        if matches!(self.zombie_type, ZombieType::Bungee | ZombieType::Gargantuar | ZombieType::RedeyeGargantuar) || self.is_flying() {
             return;
         }
         let ticks_between_eats = if self.chilled_counter > 0 { TICKS_BETWEEN_EATS * 2 } else { TICKS_BETWEEN_EATS };
@@ -3443,6 +3669,25 @@ impl Zombie {
         if self.zombie_type == ZombieType::Football && s < 1.0 {
             offset_y += 20.0 - 20.0 * s;
         }
+        // Behaviour per ruslan831 decomp, Zombie::UpdateReanim: a Zamboni or
+        // catapult shakes when it's nearly wrecked, and more as it dies.
+        if matches!(self.zombie_type, ZombieType::Zamboni | ZombieType::Catapult) && self.phase != ZombiePhase::Burned {
+            let anim_time = effects.get(body_id).map_or(0.0, |b| b.anim_time);
+            let range = if self.phase == ZombiePhase::Dying {
+                sexy::tod::animate_curve_float_time(0.7, 1.0, anim_time, 0.0, 1.0, TodCurve::EaseOut)
+            } else if self.body_health < 200 {
+                1.0
+            } else {
+                0.0
+            };
+            // Only how it looks, so a hash of the age stands in for the random generator.
+            let jitter = |salt: u32| {
+                let h = (self.age as u32).wrapping_add(salt).wrapping_mul(2_654_435_761);
+                ((h >> 16) & 0xffff) as f32 / 32767.5 - 1.0
+            };
+            offset_x += jitter(1) * range;
+            offset_y += jitter(7) * range;
+        }
         if facing_right {
             offset_x += 90.0 * s;
         }
@@ -3458,6 +3703,18 @@ impl Zombie {
         } else {
             ([255, 255, 255], None)
         };
+        // Behaviour per ruslan831 decomp, Zombie::DrawReanim: nearly dead, the
+        // boss pulses gray.
+        let mut tint = tint;
+        if self.is_boss() && self.phase != ZombiePhase::Dying && self.body_health < self.body_max_health / 10 {
+            let gray = animate_curve(0, 39, self.age % 40, 155, 255, TodCurve::Bounce) as u8;
+            tint = if self.chilled_counter > 0 || self.ice_trap_counter > 0 {
+                let cold = animate_curve(0, 39, self.age % 40, 65, 75, TodCurve::Bounce) as u8;
+                [cold, cold, gray]
+            } else {
+                [255, gray, gray]
+            };
+        }
         if self.just_got_shot_counter > 0 {
             let flash = (self.just_got_shot_counter * 10).clamp(0, 255) as u8;
             let base = extra.unwrap_or([0, 0, 0]);
@@ -3493,7 +3750,10 @@ impl Zombie {
             return;
         }
         let mut remaining = damage;
-        if self.shield_type != ShieldType::None && flags & damage::BYPASSES_SHIELD == 0 {
+        if self.is_flying() {
+            remaining = self.take_flying_damage(remaining, flags, env, fx);
+        }
+        if remaining > 0 && self.shield_type != ShieldType::None && flags & damage::BYPASSES_SHIELD == 0 {
             remaining = self.take_shield_damage(remaining, flags, env, fx);
             if flags & damage::HITS_SHIELD_AND_BODY != 0 {
                 remaining = damage;
@@ -3628,6 +3888,9 @@ impl Zombie {
     /// `Zombie::GetBodyDamageIndex`.
     #[allow(dead_code, reason = "damage states of the bigger zombies")]
     fn body_damage_index(&self) -> i32 {
+        if self.is_boss() {
+            return self.boss_damage_index();
+        }
         if self.body_health < self.body_max_health / 3 {
             2
         } else if self.body_health < self.body_max_health * 2 / 3 {
@@ -3708,7 +3971,12 @@ impl Zombie {
             self.apply_chill(false, fx);
         }
         let index_before = self.body_damage_index();
+        let health_before = self.body_health;
         self.body_health -= damage;
+        if self.is_boss() {
+            self.boss_take_damage(health_before, index_before, flags, fx);
+            return;
+        }
         if self.zombie_type == ZombieType::Zamboni {
             self.zamboni_damage(index_before, flags, fx);
             return;
@@ -3854,9 +4122,10 @@ impl Zombie {
 
     /// `Zombie::CanLoseBodyParts`, for the zombies ported so far.
     fn can_lose_body_parts(&self) -> bool {
-        !matches!(
+        !self.is_flying()
+            && !matches!(
             self.zombie_type,
-            ZombieType::Zamboni | ZombieType::Bungee | ZombieType::Catapult | ZombieType::Gargantuar | ZombieType::RedeyeGargantuar
+            ZombieType::Zamboni | ZombieType::Bungee | ZombieType::Catapult | ZombieType::Gargantuar | ZombieType::RedeyeGargantuar | ZombieType::Boss
         )
     }
 
@@ -3906,6 +4175,12 @@ impl Zombie {
                 "Zombie_outerarm_lower",
                 Some(("Zombie_imp_outerarm_upper", "IMAGE_REANIM_ZOMBIE_IMP_ARM1_BONE")),
                 Some("IMAGE_REANIM_ZOMBIE_IMP_ARM2"),
+            ),
+            ZombieType::Balloon => (
+                &["Zombie_outerarm_lower", "Zombie_outerarm_hand"],
+                "Zombie_outerarm_lower",
+                Some(("Zombie_outerarm_upper", "IMAGE_REANIM_ZOMBIE_BALLOON_OUTERARM_UPPER2")),
+                Some("IMAGE_REANIM_ZOMBIE_OUTERARM_HAND"),
             ),
             ZombieType::Ladder => (
                 &["Zombie_outerarm_lower", "Zombie_outerarm_hand"],
@@ -3967,6 +4242,10 @@ impl Zombie {
         if flags & damage::DOESNT_LEAVE_BODY != 0 {
             return;
         }
+        if self.zombie_type == ZombieType::Balloon {
+            self.reanim_show_prefix(fx, "anim_hat", RENDER_GROUP_HIDDEN);
+            self.reanim_show_prefix(fx, "hat", RENDER_GROUP_HIDDEN);
+        }
         if self.zombie_type == ZombieType::Flag {
             self.drop_flag(fx);
         } else if self.zombie_type == ZombieType::Polevaulter {
@@ -3986,6 +4265,7 @@ impl Zombie {
         let (effect, order) = match self.zombie_type {
             ZombieType::Newspaper => (ParticleEffect::ZombieNewspaperHead, self.render_order + 1),
             ZombieType::Dancer => (ParticleEffect::ZombieHead, self.render_order - 1),
+            ZombieType::Balloon => (ParticleEffect::ZombieBalloonHead, self.render_order + 1),
             _ => (ParticleEffect::ZombieHead, self.render_order + 1),
         };
         let image = match self.zombie_type {
@@ -4041,7 +4321,7 @@ impl Zombie {
             return;
         }
         let gargantuar = matches!(self.zombie_type, ZombieType::Gargantuar | ZombieType::RedeyeGargantuar);
-        if (flags & damage::DOESNT_LEAVE_BODY != 0 && !gargantuar)
+        if (flags & damage::DOESNT_LEAVE_BODY != 0 && !gargantuar && !self.is_boss())
             || (self.zombie_type == ZombieType::DolphinRider && self.phase != ZombiePhase::DolphinWalkingInPool)
             || matches!(self.phase, ZombiePhase::SnorkelIntoPool | ZombiePhase::SnorkelWalking)
         {
@@ -4070,6 +4350,10 @@ impl Zombie {
         } else if gargantuar {
             fx.sounds.play_foley(FoleyType::GargantuDeath);
             14.0
+        } else if self.is_boss() {
+            self.boss_die(fx);
+            self.driver_play(fx, "anim_death", LoopType::PlayOnceAndHold, 20, 18.0);
+            18.0
         } else {
             fx.sounds.rng().range_f32(24.0, 30.0)
         };
@@ -4119,6 +4403,9 @@ impl Zombie {
             }
             return;
         }
+        if self.is_boss() {
+            self.update_boss_death(fx);
+        }
         let Some(body) = self.body.and_then(|b| fx.effects.get(b)) else { return };
         let gargantuar = matches!(self.zombie_type, ZombieType::Gargantuar | ZombieType::RedeyeGargantuar);
         if gargantuar {
@@ -4138,7 +4425,7 @@ impl Zombie {
             0.62
         } else if gargantuar {
             0.86
-        } else if self.zombie_type == ZombieType::Imp {
+        } else if matches!(self.zombie_type, ZombieType::Imp | ZombieType::Boss) {
             -1.0
         } else if matches!(self.zombie_type, ZombieType::Dancer | ZombieType::BackupDancer) {
             0.83
@@ -4155,14 +4442,14 @@ impl Zombie {
                 fx.sounds.play_foley(FoleyType::Thump);
             }
         }
-        if self.zombie_fade == -1 && body.loop_count > 0 {
+        if self.zombie_fade == -1 && body.loop_count > 0 && !self.is_boss() {
             self.zombie_fade = 100;
         }
     }
 
     /// `Zombie::DieNoLoot`.
     pub fn die_no_loot(&mut self, effects: &mut EffectSystem) {
-        for id in [self.body.take(), self.special_head.take(), self.mowered_reanim.take(), self.surprise.take()].into_iter().flatten() {
+        for id in [self.body.take(), self.special_head.take(), self.propeller.take(), self.boss.fireball.take(), self.mowered_reanim.take(), self.surprise.take()].into_iter().flatten() {
             effects.kill(id);
         }
         for &(id, _, _) in &self.attached {
@@ -4191,7 +4478,7 @@ impl Zombie {
             ZombieType::Dancer | ZombieType::BackupDancer | ZombieType::Snorkel => -130,
             _ => BOARD_EDGE,
         };
-        self.has_head && self.x <= edge && !self.is_dead_or_dying() && !self.mind_controlled
+        self.has_head && self.x <= edge && !self.is_dead_or_dying() && !self.mind_controlled && !self.is_boss()
     }
 
     /// `CheckForBoardEdge`: a hypnotized zombie that walks off the right
@@ -4226,7 +4513,7 @@ impl Zombie {
         g.translate(self.x as f32, self.y as f32);
         if self.is_winner() {
             // Winners vanish into the house (SetupDrawZombieWon).
-            g.clip_rect(-123.0 - self.x as f32, -self.y as f32, 800.0, 600.0);
+            g.clip_rect(self.win_clip.0 - self.x as f32, -(self.y as f32), 800.0, self.win_clip.1);
         }
         // DrawReanim: a zombie climbing out of the ground is cut off at it.
         let pos = self.draw_pos();
@@ -4317,10 +4604,17 @@ impl Zombie {
         let cel_h = cord.cel_height() as f32;
         // In the zombie's coordinates, until it's off the top of the board.
         let mut y = body_y - cel_h;
+        // Behaviour per ruslan831 decomp, Zombie::DrawBungeeCord: on the boss
+        // level the cords come out from under his arm.
+        g.push_state();
+        if let Some(clip) = self.cord_clip {
+            g.clip_rect(-(self.x as f32), clip - self.y as f32, 800.0, 600.0);
+        }
         while y + self.pos_y > -cel_h {
             g.draw_image(cord, -22.0 + 61.0 - 4.0, y);
             y -= cel_h;
         }
+        g.pop_state();
     }
 
     /// `DrawBungeeReanim`'s plant: drawn hanging where the zombie is.
@@ -4445,7 +4739,7 @@ impl Zombie {
         ) {
             return;
         }
-        if self.zombie_type == ZombieType::Bungee && (!self.is_on_board() || self.hit_umbrella) {
+        if self.is_boss() || (self.zombie_type == ZombieType::Bungee && (!self.is_on_board() || self.hit_umbrella)) {
             return;
         }
         let pos = self.draw_pos();
@@ -4453,6 +4747,7 @@ impl Zombie {
             ZombieType::Polevaulter => (36.0, 11.0),
             ZombieType::Football => (41.0, 16.0),
             ZombieType::Newspaper => (29.0, 4.0),
+            ZombieType::Balloon => (23.0, 13.0),
             ZombieType::Bungee => (11.0, 0.0),
             ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => (27.0, 7.0),
             ZombieType::Imp => (25.0, 7.0),
@@ -4469,7 +4764,7 @@ impl Zombie {
         }
         let (offset_x, mut offset_y) = (pos.image_offset_x + dx, pos.image_offset_y + pos.body_y + dy);
         // A climbing or dropping zombie's shadow stays on the ground.
-        if matches!(self.height, ZombieHeight::UpLadder | ZombieHeight::Falling) {
+        if matches!(self.height, ZombieHeight::UpLadder | ZombieHeight::Falling) || self.is_flying() {
             offset_y += self.altitude;
         }
         // A bungee zombie's shadow stays on the ground, growing as it drops.

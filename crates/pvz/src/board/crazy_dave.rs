@@ -110,6 +110,13 @@ impl CrazyDave {
         stop_sound(sounds);
     }
 
+    /// The boss level: a zombie grabs him as he goes (`anim_grab`).
+    pub fn grab(&mut self, effects: &mut EffectSystem) {
+        if let Some(dave) = self.reanim.and_then(|id| effects.get_mut(id)) {
+            dave.play("anim_grab", LoopType::PlayOnceAndHold, 0, 18.0);
+        }
+    }
+
     /// `LawnApp::CrazyDaveStopTalking`: he stops mid-speech and idles.
     pub fn stop_talking(&mut self, effects: &mut EffectSystem, sounds: &mut Sounds) {
         let Some(id) = self.reanim else { return };

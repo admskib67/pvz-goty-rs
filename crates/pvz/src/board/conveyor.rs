@@ -22,9 +22,22 @@ const WALLNUT_BOWLING_SEEDS: &[(SeedType, i32)] = &[(SeedType::Wallnut, 85), (Se
 const LITTLE_TROUBLE_SEEDS: &[(SeedType, i32)] =
     &[(SeedType::Lilypad, 25), (SeedType::Wallnut, 15), (SeedType::Peashooter, 25), (SeedType::Cherrybomb, 35)];
 
+/// The final boss's belt: pots to plant in, the lobbers that need them,
+/// and the two plants that fight his fireballs.
+const FINAL_BOSS_SEEDS: &[(SeedType, i32)] = &[
+    (SeedType::Flowerpot, 55),
+    (SeedType::Melonpult, 10),
+    (SeedType::Jalapeno, 12),
+    (SeedType::Cabbagepult, 10),
+    (SeedType::Kernelpult, 5),
+    (SeedType::Iceshroom, 8),
+];
+
 /// The belt's plants and their weights on this level.
 pub fn belt_seeds(board: &Board) -> &'static [(SeedType, i32)] {
-    if board.is_wallnut_bowling_level() {
+    if board.is_final_boss_level() {
+        FINAL_BOSS_SEEDS
+    } else if board.is_wallnut_bowling_level() {
         WALLNUT_BOWLING_SEEDS
     } else if board.is_little_trouble_level() {
         LITTLE_TROUBLE_SEEDS
@@ -77,12 +90,36 @@ pub fn mini_boss_seeds(level: i32) -> &'static [(SeedType, i32)] {
 /// more grave stones than gravebusters; with more than two choices a plant
 /// with 4 (3) on the belt has weight 1 (5), and otherwise repeating the last
 /// pick halves a weight.
+#[cfg_attr(not(test), allow(dead_code, reason = "the tests use the form without the boss"))]
 pub fn belt_weights(
     seeds: &[(SeedType, i32)],
     planted: impl Fn(SeedType) -> i32,
     in_bank: impl Fn(SeedType) -> i32,
     graves: i32,
     last: Option<SeedType>,
+) -> Vec<(SeedType, i32)> {
+    belt_weights_for_boss(seeds, planted, in_bank, graves, last, None)
+}
+
+/// What the final boss's belt knows besides the plants: how many flower pots
+/// have nothing in them, and whether the vehicle is dropping (when pots are
+/// very welcome).
+#[derive(Debug, Clone, Copy)]
+pub struct BossBelt {
+    pub empty_pots: i32,
+    pub vehicle_dropping: bool,
+}
+
+/// [`belt_weights`] on the final boss level: the lobbers are rarer while
+/// there are few empty pots to put them in, and pots are much likelier
+/// while the vehicle is dropping.
+pub fn belt_weights_for_boss(
+    seeds: &[(SeedType, i32)],
+    planted: impl Fn(SeedType) -> i32,
+    in_bank: impl Fn(SeedType) -> i32,
+    graves: i32,
+    last: Option<SeedType>,
+    boss: Option<BossBelt>,
 ) -> Vec<(SeedType, i32)> {
     let many = seeds.len() > 2;
     seeds
@@ -94,7 +131,20 @@ pub fn belt_weights(
             match seed {
                 SeedType::Gravebuster if graves <= total => return (seed, 0),
                 SeedType::Lilypad => weight = animate_curve(0, 18, total, weight, 1, TodCurve::Linear),
+                SeedType::Flowerpot => weight = animate_curve(0, 35, total, weight, 1, TodCurve::Linear),
                 _ => {}
+            }
+            if let Some(boss) = boss {
+                if matches!(seed, SeedType::Melonpult | SeedType::Kernelpult | SeedType::Cabbagepult) {
+                    if boss.empty_pots <= 2 {
+                        weight /= 5;
+                    } else if boss.empty_pots <= 5 {
+                        weight /= 3;
+                    }
+                }
+                if seed == SeedType::Flowerpot && boss.vehicle_dropping {
+                    weight = 500;
+                }
             }
             if many {
                 if on_belt >= 4 {
@@ -122,7 +172,7 @@ impl Board {
             return;
         }
         let on_belt = self.seed_bank.num_seeds_on_conveyor_belt();
-        self.conveyor_belt_counter = if on_belt > 8 {
+        let base = if on_belt > 8 {
             1000
         } else if on_belt > 6 {
             500
@@ -131,14 +181,21 @@ impl Board {
         } else {
             400
         };
+        // The final boss's belt is a little quicker.
+        self.conveyor_belt_counter = if self.is_final_boss_level() { (base as f32 * 0.875) as i32 } else { base };
 
         let graves = self.grid_items.iter().filter(|(_, g)| g.item_type == GridItemType::GraveStone && !g.dead).count() as i32;
-        let picks = belt_weights(
+        let boss = self.is_final_boss_level().then(|| BossBelt {
+            empty_pots: self.count_empty_pots(),
+            vehicle_dropping: self.boss_zombie().and_then(|id| self.zombies.get(id)).is_some_and(|z| z.phase == super::zombie::ZombiePhase::BossDropRv),
+        });
+        let picks = belt_weights_for_boss(
             belt_seeds(self),
             |seed| self.plants.iter().filter(|(_, p)| !p.dead && p.seed == seed).count() as i32,
             |seed| self.seed_bank.count_of_type_on_conveyor_belt(seed) as i32,
             graves,
             self.last_conveyor_seed,
+            boss,
         );
         // TodPickFromWeightedArray.
         let total: i32 = picks.iter().map(|&(_, w)| w).sum();

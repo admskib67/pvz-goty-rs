@@ -133,24 +133,28 @@ impl Board {
             return None;
         }
         self.plants.iter().map(|(_, p)| p).find(|p| {
-            p.col == grid_x && p.row == grid_y && !p.dead && !matches!(p.seed, Lilypad | Flowerpot | Pumpkinshell | InstantCoffee)
+            p.col == grid_x && p.row == grid_y && !p.not_on_ground() && !matches!(p.seed, Lilypad | Flowerpot | Pumpkinshell | InstantCoffee)
         })
     }
 
     /// `Board::GetFlowerPotAt`: whether a flower pot sits on `(grid_x, grid_y)`.
     pub(super) fn has_flower_pot_at(&self, grid_x: i32, grid_y: i32) -> bool {
-        self.plants.iter().any(|(_, p)| p.col == grid_x && p.row == grid_y && !p.dead && p.seed == SeedType::Flowerpot)
+        self.plants.iter().any(|(_, p)| p.col == grid_x && p.row == grid_y && !p.not_on_ground() && p.seed == SeedType::Flowerpot)
     }
 
     /// Whether a lily pad floats on `(grid_x, grid_y)`.
     pub(super) fn has_lily_pad_at(&self, grid_x: i32, grid_y: i32) -> bool {
-        self.plants.iter().any(|(_, p)| p.col == grid_x && p.row == grid_y && !p.dead && p.seed == SeedType::Lilypad)
+        self.plants.iter().any(|(_, p)| p.col == grid_x && p.row == grid_y && !p.not_on_ground() && p.seed == SeedType::Lilypad)
     }
 
     /// `Board::CanPlantAt`, for ordinary plants on grass, dirt and water.
     /// TODO: pots, pumpkins and upgrades.
     pub fn can_plant_at(&self, grid_x: i32, grid_y: i32, seed: SeedType) -> PlantingReason {
         if !(0..MAX_GRID_SIZE_X as i32).contains(&grid_x) || !(0..MAX_GRID_SIZE_Y as i32).contains(&grid_y) {
+            return PlantingReason::NotHere;
+        }
+        // Challenge::CanPlantAt: the last column of the boss's lawn is his.
+        if self.is_final_boss_level() && grid_x >= 8 {
             return PlantingReason::NotHere;
         }
         // Challenge::CanPlantAt: nuts only start behind the line.
@@ -202,7 +206,7 @@ impl Board {
         // Behaviour per ruslan831 decomp, Board::CanPlantAt: a flower pot needs a
         // bare square, and on the roof nothing else goes without one.
         if seed == SeedType::Flowerpot {
-            let occupied = self.plants.iter().any(|(_, p)| p.col == grid_x && p.row == grid_y && !p.dead);
+            let occupied = self.plants.iter().any(|(_, p)| p.col == grid_x && p.row == grid_y && !p.not_on_ground());
             return if occupied { PlantingReason::NotHere } else { PlantingReason::Ok };
         }
         if self.stage_has_roof() {
@@ -319,7 +323,7 @@ impl Board {
         }
         let (grid_x, grid_y) = (self.pixel_to_grid_x(p.x), self.pixel_to_grid_y(p.x, p.y));
         // ToolHitTest: the plant on the square under the mouse.
-        let target = self.plants.iter().find(|(_, plant)| plant.col == grid_x && plant.row == grid_y && !plant.dead).map(|(id, _)| id);
+        let target = self.plants.iter().find(|(_, plant)| plant.col == grid_x && plant.row == grid_y && !plant.not_on_ground()).map(|(id, _)| id);
         if let Some(plant) = target.and_then(|id| self.plants.get_mut(id)) {
             sounds.play_foley(FoleyType::UseShovel);
             plant.die(effects);
@@ -578,6 +582,25 @@ impl Board {
             self.tutorial_sunflower_done_carrying(res, Some(seed));
         }
         self.cursor = CursorObject::default();
+    }
+
+    /// `Board::NewPlant`: a plant on a square, with none of the planting
+    /// effects (the roof's starting flower pots).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_plant(
+        &mut self,
+        grid_x: i32,
+        grid_y: i32,
+        seed: SeedType,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut sexy::rand::MtRand,
+    ) {
+        let (x, y) = (self.grid_to_pixel_x(grid_x), self.grid_to_pixel_y(grid_x, grid_y));
+        let mut plant = Plant::new(grid_x, grid_y, x, y, seed, false, effects, res, images, rng);
+        plant.in_pot = self.stage_has_roof();
+        self.plants.alloc(plant);
     }
 
     /// `Board::AddPlant` + `DoPlantingEffects`.

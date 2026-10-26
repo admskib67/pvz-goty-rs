@@ -97,11 +97,16 @@ impl Board {
         sounds: &mut Sounds,
     ) -> bool {
         let dropped = self.zombies.get(zombie).is_some_and(|z| z.dropped_loot());
+        // Behaviour per ruslan831 decomp, Zombie::TrySpawnLevelAward: on the
+        // final boss level only the boss ends it, whatever else is about.
+        let final_boss = self.is_final_boss_level();
+        if final_boss && !self.zombies.get(zombie).is_some_and(|z| z.is_boss()) {
+            return false;
+        }
         if self.has_level_award_dropped()
             || self.level_complete
             || dropped
-            || self.waves.current_wave < self.waves.num_waves
-            || self.are_enemy_zombies_on_screen()
+            || (!final_boss && (self.waves.current_wave < self.waves.num_waves || self.are_enemy_zombies_on_screen()))
             || (self.is_whack_a_zombie_level() && self.waves.zombie_count_down > 0)
         {
             return false;
@@ -128,9 +133,11 @@ impl Board {
                 24 => CoinType::CarKeys,
                 34 => CoinType::Taco,
                 44 => CoinType::WateringCan,
+                50 => CoinType::SilverSunflower,
                 _ => CoinType::FinalSeedPacket,
             };
-            self.add_coin(x, y, ty, CoinMotion::Coin, effects, res, images, sounds);
+            let motion = if ty == CoinType::SilverSunflower { CoinMotion::FromBoss } else { CoinMotion::Coin };
+            self.add_coin(x, y, ty, motion, effects, res, images, sounds);
             let seed = SeedType::from_index(crate::plant::award_seed_for_level(self.level));
             if let Some(seed) = seed
                 && let Err(e) = res.reanim_definition(seed.definition().reanim.file(), images)

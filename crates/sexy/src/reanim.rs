@@ -395,6 +395,8 @@ pub struct Reanimation<D = std::sync::Arc<ReanimDefinition>> {
     pub overlay: Matrix3,
     /// `AttachEffect::mOffset`: where this sits on the track it's attached to.
     pub attach_offset: Matrix3,
+    /// `AttachEffect::mDontDrawIfParentHidden`: not drawn while the track it's attached to shows nothing.
+    pub dont_draw_if_parent_hidden: bool,
     pub color_override: Rgba,
     /// A color added on top when drawing (the hit flash, the chill glow;
     /// `mExtraAdditiveColor`), if any.
@@ -424,6 +426,7 @@ impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
             loop_count: 0,
             overlay: Matrix3::translation(x, y),
             attach_offset: Matrix3::IDENTITY,
+            dont_draw_if_parent_hidden: false,
             color_override: WHITE,
             extra_additive: None,
             frame_base_pose: -1,
