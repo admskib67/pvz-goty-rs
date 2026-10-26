@@ -441,9 +441,17 @@ impl ProfileMgr {
         if self.current == Some(profile.id) {
             self.current = None;
         }
-        // DeleteUserFiles. TODO: also the player's saved games once they exist.
+        // DeleteUserFiles: the details and any saved games.
         if let Some(dir) = &self.dir {
             let _ = std::fs::remove_file(dir.join(Self::details_file(profile.id)));
+            let prefix = format!("game{}_", profile.id);
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
         }
         true
     }

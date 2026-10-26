@@ -153,7 +153,24 @@ impl Board {
             dead: false,
         });
     }
+}
 
+impl GridItem {
+    /// A grid item put back where the save left it: graves stand risen,
+    /// craters and ladders as they were. Used by the save loader.
+    pub fn new_restored(item_type: GridItemType, grid_x: i32, grid_y: i32) -> Self {
+        let (render_order, counter) = match item_type {
+            GridItemType::GraveStone => {
+                (make_render_order(render_layer::GRAVE_STONE, grid_y, 0), 100)
+            }
+            GridItemType::Crater => (make_render_order(render_layer::GROUND, grid_y, 1), 18000),
+            GridItemType::Ladder => (make_render_order(render_layer::PLANT, grid_y, 800), 0),
+        };
+        Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter, dead: false }
+    }
+}
+
+impl Board {
     /// `Board::GetLadderAt`.
     pub(super) fn ladder_at(&self, grid_x: i32, grid_y: i32) -> Option<Id<GridItem>> {
         self.grid_items

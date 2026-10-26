@@ -266,6 +266,25 @@ impl Coin {
         coin
     }
 
+    /// A coin lying where the save left it: no velocity, already landed.
+    /// Used by the save loader (`board::save`); fresh coins get a full life.
+    pub fn new_resting(
+        x: f32,
+        y: f32,
+        ty: CoinType,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut MtRand,
+    ) -> Self {
+        let mut coin = Self::new(x, y, ty, CoinMotion::Coin, effects, res, images, rng);
+        coin.vel_x = 0.0;
+        coin.vel_y = 0.0;
+        coin.ground_y = y;
+        coin.hit_ground = true;
+        coin
+    }
+
     /// `GetSunScale`.
     fn sun_scale(&self) -> f32 {
         match self.ty {

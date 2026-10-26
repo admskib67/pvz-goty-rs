@@ -29,6 +29,10 @@ mod lawn_mower;
 mod level_end;
 mod message;
 mod plant;
+mod save;
+pub(crate) use save::{
+    board_from_save, erase_save, has_save, load_save_data, need_save_game, save_dir, try_to_save_game,
+};
 pub(crate) mod pool;
 mod projectile;
 mod seed_bank;
@@ -440,6 +444,11 @@ enum ParticleRequest {
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct PlayIntro(pub bool);
 
+/// Set when the Continue dialog resumes a save: the next board loads it
+/// instead of starting fresh (`LawnApp::TryLoadGame`).
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct LoadSavedGame(pub bool);
+
 /// The level given on the command line (`--lvl-2-1`), if any.
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct LevelOverride(pub Option<i32>);
@@ -603,6 +612,17 @@ impl Board {
             board.conveyor_belt_counter = 1000;
         }
         board
+    }
+
+    /// A fresh board for a save file's level, before the save is applied.
+    /// Like `--lvl`, the shape is a copy of the player on that level.
+    pub(super) fn new_for_save(
+        shape: PlayerInfo,
+        resources: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut sexy::rand::MtRand,
+    ) -> Self {
+        Self::new(GameMode::Adventure, Some(&shape), resources, images, rng)
     }
 
     /// `Board::PickBackground` (adventure mode) and `LoadBackgroundImages`.
@@ -874,6 +894,7 @@ fn new_game(
     mut sounds: Sounds,
     profiles: Res<ProfileMgr>,
     level_override: Res<LevelOverride>,
+    load: Option<Res<LoadSavedGame>>,
     mut play_intro: ResMut<PlayIntro>,
 ) {
     // TODO: the first adventure ever starts with the intro (GAMEMODE_INTRO);
@@ -890,8 +911,31 @@ fn new_game(
     let player_copy = level_override.0.and_then(|level| profiles.player().map(|p| PlayerInfo { level, ..p.clone() }));
     let player = player_copy.as_ref().or(profiles.player());
     let mode = if std::mem::take(&mut play_intro.0) { GameMode::Intro } else { GameMode::Adventure };
+    // PreNewGame's TryLoadGame: the Continue dialog resumes the save.
+    let from_save = load.as_deref().is_some_and(|l| l.0);
+    commands.remove_resource::<LoadSavedGame>();
+    if from_save
+        && let Some(dir) = save_dir()
+        && let Some(id) = profiles.player().map(|p| p.id)
+        && let Some(data) = load_save_data(&dir, id, GameMode::Adventure)
+        && let Some(board) =
+            board_from_save(&data, &profiles, &mut resources, &mut images, &mut effects, &mut sounds)
+    {
+        // Like Board::LoadGame: straight into the level, no intro.
+        music.stop_all_music();
+        commands.insert_resource(board);
+        return;
+    }
     let mut board = Board::new(mode, player, &mut resources, &mut images, sounds.rng());
     board.level_overridden = level_override.0.is_some();
+    // PreNewGame erases the mode's save before a fresh game (never for a
+    // `--lvl` copy, which must leave the player's save alone).
+    if !board.level_overridden
+        && let Some(dir) = save_dir()
+        && let Some(id) = profiles.player().map(|p| p.id)
+    {
+        erase_save(&dir, id, board.mode);
+    }
     // CutScene::PreloadResources: the pool's splash and cleaner.
     if board.stage_has_pool() {
         for ty in [ReanimationType::Splash, ReanimationType::PoolCleaner] {
@@ -1006,6 +1050,13 @@ fn update_board(
         player.coins += outcome.money;
     }
     if outcome.game_over {
+        // The run is over: no Continue from a lost level.
+        if !board.level_overridden
+            && let Some(dir) = save_dir()
+            && let Some(id) = profiles.player().map(|p| p.id)
+        {
+            erase_save(&dir, id, board.mode);
+        }
         do_game_over_dialog(&mut dialogs, &resources);
     }
     if let Some(warning) = outcome.chooser_warning {
@@ -1017,6 +1068,13 @@ fn update_board(
     }
     if outcome.level_complete {
         // LawnApp::CheckForGameEnd: the award screen shows what was won.
+        // The run is over: a finished level leaves no save behind.
+        if !board.level_overridden
+            && let Some(dir) = save_dir()
+            && let Some(id) = profiles.player().map(|p| p.id)
+        {
+            erase_save(&dir, id, board.mode);
+        }
         let (first_time, level) = (board.first_time_adventure, board.level);
         board.finish_level(&mut profiles);
         let next_level = if board.level_overridden { level + 1 } else { profiles.player().map_or(level + 1, |p| p.level) };

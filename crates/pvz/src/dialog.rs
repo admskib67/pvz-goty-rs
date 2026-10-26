@@ -47,6 +47,10 @@ pub enum DialogId {
     Message,
     ConfirmBackToMain,
     GameOver,
+    /// The saved game's Continue dialog (`DIALOG_CONTINUE`): resume it or
+    /// start the level over. Its Cancel is the `yes_button`; Continue and
+    /// New Game are the kind's widgets.
+    Continue,
     /// Crazy Dave's offer of an extra seed slot.
     PurchasePacketSlot,
     /// The seed chooser's "are you sure, without ...?" before play.
@@ -88,6 +92,10 @@ pub enum DialogButton {
     Rename,
     /// `UserDialog_DeleteUser`.
     Delete,
+    /// `ContinueDialog_Continue`: resume the saved game.
+    Continue,
+    /// `ContinueDialog_NewGame`: erase the save and start the level over.
+    NewGame,
     /// `NewOptionsDialog_Almanac`.
     Almanac,
     /// `NewOptionsDialog_MainMenu` (Credits, from the main menu).
@@ -198,6 +206,8 @@ pub enum DialogKind {
     NewUser { edit: EditWidget },
     /// `UserDialog`: pick, rename or delete a user, or create one.
     User { list: ListWidget, num_users: i32, rename: StoneButton<DialogButton>, delete: StoneButton<DialogButton> },
+    /// `ContinueDialog`: resume the saved game or start over.
+    Continue { continue_button: StoneButton<DialogButton>, new_game_button: StoneButton<DialogButton> },
     /// `NewOptionsDialog`: a picture instead of the stone frame.
     Options(Box<OptionsWidgets>),
     /// `AlmanacDialog`: the whole screen, drawn and run by `almanac`; it
@@ -293,6 +303,21 @@ impl LawnDialog {
         edit.max_pixels = 220;
         dialog.kind = DialogKind::NewUser { edit };
         dialog.calc_size(res, 110, 40);
+        dialog
+    }
+
+    /// `ContinueDialog::ContinueDialog`: resume the saved game, start the
+    /// level over, or cancel back to the menu.
+    pub fn continue_game(res: &GameResources, adventure: bool) -> Self {
+        let lines = if adventure { "Do you want to continue your saved game\nor restart the level?" } else { "Do you want to continue your saved game\nor start a new game?" };
+        let mut dialog = Self::new(res, DialogId::Continue, "Continue Game?", lines, "[DIALOG_BUTTON_CANCEL]", ButtonMode::Footer);
+        dialog.tall_bottom = true;
+        let button = |id, label: &str| StoneButton::new(id, res.translate(label));
+        dialog.kind = DialogKind::Continue {
+            continue_button: button(DialogButton::Continue, "[CONTINUE_BUTTON]"),
+            new_game_button: button(DialogButton::NewGame, if adventure { "[RESTART_BUTTON]" } else { "[NEW_GAME_BUTTON]" }),
+        };
+        dialog.calc_size(res, 60, 60);
         dialog
     }
 
@@ -527,6 +552,15 @@ impl LawnDialog {
                     }
                 }
             }
+            // The Continue dialog's buttons sit above the Cancel footer, like
+            // the user dialog's Rename/Delete above OK/Cancel.
+            DialogKind::Continue { continue_button, new_game_button } => {
+                if let Some(cancel) = &self.yes_button {
+                    let w = (cancel.width / 2).max(120);
+                    continue_button.resize(cancel.x, cancel.y - cancel.height - 2, w, cancel.height);
+                    new_game_button.resize(cancel.x + cancel.width - w, cancel.y - cancel.height - 2, w, cancel.height);
+                }
+            }
         }
     }
 
@@ -627,6 +661,9 @@ impl LawnDialog {
     fn buttons(&self) -> impl Iterator<Item = &StoneButton<DialogButton>> {
         let extra = match &self.kind {
             DialogKind::User { delete, rename, .. } => [Some(delete), Some(rename), None],
+            DialogKind::Continue { continue_button, new_game_button } => {
+                [Some(continue_button), Some(new_game_button), None]
+            }
             DialogKind::Options(o) => [Some(&o.almanac), Some(&o.restart), Some(&o.main_menu)],
             _ => [None, None, None],
         };
@@ -636,6 +673,9 @@ impl LawnDialog {
     fn buttons_mut(&mut self) -> impl Iterator<Item = &mut StoneButton<DialogButton>> {
         let extra = match &mut self.kind {
             DialogKind::User { delete, rename, .. } => [Some(delete), Some(rename), None],
+            DialogKind::Continue { continue_button, new_game_button } => {
+                [Some(continue_button), Some(new_game_button), None]
+            }
             DialogKind::Options(o) => {
                 let o = &mut **o;
                 [Some(&mut o.almanac), Some(&mut o.restart), Some(&mut o.main_menu)]
@@ -697,6 +737,10 @@ impl LawnDialog {
                 list.draw(g, res);
                 delete.draw(g, res);
                 rename.draw(g, res);
+            }
+            DialogKind::Continue { continue_button, new_game_button } => {
+                continue_button.draw(g, res);
+                new_game_button.draw(g, res);
             }
         }
         g.pop_state();
@@ -1129,6 +1173,14 @@ fn dialog_input(
                     events.push(DialogEvent::Button(id, DialogButton::Yes));
                 } else if k.logical_key == Key::Escape {
                     events.push(DialogEvent::Button(id, DialogButton::No));
+                }
+            }
+            // ContinueDialog::KeyDown: Enter resumes, Escape cancels.
+            DialogKind::Continue { .. } => {
+                if matches!(k.logical_key, Key::Space | Key::Enter) {
+                    events.push(DialogEvent::Button(id, DialogButton::Continue));
+                } else if k.logical_key == Key::Escape {
+                    events.push(DialogEvent::Button(id, DialogButton::Yes));
                 }
             }
             _ => {

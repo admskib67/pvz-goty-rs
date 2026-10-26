@@ -313,7 +313,7 @@ pub struct Plant {
     wake_up_counter: i32,
     magnet_items: Vec<MagnetItem>,
     /// What an imitater turns into (`mImitaterType`).
-    imitater_type: Option<SeedType>,
+    pub(super) imitater_type: Option<SeedType>,
     /// The zombie a cattail's spike is homing in on.
     homing_target: Option<sexy::data_array::Id<Zombie>>,
     /// Whether there's money lying about for a gold magnet to take (the board sets it each tick).
@@ -889,6 +889,11 @@ impl Plant {
 
     pub fn is_armed_or_rising(&self) -> bool {
         self.state != PlantState::NotReady
+    }
+
+    /// Planted on the wall-nut bowling level: it rolls instead of standing.
+    pub(super) fn is_bowling(&self) -> bool {
+        self.bowling
     }
 
     /// A mushroom asleep in the day (`mIsAsleep`).

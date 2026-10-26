@@ -1922,20 +1922,29 @@ impl Zombie {
         }
     }
 
-    #[cfg(test)]
+    pub(super) fn variant(&self) -> bool {
+        self.variant
+    }
+
     pub(super) fn helm_health(&self) -> i32 {
         self.helm_health
     }
 
-    #[cfg(test)]
     pub(super) fn shield_health(&self) -> i32 {
         self.shield_health
     }
 
-    #[cfg(test)]
-    pub(super) fn has_arm(&self) -> bool {
-        self.has_arm
+    /// Restores worn protection after a load (`Board::LoadGame`): the type
+    /// comes from a fresh `Zombie::new`, the damage from the save.
+    pub(super) fn set_armor_health(&mut self, helm: i32, shield: i32) {
+        self.helm_health = helm;
+        self.shield_health = shield;
     }
+
+     #[cfg(test)]
+     pub(super) fn has_arm(&self) -> bool {
+         self.has_arm
+     }
 
     /// Slowed by cold (`mChilledCounter`).
     pub fn is_chilled(&self) -> bool {

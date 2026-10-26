@@ -19,7 +19,7 @@ use crate::almanac::{AlmanacStart, do_almanac_dialog};
 use crate::award::AwardScreen;
 use crate::plant::SeedType;
 use crate::zombie::ZombieType;
-use crate::lawn_app::{PlayerChanged, confirm_quit, do_create_user_dialog, do_user_dialog, lawn_message_box};
+use crate::lawn_app::{PlayerChanged, confirm_quit, do_continue_dialog, do_create_user_dialog, do_user_dialog, lawn_message_box};
 use crate::options::{Settings, do_new_options};
 use crate::player::{PlayerInfo, ProfileMgr};
 use crate::reanim::{EffectSystem, ReanimationId, ReanimationType, draw_reanimation, draw_render_group};
@@ -536,7 +536,17 @@ impl GameSelector {
             return;
         }
         match id {
-            ButtonId::Adventure => self.clicked_adventure(effects, resources, images, music, sounds),
+            // PreNewGame(GAMEMODE_ADVENTURE, true): a save resumes through
+            // the Continue dialog; otherwise the level starts fresh.
+            ButtonId::Adventure => {
+                let save = crate::board::save_dir()
+                    .is_some_and(|dir| profiles.player().is_some_and(|p| crate::board::has_save(&dir, p.id)));
+                if save {
+                    do_continue_dialog(dialogs, resources, true);
+                } else {
+                    self.clicked_adventure(effects, resources, images, music, sounds);
+                }
+            }
             ButtonId::Quit => confirm_quit(dialogs, resources),
             ButtonId::ChangeUser => do_user_dialog(dialogs, resources, profiles),
             // The title theme comes back when it closes (`almanac`).

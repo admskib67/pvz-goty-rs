@@ -13,6 +13,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use crate::audio::{Music, Sounds};
+use crate::board::{Board, LoadSavedGame, erase_save, need_save_game, save_dir, try_to_save_game};
 use crate::dialog::{ButtonMode, DialogButton, DialogEvent, DialogId, DialogSlider, Dialogs, LawnDialog};
 use crate::install::{self, Config};
 use crate::options::Settings;
@@ -57,13 +58,21 @@ fn set_player(profiles: &mut ProfileMgr, name: Option<&str>, changed: &mut Messa
     changed.write(PlayerChanged);
 }
 
-/// `LawnApp::WriteToRegistry` on the way out: saves the player's progress.
-fn save_on_exit(mut exit: MessageReader<AppExit>, profiles: Option<Res<ProfileMgr>>) {
-    if exit.read().next().is_some()
-        && let Some(profiles) = profiles
-    {
-        profiles.save_current_details();
+/// `LawnApp::WriteToRegistry` on the way out: saves the board in progress
+/// (`Board::TryToSaveGame`) and the player's progress.
+fn save_on_exit(
+    mut exit: MessageReader<AppExit>,
+    profiles: Option<Res<ProfileMgr>>,
+    board: Option<Res<Board>>,
+) {
+    if exit.read().next().is_none() {
+        return;
     }
+    let Some(profiles) = profiles else { return };
+    if let (Some(board), Some(dir)) = (board.as_deref(), save_dir()) {
+        try_to_save_game(board, &profiles, &dir);
+    }
+    profiles.save_current_details();
 }
 
 /// `LawnApp::LawnMessageBox`: a message with up to two buttons, labelled
@@ -108,6 +117,13 @@ pub fn do_confirm_back_to_main(dialogs: &mut Dialogs, res: &GameResources) {
     if let Some(no) = &mut dialog.no_button {
         no.label = res.translate("[DIALOG_BUTTON_CANCEL]");
     }
+}
+
+/// `LawnApp::DoContinueDialog`: resume the save or start the level over.
+pub fn do_continue_dialog(dialogs: &mut Dialogs, res: &GameResources, adventure: bool) {
+    let mut dialog = LawnDialog::continue_game(res, adventure);
+    dialog.center(res);
+    dialogs.add_dialog(dialog);
 }
 
 /// `NewOptionsDialog_Restart`'s question. Adventure levels only, so far.
@@ -277,8 +293,9 @@ impl DialogActions<'_, '_, '_> {
     }
 
     /// `LawnApp::ButtonDepress` for a dialog's Yes/OK (2000 + id) or
-    /// No/Cancel (3000 + id) button.
-    fn button_depress(&mut self, id: DialogId, yes: bool) {
+    /// No/Cancel (3000 + id) button. `board` saves the level in progress
+    /// when leaving it.
+    fn button_depress(&mut self, id: DialogId, yes: bool, board: Option<&Board>) {
         match id {
             DialogId::Quit if yes => {
                 self.dialogs.kill_dialog(DialogId::Quit);
@@ -286,7 +303,7 @@ impl DialogActions<'_, '_, '_> {
             }
             DialogId::ConfirmBackToMain if yes => {
                 self.dialogs.kill_dialog(DialogId::ConfirmBackToMain);
-                self.do_back_to_main();
+                self.do_back_to_main(board);
             }
             // The level starts over (PreNewGame); leaving and re-entering
             // the board state clears it away and builds it again.
@@ -301,7 +318,7 @@ impl DialogActions<'_, '_, '_> {
                     // LawnApp::EndLevel: the same level again.
                     self.next_state.set(AppState::Board);
                 } else {
-                    self.do_back_to_main();
+                    self.do_back_to_main(board);
                 }
             }
             DialogId::UserDialog => self.finish_user_dialog(yes),
@@ -315,10 +332,13 @@ impl DialogActions<'_, '_, '_> {
         }
     }
 
-    /// `LawnApp::DoBackToMain`: leaves the level for the main menu. Leaving
-    /// the board state stops its music and clears it away (`KillBoard`).
-    /// TODO: save the game in progress (`Board::TryToSaveGame`).
-    fn do_back_to_main(&mut self) {
+    /// `LawnApp::DoBackToMain`: leaves the level for the main menu, saving
+    /// the game in progress first (`Board::TryToSaveGame`). Leaving the
+    /// board state stops its music and clears it away (`KillBoard`).
+    fn do_back_to_main(&mut self, board: Option<&Board>) {
+        if let (Some(board), Some(dir)) = (board, save_dir()) {
+            try_to_save_game(board, self.profiles, &dir);
+        }
         self.dialogs.kill_dialog(DialogId::NewOptions);
         self.profiles.save_current_details();
         self.next_state.set(AppState::GameSelector);
@@ -373,6 +393,7 @@ fn options_event(
     music: Option<&mut Music>,
     sounds: &mut Sounds,
     windows: &mut Query<&mut Window, With<PrimaryWindow>>,
+    board: Option<&Board>,
 ) {
     match event {
         // NewOptionsDialog::SliderVal: the volume changes as the thumb moves.
@@ -408,11 +429,12 @@ fn options_event(
                 // The options' Credits button: the zombie's note, then the credits.
                 app.open_credits_note = true;
                 app.next_state.set(AppState::Award);
-            } else {
-                // Board::NeedSaveGame: a level in progress asks first. TODO:
-                // save it (TryToSaveGame), and leave without asking where
-                // there's nothing to save.
+            } else if board.as_ref().is_some_and(|b| need_save_game(b)) {
+                // Board::NeedSaveGame: a level in progress asks first; leaving
+                // saves it (TryToSaveGame).
                 do_confirm_back_to_main(app.dialogs, app.res);
+            } else {
+                app.do_back_to_main(board);
             }
         }
         DialogEvent::Button(_, DialogButton::Restart) => do_confirm_restart(app.dialogs, app.res),
@@ -459,7 +481,7 @@ fn handle_dialog_events(
             DialogEvent::Button(DialogId::NewOptions, _)
             | DialogEvent::SliderVal(DialogId::NewOptions, ..)
             | DialogEvent::CheckboxChecked(DialogId::NewOptions, ..) => {
-                options_event(event, &mut app, &mut settings, music.as_deref_mut(), &mut sounds, &mut windows)
+                options_event(event, &mut app, &mut settings, music.as_deref_mut(), &mut sounds, &mut windows, board.as_deref())
             }
             DialogEvent::Button(DialogId::PurchasePacketSlot, button) => {
                 let yes = button == DialogButton::Yes;
@@ -495,8 +517,24 @@ fn handle_dialog_events(
                     board.answer_chooser_warning(button == DialogButton::Yes);
                 }
             }
-            DialogEvent::Button(id, DialogButton::Yes) => app.button_depress(id, true),
-            DialogEvent::Button(id, DialogButton::No) => app.button_depress(id, false),
+            // The Continue dialog: resume the save, restart the level (the
+            // save is erased), or cancel back to the menu.
+            DialogEvent::Button(DialogId::Continue, DialogButton::Continue) => {
+                app.dialogs.kill_dialog(DialogId::Continue);
+                commands.insert_resource(LoadSavedGame(true));
+                app.next_state.set(AppState::Board);
+            }
+            DialogEvent::Button(DialogId::Continue, DialogButton::NewGame) => {
+                app.dialogs.kill_dialog(DialogId::Continue);
+                if let (Some(player), Some(dir)) = (app.profiles.player(), save_dir()) {
+                    let (id, mode) = (player.id, crate::board::GameMode::Adventure);
+                    erase_save(&dir, id, mode);
+                }
+                commands.insert_resource(LoadSavedGame(false));
+                app.next_state.set(AppState::Board);
+            }
+            DialogEvent::Button(id, DialogButton::Yes) => app.button_depress(id, true, board.as_deref()),
+            DialogEvent::Button(id, DialogButton::No) => app.button_depress(id, false, board.as_deref()),
             DialogEvent::Button(DialogId::UserDialog, b) => app.user_dialog_button(b),
             DialogEvent::ListClicked(DialogId::UserDialog, idx, count) => app.user_list_clicked(idx, count),
             _ => {}

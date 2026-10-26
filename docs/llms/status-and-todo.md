@@ -9,6 +9,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `is_imp
 - **Plants: all 49 adventure/store plants** (every `SeedType` except Zen Garden's `Sprout`), including upgrades (gatling, twin sunflower, gloom, cattail, winter melon, gold magnet, spikerock, cob cannon) and the imitater.
 - **Zombies: 21 of 33 types**: normal, flag, cone, bucket, pole vaulter, newspaper, screen door, football, dancer, backup dancer, ducky tube, snorkel, Zamboni, bobsled, dolphin rider, balloon, bungee, ladder, catapult, gargantuar, imp, Dr. Zomboss.
 - Crazy Dave talks on 1-5, 2-1, 2-2, 2-3+ (seed slots), 2-5, 3-1, 3-5, 4-1, 5-1, 5-10.
+- **Saving a level in progress** (`board::save`, `tests/save.rs`): leaving through the menu, or quitting the app, saves an adventure level in progress (`TryToSaveGame`/`NeedSaveGame`, `userdata/game{id}_{mode}.dat` as TOML); Adventure offers the Continue dialog (resume, or erase and restart); winning, losing, restarting or starting fresh erases it; `--lvl` copies never save; deleting a profile deletes its saves. Not saved: reanimation/particle phases and peas in flight (rebuilt fresh on load).
 - Windows: builds, setup screen and resource loading verified; everything else untested there.
 
 ## Missing: large pieces
@@ -18,7 +19,6 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `is_imp
 | **Game modes** | `GameMode` has only `Adventure` and `Intro`. Missing: mini-games (~20), puzzle (Vasebreaker, I, Zombie), survival (day/night/pool/fog/roof, normal/hard/endless), their selector panels, locks and best scores. |
 | **Zen Garden** | garden screens, potted plants and their growth/watering, Stinky, tools, marigold sales, "needs water" bubble on the menu. `PlayerInfo` already stores Zen plants as raw 88-byte structs. |
 | **Tree of Wisdom** | growth, tree food, speech. The store records buying the tree but can't go there. |
-| **Saving a level in progress** | `Board::TryToSaveGame`/load, resume from the selector, deleting saves with the player (`lawn_app.rs:320`, `lawn_app.rs:412`, `player.rs:444`). |
 | **Zombies (12 types)** | Jack-in-the-box, digger, pogo, yeti, red-eye gargantuar, the six Zombotany heads (PeaHead, WallnutHead, JalapenoHead, GatlingHead, SquashHead, TallnutHead). Wire each in `zombie.rs::reanim()`; the almanac already shows still frames of the first four. |
 | **Achievements** | none. |
 | **Windows/Linux verification** | Windows: title/menu/board never run visually; compiled particles untested; audio untested; `.au` sounds silent (needs a decoder, `audio.rs:703`). Linux: nothing run. |
@@ -54,7 +54,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `is_imp
 
 ### Menus and screens
 - Main menu: trophy and its sparkle (`game_selector.rs:374`, `:828`), adventure-complete message (`:625`), Zen "needs water" bubble (`:892`), hand clipping (`:895`), the other mode buttons.
-- Options: pausing music and MUTE_ON_PAUSE foley (`audio.rs:782`), volume changes for sounds already playing, saving the level on Main Menu.
+- Options: pausing music and MUTE_ON_PAUSE foley (`audio.rs:782`), volume changes for sounds already playing.
 - Store: Zen items (potted marigolds, `store.rs:306`, `:862`), going to the tree (`:746`), "coming soon" rule (`:188`), bonus mower and chocolate pages, award-screen intro talks, night background, opening from the seed chooser.
 - Seed chooser: almanac and store buttons.
 - Almanac: pool water behind water plants (`almanac.rs:508`), live portraits of unported zombies (`:623`).
@@ -69,12 +69,11 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `is_imp
 
 ## Suggested order
 
-1. Saving/loading a level in progress (small, user-visible, touches `Board` serialisation).
-2. The remaining zombies (jack-in-the-box, digger, pogo, yeti, red-eye gargantuar), since modes need them.
-3. Presentation gaps on the board (animated wave text, drum burst, hand cursor, glow, faces).
-4. Survival and mini-games (reuse `Board` with a `GameMode` per mode), then puzzle.
-5. Zen Garden and Tree of Wisdom, then the store's Zen items.
-6. Achievements; Windows visual pass and `.au` decoder; Linux.
+1. The remaining zombies (jack-in-the-box, digger, pogo, yeti, red-eye gargantuar), since modes need them.
+2. Presentation gaps on the board (animated wave text, drum burst, hand cursor, glow, faces).
+3. Survival and mini-games (reuse `Board` with a `GameMode` per mode), then puzzle.
+4. Zen Garden and Tree of Wisdom, then the store's Zen items.
+5. Achievements; Windows visual pass and `.au` decoder; Linux.
 
 ## Code TODO index
 
