@@ -14,7 +14,7 @@ use sexy::data_array::{DataArray, Id};
 use sexy::particle::ParticleSystem;
 use sexy::rand::MtRand;
 use sexy::matrix::Matrix3;
-use sexy::reanim::{RENDER_GROUP_HIDDEN, RENDER_GROUP_NORMAL, ReanimDefinition};
+use sexy::reanim::{LoopType, RENDER_GROUP_HIDDEN, RENDER_GROUP_NORMAL, ReanimDefinition};
 use sexy::tod::float_round_to_int;
 
 use crate::particle::ParticleEffect;
@@ -335,6 +335,61 @@ pub struct EffectSystem {
     /// Reanimations attached to each reanimation's tracks: (track, attached).
     attachments: HashMap<ReanimationId, Vec<(usize, ReanimationId)>>,
     particles: DataArray<ParticleSystem>,
+    /// What each reanimation made by an attacher track is (`mReanimationType`), by file name.
+    attacher_names: HashMap<ReanimationId, String>,
+    /// Attacher names with no file, so they're only looked for once.
+    missing_attachers: std::collections::HashSet<String>,
+}
+
+/// What an `attacher__` track's text asks for (`AttacherInfo`).
+struct AttacherInfo {
+    reanim: String,
+    track: String,
+    anim_rate: f32,
+    loop_type: LoopType,
+}
+
+/// `Reanimation::ParseAttacherTrack`: `attacher__REANIM__TRACK[tag][tag]`.
+fn parse_attacher(text: &str) -> Option<AttacherInfo> {
+    let mut info = AttacherInfo { reanim: String::new(), track: String::new(), anim_rate: 12.0, loop_type: LoopType::Loop };
+    let after_name = text.find("__")? + 2;
+    let rest = &text[after_name..];
+    let tags = rest.find('[');
+    let track_at = rest.find("__");
+    if let (Some(t), Some(k)) = (tags, track_at)
+        && t < k
+    {
+        return None;
+    }
+    match (track_at, tags) {
+        (Some(k), _) => {
+            info.reanim = rest[..k].to_owned();
+            let track = &rest[k + 2..];
+            info.track = track[..track.find('[').unwrap_or(track.len())].to_owned();
+        }
+        (None, Some(t)) => info.reanim = rest[..t].to_owned(),
+        (None, None) => info.reanim = rest.to_owned(),
+    }
+    let mut cursor = tags.map(|t| &rest[t..]);
+    while let Some(tag) = cursor {
+        let Some(end) = tag.find(']') else { break };
+        let code = &tag[1..end];
+        if let Some(rate) = code.trim().parse::<f32>().ok().or_else(|| parse_leading_float(code)) {
+            info.anim_rate = rate;
+        } else if code == "hold" {
+            info.loop_type = LoopType::PlayOnceAndHold;
+        } else if code == "once" {
+            info.loop_type = LoopType::PlayOnce;
+        }
+        cursor = tag[end + 1..].find('[').map(|n| &tag[end + 1 + n..]);
+    }
+    Some(info)
+}
+
+/// The number `sscanf("%f")` reads from the start of `text`, if any.
+fn parse_leading_float(text: &str) -> Option<f32> {
+    let end = text.find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E'))).unwrap_or(text.len());
+    text[..end].parse().ok()
 }
 
 pub type ParticleSystemId = Id<ParticleSystem>;
@@ -352,6 +407,133 @@ impl EffectSystem {
         let definition = resources.reanim_definition(ty.file(), images)?;
         let id = self.reanimations.alloc(Reanimation::new(x, y, definition));
         Ok((id, self.reanimations.get_mut(id).unwrap()))
+    }
+
+    /// `AddReanimation` for a file named by an attacher track (`reanim/NAME.reanim`).
+    pub fn add_reanimation_file(
+        &mut self,
+        x: f32,
+        y: f32,
+        path: &str,
+        resources: &mut GameResources,
+        images: &mut Assets<Image>,
+    ) -> Result<(ReanimationId, &mut Reanimation), String> {
+        let definition = resources.reanim_definition(path, images)?;
+        let id = self.reanimations.alloc(Reanimation::new(x, y, definition));
+        Ok((id, self.reanimations.get_mut(id).unwrap()))
+    }
+
+    /// `Reanimation::UpdateAttacherTrack` for `id` and everything attached to
+    /// it: each `attacher__` track holds a reanimation named by its text
+    /// (which changes from keyframe to keyframe), playing the track it names.
+    pub fn update_attachers(&mut self, id: ReanimationId, resources: &mut GameResources, images: &mut Assets<Image>) {
+        let Some(reanim) = self.reanimations.get(id) else { return };
+        let attachers: Vec<(usize, Option<AttacherInfo>)> = reanim
+            .definition
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.name.len() >= 10 && t.name[..10].eq_ignore_ascii_case("attacher__"))
+            .map(|(i, _)| {
+                let transform = reanim.current_transform(i);
+                (i, if transform.frame() < 0 { None } else { parse_attacher(&transform.text) })
+            })
+            .collect();
+        for (track, info) in attachers {
+            self.update_attacher_track(id, track, info, resources, images);
+        }
+        // Whatever it holds may hold attachers too.
+        let children: Vec<_> = self.attachments.get(&id).map(|l| l.iter().map(|(_, c)| *c).collect()).unwrap_or_default();
+        for child in children {
+            self.update_attachers(child, resources, images);
+        }
+    }
+
+    fn update_attacher_track(
+        &mut self,
+        id: ReanimationId,
+        track: usize,
+        info: Option<AttacherInfo>,
+        resources: &mut GameResources,
+        images: &mut Assets<Image>,
+    ) {
+        let existing = self.attachments.get(&id).and_then(|l| l.iter().find(|(t, _)| *t == track).map(|(_, c)| *c));
+        let wanted = info.as_ref().map(|i| i.reanim.to_lowercase()).filter(|n| !n.is_empty() && !self.missing_attachers.contains(n));
+        let Some(info) = info.filter(|_| wanted.is_some()) else {
+            if let Some(old) = existing {
+                self.detach_attached(id, old);
+            }
+            return;
+        };
+        let wanted = wanted.expect("checked above");
+        let mut child = existing.filter(|c| self.attacher_names.get(c).is_some_and(|n| *n == wanted));
+        if child.is_none() {
+            if let Some(old) = existing {
+                self.detach_attached(id, old);
+            }
+            let path = format!("reanim/{}.reanim", info.reanim);
+            match self.add_reanimation_file(0.0, 0.0, &path, resources, images) {
+                Ok((new, reanim)) => {
+                    reanim.loop_type = info.loop_type;
+                    reanim.anim_rate = info.anim_rate;
+                    reanim.is_attachment = true;
+                    self.attacher_names.insert(new, wanted.clone());
+                    self.attachments.entry(id).or_default().push((track, new));
+                    if let Some(parent) = self.reanimations.get_mut(id) {
+                        // The parent has no base pose of its own once something is attached.
+                        parent.frame_base_pose = sexy::reanim::NO_BASE_POSE;
+                    }
+                    child = Some(new);
+                }
+                Err(_) => {
+                    self.missing_attachers.insert(wanted);
+                    return;
+                }
+            }
+        }
+        let Some(child) = child.and_then(|c| self.reanimations.get_mut(c)) else { return };
+        if !info.track.is_empty() {
+            let range = child.definition.frames_for_layer(&info.track);
+            if (child.frame_start, child.frame_count) != range {
+                child.start_blend(20);
+                child.set_frames_for_layer(&info.track);
+            }
+            child.anim_rate = info.anim_rate;
+            child.loop_type = info.loop_type;
+        }
+    }
+
+    /// Kills what an attacher track held, and forgets it.
+    fn detach_attached(&mut self, parent: ReanimationId, child: ReanimationId) {
+        if let Some(list) = self.attachments.get_mut(&parent) {
+            list.retain(|(_, c)| *c != child);
+        }
+        self.kill(child);
+    }
+
+    /// `FindSubReanim`: the reanimation made from `file_stem` (a name like
+    /// `Sunflower`, case aside) among `root`'s attachments, at any depth.
+    pub fn find_attached(&self, root: ReanimationId, file_stem: &str) -> Option<ReanimationId> {
+        let wanted = file_stem.to_lowercase();
+        for &(_, child) in self.attachments.get(&root).into_iter().flatten() {
+            if self.attacher_names.get(&child).is_some_and(|n| *n == wanted) {
+                return Some(child);
+            }
+            if let Some(found) = self.find_attached(child, file_stem) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// What's attached to `id`'s tracks: (track, attached).
+    pub fn attachments_of(&self, id: ReanimationId) -> Vec<(usize, ReanimationId)> {
+        self.attachments.get(&id).cloned().unwrap_or_default()
+    }
+
+    /// Whether `id` was made by an attacher track for the reanimation called `file_stem`.
+    pub fn is_attached_as(&self, id: ReanimationId, file_stem: &str) -> bool {
+        self.attacher_names.get(&id).is_some_and(|n| *n == file_stem.to_lowercase())
     }
 
     pub fn get(&self, id: ReanimationId) -> Option<&Reanimation> {
@@ -385,13 +567,36 @@ impl EffectSystem {
         for (track, child) in attached {
             self.update_reanimation(child);
             let Some(matrix) = self.reanimations.get(id).map(|r| r.attachment_overlay_matrix(track)) else { break };
-            let (color, extra) = self.reanimations.get(id).map_or((sexy::reanim::WHITE, None), |r| (r.color_override, r.extra_additive));
+            let (mut color, extra) = self.reanimations.get(id).map_or((sexy::reanim::WHITE, None), |r| (r.color_override, r.extra_additive));
+            // An attacher track's own alpha fades what it holds (`UpdateAttacherTrack`).
+            if let Some(r) = self.reanimations.get(id)
+                && r.definition.tracks[track].name.len() >= 10
+                && r.definition.tracks[track].name[..10].eq_ignore_ascii_case("attacher__")
+            {
+                let alpha = r.current_transform(track).a;
+                color[3] = (alpha * color[3] as f32).round().clamp(0.0, 255.0) as u8;
+            }
             if let Some(c) = self.reanimations.get_mut(child) {
                 c.overlay = matrix * c.attach_offset;
                 // PropogateColorToAttachments.
                 c.color_override = color;
                 c.extra_additive = extra;
             }
+        }
+    }
+
+    /// Puts everything attached to `id` (at any depth) where its track is now,
+    /// without advancing anything, so a sub-animation made this tick isn't drawn
+    /// once at the origin.
+    pub fn place_attachments(&mut self, id: ReanimationId) {
+        let Some(attached) = self.attachments.get(&id).cloned() else { return };
+        for (track, child) in attached {
+            let Some(parent) = self.reanimations.get(id) else { return };
+            let matrix = parent.attachment_overlay_matrix(track);
+            if let Some(c) = self.reanimations.get_mut(child) {
+                c.overlay = matrix * c.attach_offset;
+            }
+            self.place_attachments(child);
         }
     }
 
@@ -485,6 +690,7 @@ impl EffectSystem {
     pub fn clear(&mut self) {
         self.reanimations.clear();
         self.attachments.clear();
+        self.attacher_names.clear();
         self.particles.clear();
     }
 
@@ -618,8 +824,18 @@ fn draw_track_colored(
     }
     color.a = alpha as u8;
 
-    // TODO: text tracks (`font`/`text`).
     let Some(image) = transform.image.as_deref().and_then(|id| resources.image(id)) else {
+        // A track of text: its center is its position, its top the baseline less the ascent.
+        if let (Some(font), false) = (transform.font.as_deref().and_then(|id| resources.font(id)), transform.text.is_empty()) {
+            let width = font.font.string_width(&transform.text) as f32;
+            let matrix = (reanim.overlay * transform.matrix() * Matrix3::translation(-width * 0.5, font.font.ascent as f32))
+                .translated(-0.5, -0.5);
+            g.push_state();
+            g.set_color(color);
+            g.draw_string_matrix(font, to_affine(matrix), &transform.text);
+            g.pop_state();
+            return;
+        }
         // The "fullscreen" track fills the whole screen with its color.
         if transform.font.is_none() && reanim.definition.tracks[track].name.eq_ignore_ascii_case("fullscreen") {
             let t = g.translation();
@@ -655,4 +871,22 @@ fn draw_track_colored(
         g.draw_image_matrix_src(image, to_affine(matrix), src);
     }
     g.pop_state();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attacher_text_names_the_reanimation_track_and_tags() {
+        let a = parse_attacher("attacher__Credits_stage[12.25]").unwrap();
+        assert_eq!((a.reanim.as_str(), a.track.as_str(), a.anim_rate), ("Credits_stage", "", 12.25));
+        let a = parse_attacher("attacher__Zombie_credits_dance__anim_dance2").unwrap();
+        assert_eq!((a.reanim.as_str(), a.track.as_str(), a.anim_rate), ("Zombie_credits_dance", "anim_dance2", 12.0));
+        assert_eq!(a.loop_type, LoopType::Loop);
+        let a = parse_attacher("attacher__Sun__Sun1[8][hold]").unwrap();
+        assert_eq!((a.reanim.as_str(), a.track.as_str(), a.anim_rate), ("Sun", "Sun1", 8.0));
+        assert_eq!(a.loop_type, LoopType::PlayOnceAndHold);
+        assert!(parse_attacher("no underscores").is_none());
+    }
 }

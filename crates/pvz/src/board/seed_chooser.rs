@@ -16,9 +16,10 @@ use bevy::prelude::*;
 use crate::audio::Sounds;
 use crate::graphics::{Graphics, Justify, SexyColor};
 use crate::plant::SeedType;
+use crate::zombie::ZombieType;
 use crate::resources::GameResources;
 
-use super::seed_bank::draw_seed_packet;
+use super::seed_bank::{draw_seed_packet, draw_seed_packet_as};
 use super::tooltip::ToolTip;
 use super::Board;
 
@@ -33,6 +34,8 @@ enum ChosenSeedState {
     FlyingToBank,
     FlyingToChooser,
     InBank,
+    /// Not in the chooser: a plant the player doesn't have, or the imitater's own spot until it's picked.
+    Hidden,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +48,43 @@ struct ChosenSeed {
     time_end: i32,
     state: ChosenSeedState,
     index_in_bank: usize,
+    /// The plant an imitater copies (`mImitaterType`).
+    imitating: Option<SeedType>,
+    /// This is the imitater's slot: back in the chooser it's hidden again.
+    imitater_slot: bool,
+}
+
+/// One of `OnStartButton`'s questions: a string key, or the upgrade
+/// warning naming the two plants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChooserWarning {
+    Key(&'static str),
+    Upgrade { to: SeedType, from: SeedType },
+}
+
+impl From<&'static str> for ChooserWarning {
+    fn from(key: &'static str) -> Self {
+        Self::Key(key)
+    }
+}
+
+impl PartialEq<&str> for ChooserWarning {
+    fn eq(&self, other: &&str) -> bool {
+        matches!(self, Self::Key(key) if key == other)
+    }
+}
+
+impl ChooserWarning {
+    /// The dialog's text.
+    pub fn text(&self, res: &GameResources) -> String {
+        match *self {
+            Self::Key(key) => res.translate(key),
+            Self::Upgrade { to, from } => res
+                .translate("[SEED_CHOOSER_UPGRADE_WARNING]")
+                .replace("{UPGRADE_TO}", &res.translate(&format!("[{}]", to.definition().name)))
+                .replace("{UPGRADE_FROM}", &res.translate(&format!("[{}]", from.definition().name))),
+        }
+    }
 }
 
 /// `SeedChooserScreen`.
@@ -62,6 +102,10 @@ pub struct SeedChooser {
     warnings_accepted: usize,
     /// The player's answer to the last warning ("Yes", or "Re-pick").
     pub warning_answer: Option<bool>,
+    /// Whether the chooser has seven rows (`Has7Rows`), which packs them closer.
+    seven_rows: bool,
+    /// The imitater's panel is up, asking which plant to copy.
+    imitater_panel: bool,
 }
 
 /// `SEED_CHOOSER_OFFSET_Y`: where the chooser waits, just off the bottom of the screen.
@@ -69,17 +113,29 @@ pub fn offset_y(res: &GameResources) -> i32 {
     res.image("IMAGE_SEEDCHOOSER_BACKGROUND").map_or(513, |i| i.height as i32)
 }
 
-/// `GetSeedPositionInChooser`, for a lawn that hasn't unlocked a seventh row.
-fn position_in_chooser(index: usize) -> (i32, i32) {
+/// The imitater's button (`mImitaterButton`): x, y.
+const IMITATER_BUTTON: (i32, i32) = (464, 515);
+
+/// `ImitaterDialog::GetSeedPosition`, in chooser coordinates (the panel sits in the middle).
+fn imitater_panel_position(index: usize) -> (i32, i32) {
+    ((index % 8) as i32 * (SEED_PACKET_WIDTH + 1) + 400 - 210, (index / 8) as i32 * (SEED_PACKET_HEIGHT + 1) + 190)
+}
+
+/// `GetSeedPositionInChooser`.
+fn position_in_chooser(index: usize, seven_rows: bool) -> (i32, i32) {
+    if index == SeedType::Imitater as usize {
+        return IMITATER_BUTTON;
+    }
     let (row, col) = ((index / 8) as i32, (index % 8) as i32);
-    (col * 53 + 22, row * 73 + 128)
+    (col * 53 + 22, if seven_rows { row * 70 + 123 } else { row * 73 + 128 })
 }
 
 impl SeedChooser {
-    pub fn new(available: usize, y: i32) -> Self {
-        let seeds = (0..available)
+    pub fn new(owned: &[bool], seven_rows: bool, y: i32) -> Self {
+        let seeds = (0..owned.len())
             .map(|i| {
-                let (x, y) = position_in_chooser(i);
+                let (x, y) = position_in_chooser(i, seven_rows);
+                let usable = owned[i] && i != SeedType::Imitater as usize;
                 ChosenSeed {
                     x,
                     y,
@@ -87,18 +143,42 @@ impl SeedChooser {
                     end: (x, y),
                     time_start: 0,
                     time_end: 0,
-                    state: ChosenSeedState::InChooser,
+                    state: if usable { ChosenSeedState::InChooser } else { ChosenSeedState::Hidden },
                     index_in_bank: 0,
+                    imitating: None,
+                    imitater_slot: i == SeedType::Imitater as usize,
                 }
             })
             .collect();
-        Self { seeds, age: 0, in_flight: 0, in_bank: 0, y, mouse_visible: false, warnings_accepted: 0, warning_answer: None }
+        Self { seeds, age: 0, in_flight: 0, in_bank: 0, y, mouse_visible: false, warnings_accepted: 0, warning_answer: None, seven_rows, imitater_panel: false }
+    }
+
+    /// What's been picked: each seed's index and the plant it copies, if an imitater.
+    #[cfg(test)]
+    pub fn picked(&self) -> Vec<(usize, Option<SeedType>)> {
+        self.seeds
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| matches!(s.state, ChosenSeedState::InBank | ChosenSeedState::FlyingToBank))
+            .map(|(i, s)| (i, s.imitating))
+            .collect()
+    }
+
+    /// Whether the imitater's panel is up.
+    #[cfg(test)]
+    pub fn imitater_panel_open(&self) -> bool {
+        self.imitater_panel
     }
 
     /// `LandFlyingSeed`.
     fn land(seed: &mut ChosenSeed, in_flight: &mut i32) {
         match seed.state {
             ChosenSeedState::FlyingToBank => seed.state = ChosenSeedState::InBank,
+            ChosenSeedState::FlyingToChooser if seed.imitater_slot => {
+                // The imitater's packet goes back to its button.
+                seed.state = ChosenSeedState::Hidden;
+                seed.imitating = None;
+            }
             ChosenSeedState::FlyingToChooser => seed.state = ChosenSeedState::InChooser,
             _ => return,
         }
@@ -121,12 +201,20 @@ impl SeedChooser {
     /// `SeedHitTest`.
     fn seed_at(&self, p: IVec2) -> Option<usize> {
         self.seeds.iter().position(|s| {
-            p.x >= s.x && p.x < s.x + SEED_PACKET_WIDTH && p.y >= s.y && p.y < s.y + SEED_PACKET_HEIGHT
+            s.state != ChosenSeedState::Hidden && p.x >= s.x && p.x < s.x + SEED_PACKET_WIDTH && p.y >= s.y && p.y < s.y + SEED_PACKET_HEIGHT
         })
     }
 }
 
 impl Board {
+    /// `SeedChooserScreen::Has7Rows`: with the store's upgrades there are 48 plants, not 40.
+    pub(super) fn has_seven_chooser_rows(&self) -> bool {
+        let owned = |seed: SeedType| self.owned_seeds.get(seed as usize).copied().unwrap_or(false);
+        self.finished_adventure
+            || owned(SeedType::Gatlingpea)
+            || (SeedType::Twinsunflower as usize..SeedType::Cobcannon as usize).any(|i| i != SeedType::Spikerock as usize && self.owned_seeds.get(i).copied().unwrap_or(false))
+    }
+
     /// `GetSeedPositionInBank`.
     fn seed_position_in_bank(&self, chooser_y: i32, index: usize) -> (i32, i32) {
         (self.seed_bank.x + self.seed_bank.packet_x(index), self.seed_bank.y - chooser_y + 8)
@@ -178,28 +266,56 @@ impl Board {
     }
 
     /// `OnStartButton`'s questions before play starts: "are you sure, without ...?"
-    pub(super) fn chooser_warnings(&self, picked: impl Fn(SeedType) -> bool) -> Vec<&'static str> {
-        let mut warnings = Vec::new();
+    pub(super) fn chooser_warnings(&self, picked: impl Fn(SeedType) -> bool) -> Vec<ChooserWarning> {
+        let mut warnings: Vec<ChooserWarning> = Vec::new();
         let night_one = self.first_time_adventure && self.level == 11;
         if night_one && !picked(SeedType::Puffshroom) {
-            warnings.push("[SEED_CHOOSER_PUFFSHROOM_WARNING]");
+            warnings.push("[SEED_CHOOSER_PUFFSHROOM_WARNING]".into());
         }
         if ![SeedType::Sunflower, SeedType::Twinsunflower, SeedType::Sunshroom].into_iter().any(&picked) {
-            warnings.push(if night_one { "[SEED_CHOOSER_NIGHT_SUN_WARNING]" } else { "[SEED_CHOOSER_SUN_WARNING]" });
+            warnings.push((if night_one { "[SEED_CHOOSER_NIGHT_SUN_WARNING]" } else { "[SEED_CHOOSER_SUN_WARNING]" }).into());
         }
-        // TODO: the pool, roof and flyer warnings, with those levels.
+        if self.stage_has_pool() && ![SeedType::Lilypad, SeedType::Seashroom, SeedType::Tanglekelp].into_iter().any(&picked) {
+            warnings.push((if self.first_time_adventure && self.level == 21 {
+                "[SEED_CHOOSER_LILY_WARNING]"
+            } else {
+                "[SEED_CHOOSER_POOL_WARNING]"
+            }).into());
+        }
+        if self.stage_has_roof() && !picked(SeedType::Flowerpot) && self.owned_seeds[SeedType::Flowerpot as usize] {
+            warnings.push("[SEED_CHOOSER_ROOF_WARNING]".into());
+        }
+        // Behaviour per ruslan831 decomp, SeedChooserScreen::FlyersAreComming
+        // and FlyProtectionCurrentlyPlanted.
+        let flyers = self.waves.zombies_in_wave.iter().flatten().any(|&z| z == ZombieType::Balloon);
+        let protected = |seed: SeedType| picked(seed) || self.plants.iter().any(|(_, p)| p.seed == seed);
+        if flyers && ![SeedType::Cattail, SeedType::Cactus].into_iter().any(protected) && !picked(SeedType::Blover) {
+            warnings.push("[SEED_CHOOSER_FLYER_WARNING]".into());
+        }
+        // `CheckSeedUpgrade`, in the original's order.
+        use SeedType::*;
+        for to in [Gatlingpea, Wintermelon, Twinsunflower, Spikerock, Cobcannon, GoldMagnet, Gloomshroom, Cattail] {
+            if let Some(from) = to.upgrade_base()
+                && picked(to)
+                && !picked(from)
+            {
+                warnings.push(ChooserWarning::Upgrade { to, from });
+            }
+        }
         warnings
     }
 
     /// `OnStartButton`: once the player's answered every warning with
     /// "yes", play starts. Returns the next warning to ask, if any.
-    pub(super) fn seed_chooser_start(&mut self) -> Option<&'static str> {
+    pub(super) fn seed_chooser_start(&mut self) -> Option<ChooserWarning> {
         let chooser = self.seed_chooser.as_ref()?;
         if chooser.in_bank != self.seed_bank.num_packets {
             return None;
         }
+        let in_bank = |s: &ChosenSeed| matches!(s.state, ChosenSeedState::InBank | ChosenSeedState::FlyingToBank);
+        // A plant copied by an imitater counts as picked.
         let picked = |seed: SeedType| {
-            chooser.seeds.get(seed as usize).is_some_and(|s| matches!(s.state, ChosenSeedState::InBank | ChosenSeedState::FlyingToBank))
+            chooser.seeds.get(seed as usize).is_some_and(in_bank) || chooser.seeds.iter().any(|s| in_bank(s) && s.imitating == Some(seed))
         };
         let warnings = self.chooser_warnings(picked);
         if let Some(&warning) = warnings.get(chooser.warnings_accepted) {
@@ -218,7 +334,7 @@ impl Board {
 
     /// The answer to a warning: "yes" moves on to the next one (or play),
     /// "Re-pick" goes back to choosing.
-    pub(super) fn seed_chooser_warning_answered(&mut self) -> Option<&'static str> {
+    pub(super) fn seed_chooser_warning_answered(&mut self) -> Option<ChooserWarning> {
         let chooser = self.seed_chooser.as_mut()?;
         match chooser.warning_answer.take()? {
             true => {
@@ -234,18 +350,64 @@ impl Board {
 
     /// `SeedChooserScreen::MouseDown`, at a point in screen coordinates.
     /// Returns a warning to ask about before play starts, if any.
-    pub(super) fn seed_chooser_mouse_down(&mut self, p: IVec2, sounds: &mut Sounds) -> Option<&'static str> {
+    pub(super) fn seed_chooser_mouse_down(&mut self, p: IVec2, sounds: &mut Sounds) -> Option<ChooserWarning> {
         let num_packets = self.seed_bank.num_packets;
         let chooser = self.seed_chooser.as_mut().filter(|c| c.mouse_visible)?;
         chooser.land_all();
         // The chooser's own coordinates.
         let p = p - IVec2::new(0, chooser.y);
 
+        let seven_rows = chooser.seven_rows;
+        // The imitater's panel: pick a plant to copy, or click away.
+        if chooser.imitater_panel {
+            chooser.imitater_panel = false;
+            let picked = (0..SeedType::Gatlingpea as usize).find(|&i| {
+                let (x, y) = imitater_panel_position(i);
+                self.owned_seeds[i] && p.x >= x && p.x < x + SEED_PACKET_WIDTH && p.y >= y && p.y < y + SEED_PACKET_HEIGHT
+            });
+            let chooser = self.seed_chooser.as_mut().expect("chooser is open");
+            let slot = SeedType::Imitater as usize;
+            let seed = picked.and_then(|i| SeedType::from_index(i as i32))?;
+            if chooser.in_bank == num_packets {
+                return None;
+            }
+            // `ImitaterDialog::MouseDown`: the imitater packet flies into the bank.
+            let (age, chooser_y, bank_slot) = (chooser.age, chooser.y, chooser.in_bank);
+            let end = self.seed_position_in_bank(chooser_y, bank_slot);
+            let chooser = self.seed_chooser.as_mut().expect("chooser is open");
+            let imitater = &mut chooser.seeds[slot];
+            imitater.imitating = Some(seed);
+            (imitater.x, imitater.y) = IMITATER_BUTTON;
+            imitater.time_start = age;
+            imitater.time_end = age + 25;
+            imitater.start = (imitater.x, imitater.y);
+            imitater.end = end;
+            imitater.state = ChosenSeedState::FlyingToBank;
+            imitater.index_in_bank = bank_slot;
+            chooser.in_flight += 1;
+            chooser.in_bank += 1;
+            sounds.play_sample("SOUND_TAP");
+            return None;
+        }
+
         let (bx, by, bw, bh) = START_BUTTON;
         if p.x >= bx && p.x < bx + bw && p.y >= by && p.y < by + bh {
             sounds.play_sample("SOUND_TAP");
             chooser.warnings_accepted = 0;
             return self.seed_chooser_start();
+        }
+        // The imitater's button opens its panel, once it has been bought and isn't in use.
+        let (ix, iy) = IMITATER_BUTTON;
+        if p.x >= ix
+            && p.x < ix + SEED_PACKET_WIDTH
+            && p.y >= iy
+            && p.y < iy + SEED_PACKET_HEIGHT
+            && self.owned_seeds[SeedType::Imitater as usize]
+            && chooser.seeds[SeedType::Imitater as usize].state == ChosenSeedState::Hidden
+        {
+            chooser.imitater_panel = true;
+            sounds.play_sample("SOUND_TAP");
+            return None;
         }
 
         let index = chooser.seed_at(p)?;
@@ -273,7 +435,7 @@ impl Board {
                 seed.time_start = age;
                 seed.time_end = age + 25;
                 seed.start = (seed.x, seed.y);
-                seed.end = position_in_chooser(index);
+                seed.end = position_in_chooser(index, seven_rows);
                 seed.state = ChosenSeedState::FlyingToChooser;
                 seed.index_in_bank = 0;
                 chooser.in_bank -= 1;
@@ -308,8 +470,12 @@ impl Board {
         let Some(chooser) = &mut self.seed_chooser else { return };
         chooser.land_all();
         for slot in 0..self.seed_bank.num_packets {
-            let seed = chooser.seed_in_bank(slot).and_then(|i| SeedType::from_index(i as i32));
+            let index = chooser.seed_in_bank(slot);
+            let copied = index.and_then(|i| chooser.seeds[i].imitating);
+            // An imitater's packet is the copied plant's, marked as a copy.
+            let seed = copied.or_else(|| index.and_then(|i| SeedType::from_index(i as i32)));
             self.seed_bank.packets[slot].set_packet_type(seed);
+            self.seed_bank.packets[slot].imitater = copied.is_some();
         }
         chooser.mouse_visible = false;
         self.cut_scene.end_seed_choosing();
@@ -330,21 +496,22 @@ impl Board {
             g.tod_draw_string(font, 229, 110, &title, SexyColor::WHITE, Justify::Center);
         }
 
+        // The imitater's add-on, once it has been bought.
+        let imitater_owned = self.owned_seeds[SeedType::Imitater as usize];
+        if imitater_owned && let Some(addon) = res.image("IMAGE_SEEDCHOOSER_IMITATERADDON") {
+            g.draw_image(addon, 459.0, 503.0);
+        }
         // The slots: a dim copy of a plant that's been taken, a silhouette for the rest.
-        for index in 0..40 {
-            let (x, y) = position_in_chooser(index);
-            match chooser.seeds.get(index) {
-                Some(seed) if seed.state != ChosenSeedState::InChooser => {
-                    if let Some(s) = SeedType::from_index(index as i32) {
-                        draw_seed_packet(g, res, x as f32, y as f32, s, 0.0, 55, true);
-                    }
+        let num_slots = if chooser.seven_rows { 48 } else { 40 };
+        for index in 0..num_slots {
+            let (x, y) = position_in_chooser(index, chooser.seven_rows);
+            let Some(s) = SeedType::from_index(index as i32) else { continue };
+            if self.owned_seeds[index] {
+                if chooser.seeds[index].state != ChosenSeedState::InChooser {
+                    draw_seed_packet(g, res, x as f32, y as f32, s, 0.0, 55, true);
                 }
-                Some(_) => {}
-                None => {
-                    if let Some(silhouette) = res.image("IMAGE_SEEDPACKETSILHOUETTE") {
-                        g.draw_image(silhouette, x as f32, y as f32);
-                    }
-                }
+            } else if let Some(silhouette) = res.image("IMAGE_SEEDPACKETSILHOUETTE") {
+                g.draw_image(silhouette, x as f32, y as f32);
             }
         }
         for slot in 0..self.seed_bank.num_packets {
@@ -359,13 +526,26 @@ impl Board {
         let flying = |s: &ChosenSeed| matches!(s.state, ChosenSeedState::FlyingToBank | ChosenSeedState::FlyingToChooser);
         for pass_flying in [false, true] {
             for (index, seed) in chooser.seeds.iter().enumerate() {
-                if flying(seed) != pass_flying || (!pass_flying && seed.state != ChosenSeedState::InChooser && !choosing) {
+                if seed.state == ChosenSeedState::Hidden || flying(seed) != pass_flying || (!pass_flying && seed.state != ChosenSeedState::InChooser && !choosing) {
                     continue;
                 }
                 if let Some(ty) = SeedType::from_index(index as i32) {
+                    // An imitater's packet shows the plant it copies.
+                    let (shown, copy) = match seed.imitating {
+                        Some(copied) => (copied, true),
+                        None => (ty, false),
+                    };
                     let grayed = seed.state == ChosenSeedState::InChooser && self.seed_not_recommended(ty).is_some();
-                    draw_seed_packet(g, res, seed.x as f32, seed.y as f32, ty, 0.0, if grayed { 115 } else { 255 }, true);
+                    draw_seed_packet_as(g, res, seed.x as f32, seed.y as f32, shown, copy, 0.0, if grayed { 115 } else { 255 }, true);
                 }
+            }
+        }
+        // The imitater's button: it grays out while its packet is in use.
+        if imitater_owned {
+            let in_use = chooser.seeds[SeedType::Imitater as usize].state != ChosenSeedState::Hidden;
+            let image = if in_use { "IMAGE_IMITATERSEEDDISABLED" } else { "IMAGE_IMITATERSEED" };
+            if let Some(button) = res.image(image) {
+                g.draw_image(button, IMITATER_BUTTON.0 as f32, IMITATER_BUTTON.1 as f32);
             }
         }
 
@@ -410,6 +590,28 @@ impl Board {
                 tip.x = ((SEED_PACKET_WIDTH - tip.width) / 2 + s.x).clamp(0, super::BOARD_WIDTH - tip.width);
                 tip.y = s.y + 70;
                 tip.draw(g, res);
+            }
+        }
+        // The imitater's panel: every plant it can copy.
+        if chooser.imitater_panel {
+            g.set_color(SexyColor::rgba(0, 0, 0, 140));
+            g.fill_rect(0.0, 87.0, 800.0, 513.0);
+            g.set_color(SexyColor::rgba(70, 45, 20, 255));
+            g.fill_rect(150.0, 140.0, 500.0, 330.0);
+            g.set_color(SexyColor::rgba(230, 200, 120, 255));
+            g.draw_rect(150.0, 140.0, 500.0, 330.0);
+            let title = res.translate("[CHOOSE_SEED_TO_COPY]");
+            if let Some(font) = res.font("FONT_DWARVENTODCRAFT18YELLOW") {
+                g.tod_draw_string(font, 400, 170, &title, SexyColor::WHITE, Justify::Center);
+            }
+            for index in 0..SeedType::Gatlingpea as usize {
+                if self.owned_seeds[index]
+                    && let Some(seed) = SeedType::from_index(index as i32)
+                {
+                    let (x, y) = imitater_panel_position(index);
+                    let grayed = self.seed_not_recommended(seed).is_some();
+                    draw_seed_packet_as(g, res, x as f32, y as f32, seed, true, 0.0, if grayed { 115 } else { 255 }, true);
+                }
             }
         }
         g.pop_state();

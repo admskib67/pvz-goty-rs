@@ -121,23 +121,26 @@ impl Board {
         if let Some(z) = self.zombies.get_mut(zombie) {
             z.set_dropped_loot();
         }
-        if self.first_time_adventure {
-            // TODO: levels 9, 14, ... and 50 award a note, an almanac and so
-            // on instead; finishing adventure gives a money bag.
-            sounds.play_foley(FoleyType::SpawnSun);
-            let (x, y) = (center.0 as f32, center.1 as f32);
-            let ty = match self.level {
-                9 | 19 | 29 | 39 | 49 => CoinType::Note,
-                4 => CoinType::Shovel,
-                14 => CoinType::Almanac,
-                24 => CoinType::CarKeys,
-                34 => CoinType::Taco,
-                44 => CoinType::WateringCan,
-                50 => CoinType::SilverSunflower,
-                _ => CoinType::FinalSeedPacket,
-            };
-            let motion = if ty == CoinType::SilverSunflower { CoinMotion::FromBoss } else { CoinMotion::Coin };
-            self.add_coin(x, y, ty, motion, effects, res, images, sounds);
+        // Behaviour per ruslan831 decomp, Zombie::TrySpawnLevelAward: the notes
+        // come every time; after that a finished adventure hands out money bags.
+        let finished = !self.first_time_adventure;
+        sounds.play_foley(FoleyType::SpawnSun);
+        let (x, y) = (center.0 as f32, center.1 as f32);
+        let ty = match self.level {
+            9 | 19 | 29 | 39 | 49 => CoinType::Note,
+            50 if finished => CoinType::MoneyBag,
+            50 => CoinType::SilverSunflower,
+            _ if finished => CoinType::MoneyBag,
+            4 => CoinType::Shovel,
+            14 => CoinType::Almanac,
+            24 => CoinType::CarKeys,
+            34 => CoinType::Taco,
+            44 => CoinType::WateringCan,
+            _ => CoinType::FinalSeedPacket,
+        };
+        let motion = if ty == CoinType::SilverSunflower { CoinMotion::FromBoss } else { CoinMotion::Coin };
+        self.add_coin(x, y, ty, motion, effects, res, images, sounds);
+        if ty == CoinType::FinalSeedPacket {
             let seed = SeedType::from_index(crate::plant::award_seed_for_level(self.level));
             if let Some(seed) = seed
                 && let Err(e) = res.reanim_definition(seed.definition().reanim.file(), images)
@@ -147,9 +150,6 @@ impl Board {
             if let Some((_, coin)) = self.coins.iter_mut().find(|(_, c)| c.ty == CoinType::FinalSeedPacket) {
                 coin.award_seed = seed;
             }
-        } else {
-            // TODO: a money bag to click.
-            self.pending_fade_out = true;
         }
         true
     }
@@ -163,16 +163,48 @@ impl Board {
         self.board_fade_out_counter = 600;
         // TryAutoCollectAfterLevelAward: sun on the lawn flies to the bank.
         for (_, coin) in self.coins.iter_mut() {
-            if !coin.is_level_award() && !coin.dead && !coin.is_being_collected {
+            if !coin.is_level_award() && !coin.dead && !coin.is_being_collected && !coin.is_from_present() {
                 sounds.play_foley(FoleyType::Sun);
                 coin.collect();
             }
         }
-        // TODO: the mowers that never ran turn into money (CanDropLoot).
     }
 
-    /// `Board::UpdateLevelEndSequence`.
-    pub(super) fn update_level_end_sequence(&mut self, sounds: &mut Sounds) {
+    /// `Coin::FanOutCoins`: `count` coins fly out of (x, y) in a fan.
+    #[allow(clippy::too_many_arguments)]
+    fn fan_out_coins(
+        &mut self,
+        ty: CoinType,
+        count: i32,
+        x: f32,
+        y: f32,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        sounds: &mut Sounds,
+    ) {
+        for i in 0..count {
+            let angle = std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * (i + 1) as f32 / (count + 1) as f32;
+            let id = self.add_coin(x + 20.0, y, ty, CoinMotion::FromPresent, effects, res, images, sounds);
+            if let Some(coin) = self.coins.get_mut(id) {
+                coin.set_velocity(5.0 * angle.sin(), 5.0 * angle.cos());
+            }
+        }
+    }
+
+    /// `Board::UpdateLevelEndSequence`: as the level fades out, the lawn mowers
+    /// that never ran turn into money, one every 40 ticks.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn update_level_end_sequence(
+        &mut self,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        sounds: &mut Sounds,
+    ) {
+        if let Some((ty, count, x, y)) = self.pending_fan_out.take() {
+            self.fan_out_coins(ty, count, x, y, effects, res, images, sounds);
+        }
         if self.board_fade_out_counter < 0 {
             return;
         }
@@ -181,8 +213,32 @@ impl Board {
             self.level_complete = true;
             return;
         }
-        if self.board_fade_out_counter == 300 {
+        if self.board_fade_out_counter == 300 && !matches!(self.level, 9 | 19 | 29 | 39 | 49) {
             sounds.play_sample("SOUND_LIGHTFILL");
+        }
+        if self.score_next_mower_counter > 0 {
+            self.score_next_mower_counter -= 1;
+            if self.score_next_mower_counter > 0 {
+                return;
+            }
+        }
+        if self.can_drop_loot() {
+            self.score_next_mower_counter = 40;
+            // GetBottomLawnMower: the mowers still waiting, lowest row first.
+            let bottom = self
+                .lawn_mowers
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| !m.dead && matches!(m.state, super::lawn_mower::LawnMowerState::Ready | super::lawn_mower::LawnMowerState::RollingIn))
+                .max_by_key(|(_, m)| m.row)
+                .map(|(i, _)| i);
+            if let Some(i) = bottom {
+                let (x, y) = (self.lawn_mowers[i].pos_x + 40.0, self.lawn_mowers[i].pos_y + 40.0);
+                self.add_coin(x, y, CoinType::Gold, CoinMotion::LawnmowerCoin, effects, res, images, sounds);
+                let waiting = self.lawn_mowers.iter().filter(|m| !m.dead && matches!(m.state, super::lawn_mower::LawnMowerState::Ready | super::lawn_mower::LawnMowerState::RollingIn)).count();
+                sounds.play_foley_pitch(FoleyType::Sun, (6.0 - (waiting as f32 - 1.0)).clamp(0.0, 6.0));
+                self.lawn_mowers[i].dead = true;
+            }
         }
     }
 

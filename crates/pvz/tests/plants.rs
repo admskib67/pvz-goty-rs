@@ -597,8 +597,503 @@ fn a_coffee_bean_wakes_a_sleeping_mushroom() {
     assert_eq!(t.board.can_plant_at(1, 2, SeedType::InstantCoffee), PlantingReason::NotHere, "nothing to wake");
     assert_eq!(t.board.can_plant_at(2, 2, SeedType::InstantCoffee), PlantingReason::Ok);
     t.with(|board, effects, res, images, sounds| board.add_plant(2, 2, SeedType::InstantCoffee, effects, res, images, sounds));
-    assert!(!t.plant_ref(shroom).unwrap().is_asleep(), "it wakes up");
-    assert_eq!(t.board.can_plant_at(2, 2, SeedType::InstantCoffee), PlantingReason::NotHere, "and needs no second bean");
+    t.ticks(101);
+    assert_eq!(t.board.can_plant_at(2, 2, SeedType::InstantCoffee), PlantingReason::NotHere, "no second bean while it's waking");
+    assert!(t.plant_ref(shroom).unwrap().is_asleep(), "the bean takes a moment to crumble");
+    t.ticks(101);
+    assert!(!t.plant_ref(shroom).unwrap().is_asleep(), "then it wakes up");
+    t.ticks(60);
+    assert_eq!(t.board.plants.iter().filter(|(_, p)| !p.dead && p.seed == SeedType::InstantCoffee).count(), 0, "and the bean's gone");
+    assert_eq!(t.board.can_plant_at(2, 2, SeedType::InstantCoffee), PlantingReason::NotHere, "needing no second bean");
     let zombie = t.zombie(ZombieType::Normal, 2, 450.0);
     assert!(t.run_until(500, |b| b.zombies.get(zombie).is_none_or(|z| z.body_health < 270)), "so it shoots in the day");
+}
+
+#[test]
+fn upgrades_only_go_on_their_base_plant() {
+    let mut t = test_board!("1-6");
+    let up = |t: &TestBoard, c, r, s| t.board.can_plant_at(c, r, s);
+    assert_eq!(up(&t, 3, 2, SeedType::Gatlingpea), PlantingReason::NeedsUpgrade, "a bare square");
+    t.plant(SeedType::Peashooter, 3, 2);
+    assert_eq!(up(&t, 3, 2, SeedType::Gatlingpea), PlantingReason::NeedsUpgrade, "a peashooter isn't a repeater");
+    t.plant(SeedType::Repeater, 4, 2);
+    assert_eq!(up(&t, 4, 2, SeedType::Gatlingpea), PlantingReason::Ok);
+    assert_eq!(up(&t, 4, 2, SeedType::Peashooter), PlantingReason::NotHere, "ordinary plants still can't stack");
+    t.plant(SeedType::Sunflower, 5, 2);
+    assert_eq!(up(&t, 5, 2, SeedType::Twinsunflower), PlantingReason::Ok);
+    assert_eq!(up(&t, 5, 2, SeedType::Gatlingpea), PlantingReason::NeedsUpgrade);
+    t.plant(SeedType::Spikeweed, 6, 2);
+    assert_eq!(up(&t, 6, 2, SeedType::Spikerock), PlantingReason::Ok);
+}
+
+#[test]
+fn an_upgrade_packet_needs_its_base_plant_on_the_lawn() {
+    let mut t = test_board!("1-6");
+    assert!(!t.board.planting_requirements_met(SeedType::Gatlingpea));
+    assert!(t.board.planting_requirements_met(SeedType::Peashooter), "ordinary plants have no requirement");
+    t.plant(SeedType::Repeater, 0, 0);
+    assert!(t.board.planting_requirements_met(SeedType::Gatlingpea));
+    assert!(!t.board.planting_requirements_met(SeedType::Twinsunflower), "each upgrade has its own base");
+}
+
+#[test]
+fn planting_an_upgrade_replaces_its_base() {
+    let mut t = test_board!("1-6");
+    let old = t.plant(SeedType::Repeater, 3, 2);
+    let new = t.plant(SeedType::Gatlingpea, 3, 2);
+    assert!(t.plant_ref(old).is_none(), "the repeater is gone");
+    assert_eq!(t.plant_ref(new).unwrap().seed, SeedType::Gatlingpea);
+    assert_eq!(t.plant_at(3, 2), Some(new));
+}
+
+#[test]
+fn gatling_pea_fires_four_peas_in_a_volley() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Gatlingpea, 0, 2);
+    t.zombie(ZombieType::Gargantuar, 2, 780.0);
+    let mut most = 0;
+    t.run_until(300, |b| {
+        most = most.max(b.projectiles.len());
+        most >= 4
+    });
+    assert_eq!(most, 4, "four peas in the air from one volley");
+}
+
+#[test]
+fn twin_sunflower_makes_two_suns_at_once() {
+    let mut t = test_board!("2-1");
+    t.plant(SeedType::Twinsunflower, 0, 2);
+    assert!(t.run_until(2600, |b| b.coins.iter().any(|(_, c)| c.ty == CoinType::Sun)));
+    let suns = t.board.coins.iter().filter(|(_, c)| c.ty == CoinType::Sun).count();
+    assert_eq!(suns, 2, "a pair");
+}
+
+#[test]
+fn spikerock_hurts_zombies_and_is_sturdier_than_spikeweed() {
+    let mut t = test_board!("1-6");
+    let rock = t.plant(SeedType::Spikerock, 3, 2);
+    assert_eq!(t.plant_ref(rock).unwrap().health, 450);
+    let x = t.plant_ref(rock).unwrap().x;
+    let zombie = t.zombie(ZombieType::Normal, 2, 430.0);
+    assert!(t.run_until(1500, |b| b.zombies.get(zombie).is_none_or(|z| z.is_dead_or_dying() || z.x < x - 40)));
+    assert!(t.zombie_ref(zombie).is_none_or(|z| z.body_health <= 230), "its spikes hurt");
+    assert_eq!(t.plant_ref(rock).unwrap().health, 450, "walkers don't hurt it");
+}
+
+#[test]
+fn winter_melon_chills_the_zombies_its_splash_reaches() {
+    let mut t = test_board!("1-6");
+    let melon = t.plant(SeedType::Melonpult, 0, 2);
+    let winter = t.plant(SeedType::Wintermelon, 0, 2);
+    assert!(t.plant_ref(melon).is_none(), "it replaces the melon-pult");
+    assert_eq!(t.plant_ref(winter).unwrap().seed, SeedType::Wintermelon);
+    let target = t.zombie(ZombieType::Normal, 2, 600.0);
+    let beside = t.zombie(ZombieType::Normal, 3, 600.0);
+    assert!(
+        t.run_until(1500, |b| {
+            b.zombies.get(target).is_some_and(|z| z.is_chilled()) && b.zombies.get(beside).is_some_and(|z| z.is_chilled())
+        }),
+        "the zombie it hits and the one in the next row are both chilled"
+    );
+    assert!(t.board.projectiles.iter().all(|(_, p)| p.ty != ProjectileType::Melon), "no plain melons");
+}
+
+#[test]
+fn gloom_shroom_clouds_hurt_the_rows_beside_it() {
+    let mut t = test_board!("2-2");
+    let fume = t.plant(SeedType::Fumeshroom, 3, 2);
+    let gloom = t.plant(SeedType::Gloomshroom, 3, 2);
+    assert!(t.plant_ref(fume).is_none(), "it replaces the fume-shroom");
+    let (x, _) = t.square_center(3, 2);
+    let near = t.zombie(ZombieType::Normal, 2, x as f32 + 20.0);
+    let beside = t.zombie(ZombieType::Normal, 1, x as f32 + 20.0);
+    let far_row = t.zombie(ZombieType::Normal, 4, x as f32 + 20.0);
+    let behind = t.zombie(ZombieType::Normal, 3, x as f32 - 60.0);
+    // Its first volley starts within 200 ticks and takes another 160.
+    t.ticks(360);
+    let hurt = |t: &TestBoard, id| t.zombie_ref(id).is_none_or(|z| z.body_health < 270);
+    assert!(hurt(&t, near) && hurt(&t, beside) && hurt(&t, behind), "its own row, the next and behind it");
+    assert!(!hurt(&t, far_row), "but not two rows away");
+    assert!(t.plant_ref(gloom).is_some());
+}
+
+#[test]
+fn a_gloom_shroom_inherits_its_base_plants_sleep() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Fumeshroom, 3, 2);
+    let gloom = t.plant(SeedType::Gloomshroom, 3, 2);
+    assert!(t.plant_ref(gloom).unwrap().is_asleep(), "in the day a gloom-shroom sleeps too");
+    t.plant(SeedType::Fumeshroom, 4, 2);
+    t.plant(SeedType::InstantCoffee, 4, 2);
+    t.ticks(250);
+    let awake = t.plant(SeedType::Gloomshroom, 4, 2);
+    assert!(!t.plant_ref(awake).unwrap().is_asleep(), "a woken fume-shroom's upgrade stays awake");
+}
+
+#[test]
+fn a_cob_cannon_needs_two_kernel_pults_side_by_side() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Kernelpult, 3, 2);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Cobcannon), PlantingReason::NeedsUpgrade, "one kernel-pult isn't enough");
+    assert!(!t.board.planting_requirements_met(SeedType::Cobcannon));
+    t.plant(SeedType::Kernelpult, 4, 2);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Cobcannon), PlantingReason::Ok);
+    assert_eq!(t.board.can_plant_at(4, 2, SeedType::Cobcannon), PlantingReason::NeedsUpgrade, "it goes on the left one");
+    assert!(t.board.planting_requirements_met(SeedType::Cobcannon));
+    let cannon = t.plant(SeedType::Cobcannon, 3, 2);
+    assert_eq!(t.plant_at(3, 2), Some(cannon), "both kernel-pults make way");
+    assert_eq!(t.board.plants.iter().filter(|(_, p)| !p.dead).count(), 1);
+    assert_eq!(t.board.can_plant_at(4, 2, SeedType::Peashooter), PlantingReason::NotHere, "it fills two squares");
+}
+
+#[test]
+fn a_cob_cannon_loads_then_fires_where_it_is_aimed() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Kernelpult, 0, 2);
+    t.plant(SeedType::Kernelpult, 1, 2);
+    let cannon = t.plant(SeedType::Cobcannon, 0, 2);
+    assert!(!t.plant_ref(cannon).unwrap().is_cob_ready(), "it starts unarmed");
+    assert!(t.run_until(2000, |b| b.plants.get(cannon).is_some_and(|p| p.is_cob_ready())), "then loads a cob");
+    let (x, y) = t.square_center(0, 2);
+    t.click(x, y);
+    assert_eq!(t.board.cursor.cursor_type, super::super::cursor::CursorType::CobCannonTarget, "a click asks for a target");
+    let victim = t.zombie(ZombieType::Normal, 2, 700.0);
+    let bystander = t.zombie(ZombieType::Normal, 4, 700.0);
+    t.ticks(40);
+    let (tx, ty) = t.square_center(8, 2);
+    t.click(tx, ty);
+    assert_eq!(t.board.cursor.cursor_type, super::super::cursor::CursorType::Normal, "the aim is taken");
+    assert!(!t.plant_ref(cannon).unwrap().is_cob_ready(), "and the cannon's busy");
+    let mut flew = false;
+    assert!(
+        t.run_until(900, |b| {
+            flew |= b.projectiles.iter().any(|(_, p)| p.ty == ProjectileType::Cob);
+            b.zombies.get(victim).is_none_or(|z| z.is_dead_or_dying())
+        }),
+        "the cob comes down on the zombie"
+    );
+    assert!(flew, "it was a cob that did it");
+    assert!(t.zombie_ref(bystander).is_some_and(|z| !z.is_dead_or_dying()), "two rows away is safe");
+    assert!(t.run_until(4000, |b| b.plants.get(cannon).is_some_and(|p| p.is_cob_ready())), "it reloads after half a minute");
+}
+
+#[test]
+fn marigold_makes_coins() {
+    let mut t = test_board!("2-1");
+    t.plant(SeedType::Marigold, 0, 2);
+    assert!(
+        t.run_until(2600, |b| b.coins.iter().any(|(_, c)| matches!(c.ty, CoinType::Silver | CoinType::Gold))),
+        "a marigold makes a coin every ~25 s"
+    );
+    assert!(t.board.coins.iter().all(|(_, c)| !c.is_sun()), "never sun");
+}
+
+#[test]
+fn marigold_stops_a_minute_after_the_last_wave() {
+    let mut t = test_board!("2-1");
+    let flower = t.plant(SeedType::Marigold, 0, 2);
+    t.board.waves.current_wave = t.board.waves.num_waves;
+    t.ticks(1);
+    assert_eq!(t.plant_ref(flower).unwrap().state(), PlantState::MarigoldEnding);
+    t.ticks(6100);
+    t.board.coins.clear();
+    t.ticks(3000);
+    assert_eq!(t.board.coins.len(), 0, "it has stopped for good");
+}
+
+#[test]
+fn a_zombie_that_bites_garlic_turns_into_another_lane() {
+    let mut t = test_board!("1-6");
+    let garlic = t.plant(SeedType::Garlic, 3, 2);
+    let zombie = t.zombie(ZombieType::Normal, 2, 330.0);
+    assert!(t.run_until(600, |b| b.zombies.get(zombie).is_some_and(|z| z.is_eating)), "it starts to eat");
+    assert!(
+        t.run_until(800, |b| b.zombies.get(zombie).is_some_and(|z| z.row != 2)),
+        "but it pulls a face and changes lanes"
+    );
+    assert!(t.plant_ref(garlic).unwrap().health > 150, "having hardly eaten any of it");
+    assert!(!t.zombie_ref(zombie).unwrap().is_eating);
+}
+
+#[test]
+fn a_magnet_shroom_pulls_the_bucket_off_a_zombie() {
+    use super::super::zombie::HelmType;
+    let mut t = test_board!("2-1");
+    t.plant(SeedType::Magnetshroom, 3, 2);
+    let bucket = t.zombie(ZombieType::Pail, 2, 540.0);
+    let plain = t.zombie(ZombieType::Normal, 2, 540.0);
+    assert_eq!(t.zombie_ref(bucket).unwrap().helm_type(), HelmType::Pail);
+    assert!(t.run_until(300, |b| b.zombies.get(bucket).is_some_and(|z| z.helm_type() == HelmType::None)), "the bucket flies off");
+    assert!(t.zombie_ref(bucket).unwrap().body_health >= 270, "the zombie itself is unharmed");
+    assert!(t.zombie_ref(plain).is_some_and(|z| !z.is_dead_or_dying()));
+}
+
+#[test]
+fn a_magnet_shroom_pulls_a_screen_door_then_recharges() {
+    let mut t = test_board!("2-1");
+    let magnet = t.plant(SeedType::Magnetshroom, 3, 2);
+    let door = t.zombie(ZombieType::Door, 2, 560.0);
+    assert!(t.run_until(300, |b| b.zombies.get(door).is_some_and(|z| z.shield_health() == 0)), "the door goes");
+    let second = t.zombie(ZombieType::Door, 2, 600.0);
+    t.ticks(600);
+    assert!(t.zombie_ref(second).unwrap().shield_health() > 0, "but it takes a while to pull again");
+    assert!(t.run_until(1200, |b| b.zombies.get(second).is_some_and(|z| z.shield_health() == 0)), "and then it does");
+    assert!(t.plant_ref(magnet).is_some());
+}
+
+#[test]
+fn a_magnet_shroom_ignores_zombies_out_of_reach() {
+    let mut t = test_board!("2-1");
+    t.plant(SeedType::Magnetshroom, 0, 0);
+    let far = t.zombie(ZombieType::Pail, 4, 750.0);
+    t.ticks(200);
+    assert_eq!(t.zombie_ref(far).unwrap().helm_type(), super::super::zombie::HelmType::Pail);
+}
+
+#[test]
+fn a_gold_magnet_pulls_in_money_from_all_over_the_lawn() {
+    use super::super::coin::CoinMotion;
+    let mut t = test_board!("2-1");
+    t.plant(SeedType::Magnetshroom, 0, 2);
+    let magnet = t.plant(SeedType::GoldMagnet, 0, 2);
+    assert_eq!(t.plant_ref(magnet).unwrap().seed, SeedType::GoldMagnet, "it goes on the magnet-shroom");
+    t.with(|board, effects, res, images, sounds| {
+        board.add_coin(700.0, 200.0, CoinType::Gold, CoinMotion::Coin, effects, res, images, sounds);
+        board.add_coin(500.0, 400.0, CoinType::Silver, CoinMotion::Coin, effects, res, images, sounds);
+    });
+    assert!(t.run_until(3000, |b| !b.coins.iter().any(|(_, c)| c.is_money() && !c.dead)), "both coins are taken");
+    t.ticks(600);
+    assert_eq!(t.money, 6, "and cashed: 5 for the gold, 1 for the silver");
+}
+
+#[test]
+fn a_split_pea_shoots_forwards_and_backwards() {
+    let mut t = test_board!("1-6");
+    let pea = t.plant(SeedType::Splitpea, 4, 2);
+    let (x, _) = t.square_center(4, 2);
+    let ahead = t.zombie(ZombieType::Normal, 2, 700.0);
+    let behind = t.zombie(ZombieType::Normal, 2, x as f32 - 150.0);
+    assert!(
+        t.run_until(1200, |b| {
+            let hurt = |id| b.zombies.get(id).is_none_or(|z| z.body_health < 270);
+            hurt(ahead) && hurt(behind)
+        }),
+        "the zombie in front and the one behind are both hit"
+    );
+    assert!(t.plant_ref(pea).is_some());
+}
+
+#[test]
+fn a_split_pea_doesnt_waste_peas_on_other_rows() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Splitpea, 4, 2);
+    let (x, _) = t.square_center(4, 2);
+    let behind = t.zombie(ZombieType::Normal, 3, x as f32 - 150.0);
+    t.ticks(300);
+    assert_eq!(t.zombie_ref(behind).unwrap().body_health, 270);
+}
+
+#[test]
+fn a_cactus_rises_for_a_balloon_zombie_and_pops_it() {
+    use super::super::zombie::ZombiePhase;
+    let mut t = test_board!("1-6");
+    let cactus = t.plant(SeedType::Cactus, 0, 2);
+    assert_eq!(t.plant_ref(cactus).unwrap().state(), PlantState::CactusLow);
+    let balloon = t.zombie(ZombieType::Balloon, 2, 600.0);
+    assert!(t.run_until(400, |b| b.plants.get(cactus).is_some_and(|p| p.state() == PlantState::CactusHigh)), "it rises");
+    assert!(t.run_until(1500, |b| b.zombies.get(balloon).is_some_and(|z| z.phase != ZombiePhase::BalloonFlying)), "and pops the balloon");
+    assert!(t.run_until(800, |b| b.plants.get(cactus).is_some_and(|p| p.state() == PlantState::CactusLow)), "then lowers");
+}
+
+#[test]
+fn a_low_cactus_shoots_walkers_and_a_high_one_ignores_them() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Cactus, 0, 2);
+    let walker = t.zombie(ZombieType::Normal, 2, 700.0);
+    assert!(t.run_until(1200, |b| b.zombies.get(walker).is_none_or(|z| z.body_health < 270)), "spikes hit a zombie on the ground");
+}
+
+#[test]
+fn a_starfruit_shoots_five_stars_and_hits_a_zombie_behind_it() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Starfruit, 4, 2);
+    let (x, _) = t.square_center(4, 2);
+    let behind = t.zombie(ZombieType::Normal, 2, x as f32 - 200.0);
+    let mut most = 0;
+    assert!(
+        t.run_until(1200, |b| {
+            most = most.max(b.projectiles.iter().filter(|(_, p)| p.ty == ProjectileType::Star).count());
+            b.zombies.get(behind).is_none_or(|z| z.body_health < 270)
+        }),
+        "the star that flies left hits it"
+    );
+    assert_eq!(most, 5, "five stars to a volley");
+}
+
+#[test]
+fn a_starfruit_stays_quiet_with_nothing_in_line() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Starfruit, 4, 2);
+    t.zombie(ZombieType::Normal, 2, 780.0);
+    t.ticks(400);
+    assert!(t.board.projectiles.iter().all(|(_, p)| p.ty != ProjectileType::Star), "a zombie straight ahead isn't a target");
+}
+
+#[test]
+fn a_cattail_only_goes_on_a_lily_pad_and_replaces_it() {
+    let mut t = test_board!("3-1");
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Cattail), PlantingReason::NeedsUpgrade, "bare water");
+    assert_eq!(t.board.can_plant_at(3, 0, SeedType::Cattail), PlantingReason::NotHere, "dry land");
+    assert!(!t.board.planting_requirements_met(SeedType::Cattail) || t.board.plants.iter().any(|(_, p)| p.seed == SeedType::Lilypad));
+    let pad = t.plant(SeedType::Lilypad, 3, 2);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Cattail), PlantingReason::Ok);
+    let cattail = t.plant(SeedType::Cattail, 3, 2);
+    assert!(t.plant_ref(pad).is_none(), "the lily pad is used up");
+    assert_eq!(t.plant_ref(cattail).unwrap().seed, SeedType::Cattail);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Cattail), PlantingReason::NotHere, "and only one");
+}
+
+#[test]
+fn a_cattail_shoots_zombies_in_any_row_and_flyers() {
+    use super::super::zombie::ZombiePhase;
+    let mut t = test_board!("3-1");
+    t.plant(SeedType::Lilypad, 2, 2);
+    let cattail = t.plant(SeedType::Cattail, 2, 2);
+    let far_row = t.zombie(ZombieType::Normal, 0, 450.0);
+    let mut fired = false;
+    assert!(
+        t.run_until(1500, |b| {
+            fired |= b.projectiles.iter().any(|(_, p)| p.ty == ProjectileType::Spike);
+            b.zombies.get(far_row).is_none_or(|z| z.body_health < 270)
+        }),
+        "a zombie two rows away is hit (spikes flown: {fired})"
+    );
+    let balloon = t.zombie(ZombieType::Balloon, 4, 650.0);
+    assert!(t.run_until(3000, |b| b.zombies.get(balloon).is_none_or(|z| z.phase != ZombiePhase::BalloonFlying)), "and a balloon's popped");
+    assert!(t.plant_ref(cattail).is_some());
+}
+
+#[test]
+fn a_pumpkin_goes_over_a_plant_once() {
+    let mut t = test_board!("1-6");
+    let nut = t.plant(SeedType::Wallnut, 3, 2);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Pumpkinshell), PlantingReason::Ok, "over the wall-nut");
+    assert_eq!(t.board.can_plant_at(4, 2, SeedType::Pumpkinshell), PlantingReason::Ok, "or on a bare square");
+    t.plant(SeedType::Pumpkinshell, 3, 2);
+    let pumpkin = t.board.plants.iter().find(|(_, p)| p.seed == SeedType::Pumpkinshell).map(|(id, _)| id).unwrap();
+    assert_eq!(t.plant_ref(pumpkin).unwrap().health, 4000);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Pumpkinshell), PlantingReason::NotHere, "one pumpkin is enough");
+    assert!(t.plant_ref(nut).is_some(), "the plant inside is untouched");
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Peashooter), PlantingReason::NotHere, "and the square is still taken");
+    t.plant(SeedType::Peashooter, 4, 2);
+    t.plant(SeedType::Pumpkinshell, 4, 2);
+    assert_eq!(t.board.plants.iter().filter(|(_, p)| !p.dead).count(), 4);
+}
+
+#[test]
+fn zombies_eat_the_pumpkin_before_the_plant_inside() {
+    let mut t = test_board!("1-6");
+    let nut = t.plant(SeedType::Wallnut, 3, 2);
+    t.plant(SeedType::Pumpkinshell, 3, 2);
+    let pumpkin = t.board.plants.iter().find(|(_, p)| p.seed == SeedType::Pumpkinshell).map(|(id, _)| id).unwrap();
+    let zombie = t.zombie(ZombieType::Normal, 2, 330.0);
+    assert!(t.run_until(1500, |b| b.zombies.get(zombie).is_some_and(|z| z.is_eating)), "it stops to eat");
+    t.ticks(300);
+    assert!(t.plant_ref(pumpkin).unwrap().health < 4000, "the pumpkin is chewed");
+    assert_eq!(t.plant_ref(nut).unwrap().health, 4000, "the wall-nut isn't touched yet");
+}
+
+#[test]
+fn first_aid_lets_a_hurt_pumpkin_or_nut_be_replaced() {
+    let mut t = test_board!("1-6");
+    let pumpkin = t.plant(SeedType::Pumpkinshell, 3, 2);
+    let nut = t.plant(SeedType::Wallnut, 4, 2);
+    t.board.plants.get_mut(pumpkin).unwrap().health = 2500;
+    t.board.plants.get_mut(nut).unwrap().health = 2500;
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Pumpkinshell), PlantingReason::NotHere, "without First Aid, no");
+    assert_eq!(t.board.can_plant_at(4, 2, SeedType::Wallnut), PlantingReason::NotHere);
+    t.board.first_aid = true;
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Pumpkinshell), PlantingReason::Ok);
+    assert_eq!(t.board.can_plant_at(4, 2, SeedType::Wallnut), PlantingReason::Ok);
+    t.board.plants.get_mut(nut).unwrap().health = 4000;
+    assert_eq!(t.board.can_plant_at(4, 2, SeedType::Wallnut), PlantingReason::NotHere, "but not a healthy one");
+    t.plant(SeedType::Pumpkinshell, 3, 2);
+    assert!(t.plant_ref(pumpkin).is_none(), "the old pumpkin is replaced");
+    assert_eq!(t.plant_ref(t.plant_at(3, 2).unwrap()).unwrap().health, 4000);
+}
+
+#[test]
+fn a_pumpkin_over_a_kernel_pult_spoils_the_cob_cannon_spot() {
+    let mut t = test_board!("1-6");
+    t.plant(SeedType::Kernelpult, 3, 2);
+    t.plant(SeedType::Kernelpult, 4, 2);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Cobcannon), PlantingReason::Ok);
+    t.plant(SeedType::Pumpkinshell, 4, 2);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Cobcannon), PlantingReason::NeedsUpgrade);
+}
+
+#[test]
+fn nothing_goes_wrong_planting_a_pumpkin_on_water() {
+    let mut t = test_board!("3-1");
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Pumpkinshell), PlantingReason::NotOnWater, "no lily pad");
+    t.plant(SeedType::Lilypad, 3, 2);
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Pumpkinshell), PlantingReason::Ok);
+}
+
+#[test]
+fn an_imitater_turns_into_the_plant_it_copies() {
+    let mut t = test_board!("1-6");
+    t.with(|board, effects, res, images, sounds| board.add_plant_as(3, 2, SeedType::Peashooter, true, effects, res, images, sounds));
+    let imitater = t.plant_at(3, 2).unwrap();
+    assert_eq!(t.plant_ref(imitater).unwrap().seed, SeedType::Imitater, "it goes down as an imitater");
+    assert_eq!(t.board.can_plant_at(3, 2, SeedType::Sunflower), PlantingReason::NotHere, "and holds the square");
+    assert!(
+        t.run_until(600, |b| b.plants.iter().any(|(_, p)| !p.dead && p.seed == SeedType::Peashooter)),
+        "a moment later it's a peashooter"
+    );
+    assert!(t.board.plants.iter().all(|(_, p)| p.dead || p.seed != SeedType::Imitater), "and the imitater's gone");
+    let zombie = t.zombie(ZombieType::Normal, 2, 700.0);
+    assert!(t.run_until(800, |b| b.zombies.get(zombie).is_none_or(|z| z.body_health < 270)), "the copy shoots like the real thing");
+}
+
+#[test]
+fn an_imitated_pumpkin_goes_over_a_plant() {
+    let mut t = test_board!("1-6");
+    let nut = t.plant(SeedType::Wallnut, 3, 2);
+    t.with(|board, effects, res, images, sounds| board.add_plant_as(3, 2, SeedType::Pumpkinshell, true, effects, res, images, sounds));
+    assert!(t.run_until(600, |b| b.plants.iter().any(|(_, p)| !p.dead && p.seed == SeedType::Pumpkinshell)));
+    assert!(t.plant_ref(nut).is_some(), "the wall-nut's still inside");
+}
+
+#[test]
+fn an_imitater_packet_plants_the_copy_for_its_cost() {
+    let mut t = test_board!("2-1");
+    t.board.seed_bank.packets[0].set_packet_type(Some(SeedType::Peashooter));
+    t.board.seed_bank.packets[0].imitater = true;
+    t.board.sun_money = 150;
+    t.plant_from_bank(0, 3, 2);
+    assert_eq!(t.board.sun_money, 50, "a peashooter's price");
+    assert_eq!(t.plant_ref(t.plant_at(3, 2).unwrap()).unwrap().seed, SeedType::Imitater);
+    assert!(t.run_until(600, |b| b.plants.iter().any(|(_, p)| !p.dead && p.seed == SeedType::Peashooter)));
+    assert!(t.board.seed_bank.packets[0].refreshing || !t.board.seed_bank.packets[0].active, "and it recharges like one");
+}
+
+#[test]
+fn a_giant_wall_nut_flattens_everything_in_its_lane_and_keeps_going() {
+    let mut t = test_board!("1-5");
+    let giant = t.plant(SeedType::GiantWallnut, 2, 2);
+    let door = t.zombie(ZombieType::Door, 2, 500.0);
+    let bucket = t.zombie(ZombieType::Pail, 2, 650.0);
+    let other_lane = t.zombie(ZombieType::Normal, 3, 650.0);
+    assert!(
+        t.run_until(1500, |b| {
+            let down = |id| b.zombies.get(id).is_none_or(|z| z.is_dead_or_dying());
+            down(door) && down(bucket)
+        }),
+        "a screen door and a bucket make no difference"
+    );
+    assert!(t.zombie_ref(other_lane).is_some_and(|z| !z.is_dead_or_dying()), "the other lane's untouched");
+    if let Some(nut) = t.plant_ref(giant) {
+        assert_eq!(nut.row, 2, "it never leaves its lane");
+    }
 }

@@ -706,7 +706,7 @@ fn selector_input(
     let mut result = update_buttons(&mut gs.buttons.front_to_back(), &cursor, &mouse);
     // Development aid: `PVZ_AUTO_START=options`, `help`, `store` or `almanac` presses
     // that button once the menu is up; `almanac-plants` and `almanac-zombies`
-    // open the almanac on that page.
+    // open the almanac on that page, and `credits` rolls the credits.
     if gs.state == SelectorState::Idle && !*auto_pressed {
         *auto_pressed = true;
         match std::env::var("PVZ_AUTO_START").as_deref() {
@@ -714,6 +714,7 @@ fn selector_input(
             Ok("help") => result.events.push(ButtonEvent::Depress(ButtonId::Help)),
             Ok("almanac") => result.events.push(ButtonEvent::Depress(ButtonId::Almanac)),
             Ok("store") => result.events.push(ButtonEvent::Depress(ButtonId::Store)),
+            Ok("credits") => next_state.set(AppState::Credits),
             Ok("almanac-plants") => do_almanac_dialog(&mut dialogs, &resources, AlmanacStart::Plant(SeedType::Peashooter)),
             Ok("almanac-zombies") => do_almanac_dialog(&mut dialogs, &resources, AlmanacStart::Zombie(ZombieType::Normal)),
             _ => {}

@@ -2,6 +2,8 @@ mod almanac;
 mod audio;
 mod award;
 mod board;
+mod credits;
+mod credits_timing;
 mod devshot;
 mod dialog;
 mod game_selector;
@@ -53,6 +55,8 @@ pub enum AppState {
     Award,
     /// Crazy Dave's store.
     Store,
+    /// The credits movie.
+    Credits,
 }
 
 /// Frame-by-frame order of input handling and drawing: dialogs get the
@@ -150,6 +154,7 @@ fn main() {
             almanac::AlmanacPlugin,
             devshot::DevShotPlugin,
         ))
+        .add_plugins(credits::CreditsPlugin)
         .add_systems(Startup, spawn_camera)
         .add_systems(OnEnter(AppState::Boot), boot)
         .run();

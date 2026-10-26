@@ -366,6 +366,17 @@ pub enum ZombieHeight {
     InToChimney,
 }
 
+/// What a magnet-shroom pulled off a zombie (`MagnetShroomAttactItem`): the
+/// picture, where it was, and where it's headed (an offset from the plant).
+pub struct MagnetLoot {
+    pub image: String,
+    pub x: f32,
+    pub y: f32,
+    /// `x`, `y` are the item's middle rather than its top-left.
+    pub centre: bool,
+    pub dest: (f32, f32),
+}
+
 /// The things a zombie touches besides itself and the plants.
 pub struct Fx<'a, 'w, 's> {
     pub effects: &'a mut EffectSystem,
@@ -518,6 +529,10 @@ pub struct Zombie {
     ice_trap_counter: i32,
     /// Ticks left stuck in butter (`mButteredCounter`).
     buttered_counter: i32,
+    /// Bitten a garlic and grossed out (`mYuckyFace`, `mYuckyFaceCounter`): it
+    /// stops eating, pulls a face and changes lanes.
+    yucky_face: bool,
+    yucky_face_counter: i32,
     phase_counter: i32,
     /// How far above the ground it is (`mAltitude`); below it while rising from a grave.
     altitude: f32,
@@ -715,6 +730,8 @@ impl Zombie {
             chilled_counter: 0,
             ice_trap_counter: 0,
             buttered_counter: 0,
+            yucky_face: false,
+            yucky_face_counter: 0,
             phase_counter: 0,
             altitude: 0.0,
             height: ZombieHeight::Normal,
@@ -1533,6 +1550,135 @@ impl Zombie {
         }
     }
 
+    /// Whether a magnet-shroom would go for this zombie (the metal ones).
+    pub fn is_magnet_target(&self) -> bool {
+        !self.mind_controlled
+            && self.has_head
+            && self.height == ZombieHeight::Normal
+            && self.phase != ZombiePhase::RisingFromGrave
+            && !self.is_dead_or_dying()
+            && (matches!(self.helm_type, HelmType::Pail | HelmType::Football) || matches!(self.shield_type, ShieldType::Door | ShieldType::Ladder))
+    }
+
+    /// `Plant::MagnetShroomAttactItem`, the zombie's part: it loses its bucket,
+    /// helmet, door or ladder, and the plant gets the item.
+    pub fn magnet_take(&mut self, env: &ZombieEnv, fx: &mut Fx) -> Option<MagnetLoot> {
+        let damage = |index: i32| index.clamp(0, 2) as usize;
+        if self.helm_type == HelmType::Pail {
+            let index = self.helm_damage_index();
+            self.helm_health = 0;
+            self.helm_type = HelmType::None;
+            let (x, y) = self.track_position(fx.effects, "anim_bucket");
+            self.reanim_show_prefix(fx, "anim_bucket", RENDER_GROUP_HIDDEN);
+            self.reanim_show_prefix(fx, "anim_hair", RENDER_GROUP_NORMAL);
+            let image = format!("IMAGE_REANIM_ZOMBIE_BUCKET{}", damage(index) + 1);
+            return Some(MagnetLoot { image, x, y, centre: true, dest: (25.0, 20.0) });
+        }
+        if self.helm_type == HelmType::Football {
+            let index = self.helm_damage_index();
+            self.helm_health = 0;
+            self.helm_type = HelmType::None;
+            let (x, y) = self.track_position(fx.effects, "zombie_football_helmet");
+            self.reanim_show_prefix(fx, "zombie_football_helmet", RENDER_GROUP_HIDDEN);
+            self.reanim_show_prefix(fx, "anim_hair", RENDER_GROUP_NORMAL);
+            let image = ["IMAGE_REANIM_ZOMBIE_FOOTBALL_HELMET", "IMAGE_REANIM_ZOMBIE_FOOTBALL_HELMET2", "IMAGE_REANIM_ZOMBIE_FOOTBALL_HELMET3"][damage(index)];
+            return Some(MagnetLoot { image: image.into(), x: x + 37.0, y: y - 60.0, centre: false, dest: (20.0, 20.0) });
+        }
+        match self.shield_type {
+            ShieldType::Door => {
+                let index = self.shield_damage_index();
+                self.detach_shield(env, fx);
+                self.phase = ZombiePhase::Normal;
+                if !self.is_eating {
+                    self.start_walk_anim(0, env, fx);
+                }
+                let (x, y) = self.track_position(fx.effects, "anim_screendoor");
+                let image = format!("IMAGE_REANIM_ZOMBIE_SCREENDOOR{}", damage(index) + 1);
+                Some(MagnetLoot { image, x, y, centre: true, dest: (30.0, 0.0) })
+            }
+            ShieldType::Ladder => {
+                let index = self.shield_damage_index();
+                self.detach_shield(env, fx);
+                let image = ["IMAGE_REANIM_ZOMBIE_LADDER_1", "IMAGE_REANIM_ZOMBIE_LADDER_1_DAMAGE1", "IMAGE_REANIM_ZOMBIE_LADDER_1_DAMAGE2"][damage(index)];
+                Some(MagnetLoot { image: image.into(), x: self.pos_x + 31.0, y: self.pos_y + 20.0, centre: true, dest: (30.0, 0.0) })
+            }
+            _ => None,
+        }
+    }
+
+    /// `Zombie::HasYuckyFaceImage`: the zombies that have a grossed-out face.
+    fn has_yucky_face_image(&self) -> bool {
+        use ZombieType::*;
+        matches!(self.zombie_type, Normal | TrafficCone | Pail | Flag | Door | DuckyTube | Dancer | BackupDancer | Newspaper | Polevaulter)
+    }
+
+    /// `Zombie::ShowYuckyFace`.
+    fn show_yucky_face(&self, show: bool, fx: &mut Fx) {
+        if !self.has_yucky_face_image() {
+            return;
+        }
+        let Some(body) = self.body.and_then(|b| fx.effects.get_mut(b)) else { return };
+        if show {
+            body.set_image_override("anim_head1", Some("IMAGE_REANIM_ZOMBIE_HEAD_GROSSOUT"));
+            for track in ["anim_head2", "anim_head_jaw", "anim_tongue"] {
+                body.assign_render_group_to_track(track, RENDER_GROUP_HIDDEN);
+            }
+        } else if self.has_head {
+            body.set_image_override("anim_head1", None);
+            body.assign_render_group_to_track("anim_head2", RENDER_GROUP_NORMAL);
+            body.assign_render_group_to_track("anim_head_jaw", RENDER_GROUP_NORMAL);
+            if self.variant {
+                body.assign_render_group_to_track("anim_tongue", RENDER_GROUP_NORMAL);
+            }
+        }
+    }
+
+    /// `Zombie::UpdateYuckyFace`: it stops chewing, pulls a face for a few
+    /// seconds, then turns into another lane.
+    fn update_yucky_face(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        let yuck = |this: &Self, fx: &mut Fx, env: &ZombieEnv| {
+            if env.zombies_on_screen <= 5 && this.has_head || env.zombies_on_screen <= 10 && this.has_head && fx.sounds.rng().next_range(2) == 0 {
+                fx.sounds.play_foley(FoleyType::Yuck);
+            }
+        };
+        self.yucky_face_counter += 1;
+        if self.yucky_face_counter > 20 && self.yucky_face_counter < 170 && !self.has_yucky_face_image() {
+            self.stop_eating(env, fx);
+            self.yucky_face_counter = 170;
+            yuck(self, fx, env);
+        }
+        if self.yucky_face_counter > 270 {
+            self.show_yucky_face(false, fx);
+            self.yucky_face = false;
+            self.yucky_face_counter = 0;
+            return;
+        }
+        if self.yucky_face_counter == 70 {
+            self.stop_eating(env, fx);
+            self.show_yucky_face(true, fx);
+            yuck(self, fx, env);
+        }
+        if self.yucky_face_counter == 170 {
+            self.start_walk_anim(20, env, fx);
+            let pool = env.pool_rows.get(self.row as usize).copied().unwrap_or(false);
+            let can_go = |row: i32| {
+                (0..super::MAX_GRID_SIZE_Y as i32).contains(&row)
+                    && env.open_rows[row as usize]
+                    && env.pool_rows[row as usize] == pool
+            };
+            let new_row = match (can_go(self.row + 1), can_go(self.row - 1)) {
+                (true, false) => self.row + 1,
+                (false, true) => self.row - 1,
+                (true, true) => if fx.sounds.rng().next_range(2) == 0 { self.row + 1 } else { self.row - 1 },
+                (false, false) => self.row,
+            };
+            self.row = new_row;
+            self.pos_y = self.pos_y_based_on_row(new_row, env);
+            self.y = self.pos_y as i32;
+            self.render_order = self.initial_render_order();
+        }
+    }
+
     /// `Zombie::StopEating`.
     fn stop_eating(&mut self, env: &ZombieEnv, fx: &mut Fx) {
         if !self.is_eating {
@@ -1754,7 +1900,7 @@ impl Zombie {
             return;
         }
         let Some(body) = self.body.and_then(|b| effects.get(b)) else { return };
-        if self.is_immobilized() {
+        if self.is_immobilized() || (self.yucky_face && self.yucky_face_counter < 170) {
             self.apply_anim_rate(effects, 0.0);
         } else if self.is_dead_or_dying() {
             self.apply_anim_rate(effects, self.original_anim_rate);
@@ -2021,6 +2167,9 @@ impl Zombie {
                     self.phase_counter -= 1;
                 }
                 self.update_playing(plants, env, fx);
+                if self.yucky_face {
+                    self.update_yucky_face(env, fx);
+                }
                 if self.zombie_type == ZombieType::Bungee {
                     self.update_zombie_bungee(plants, env, fx);
                 }
@@ -2847,8 +2996,25 @@ impl Zombie {
         let (smash, throw, done) = (body.should_trigger_timed_event(0.64), body.should_trigger_timed_event(0.74), body.loop_count > 0);
         if self.phase == ZombiePhase::GargantuarSmashing {
             if smash {
-                if let Some((col, row)) = self.find_plant_target(plants).and_then(|id| plants.get(id)).map(|p| (p.col, p.row)) {
-                    self.squish_all_in_square(plants, col, row, fx);
+                if let Some(id) = self.find_plant_target(plants)
+                    && let Some((col, row, seed)) = plants.get(id).map(|p| (p.col, p.row, p.seed))
+                {
+                    if seed == crate::plant::SeedType::Spikerock {
+                        // The spikes hurt it back, and the rock loses one.
+                        self.take_damage(20, damage::SPIKE, env, fx);
+                        let mut actions = Vec::new();
+                        let gone = plants.get_mut(id).is_some_and(|p| p.spike_rock_take_damage(&mut actions, fx.effects));
+                        for action in actions {
+                            if let crate::board::plant::PlantAction::Foley(foley) = action {
+                                fx.sounds.play_foley(foley);
+                            }
+                        }
+                        if gone {
+                            self.squish_all_in_square(plants, col, row, fx);
+                        }
+                    } else {
+                        self.squish_all_in_square(plants, col, row, fx);
+                    }
                 }
                 fx.sounds.play_foley(FoleyType::Thump);
                 self.shake = Some((0, 3));
@@ -3539,6 +3705,16 @@ impl Zombie {
                     && rect_overlap(attack, plant.rect()) >= 20
                     && targetable(plant)
                     && ladder_rule(plant)
+                    // A pumpkin is eaten before the plant inside it (GetTopPlantAt).
+                    && !(plant.seed != crate::plant::SeedType::Pumpkinshell
+                        && !is_under(plant)
+                        && plants.iter().any(|(_, other)| {
+                            other.col == plant.col
+                                && other.row == plant.row
+                                && !other.dead
+                                && other.seed == crate::plant::SeedType::Pumpkinshell
+                                && can_target(other)
+                        }))
                     // A lily pad or pot is eaten last: the plant on it goes first (GetTopPlantAt).
                     && !(is_under(plant)
                         && plants.iter().any(|(_, other)| {
@@ -3554,6 +3730,11 @@ impl Zombie {
         // A dancer still moonwalking in stops to point instead.
         if self.phase == ZombiePhase::DancerDancingIn {
             self.phase_counter = 1;
+            return;
+        }
+        // Behaviour per ruslan831 decomp, Zombie::EatPlant: a zombie pulling a
+        // face at garlic eats nothing.
+        if self.yucky_face {
             return;
         }
         // Behaviour per ruslan831 decomp, Zombie::EatPlant: a plant with a
@@ -3633,6 +3814,17 @@ impl Zombie {
             fx.sounds.play_foley(FoleyType::Floop);
             plant.die(fx.effects);
             self.start_mind_controlled(fx);
+            return;
+        }
+        // Behaviour per ruslan831 decomp, Zombie::AnimateChewSound: garlic
+        // makes it pull a face.
+        if target.and_then(|id| plants.get(id)).is_some_and(|p| p.seed == crate::plant::SeedType::Garlic) {
+            if !self.yucky_face {
+                self.yucky_face = true;
+                self.yucky_face_counter = 0;
+                self.update_anim_speed(fx.effects);
+                fx.sounds.play_foley(FoleyType::Chomp);
+            }
             return;
         }
         let nut = target
@@ -3767,19 +3959,26 @@ impl Zombie {
         }
     }
 
-    /// A rolling wall-nut's hit (`Plant::UpdateBowling`): a helmet takes the
-    /// blow, otherwise the zombie is flattened.
-    pub fn bowling_damage(&mut self, env: &ZombieEnv, fx: &mut Fx) {
-        match self.helm_type {
-            HelmType::Pail => {
-                fx.sounds.play_foley(FoleyType::ShieldHit);
-                self.take_helm_damage(900, 0, fx);
+    /// A rolling nut's hit (`Plant::UpdateBowling`): a giant wall-nut flattens
+    /// anything; a bouncing nut flattens a screen door's holder; other shields and
+    /// helmets take the blow, otherwise the zombie is flattened.
+    pub fn bowling_damage(&mut self, giant: bool, bouncing: bool, env: &ZombieEnv, fx: &mut Fx) {
+        if giant || (self.shield_type == ShieldType::Door && bouncing) {
+            self.take_damage(1800, 0, env, fx);
+        } else if self.shield_type != ShieldType::None {
+            self.take_shield_damage(400, 0, env, fx);
+        } else {
+            match self.helm_type {
+                HelmType::Pail => {
+                    fx.sounds.play_foley(FoleyType::ShieldHit);
+                    self.take_helm_damage(900, 0, fx);
+                }
+                HelmType::TrafficCone | HelmType::Football => {
+                    fx.sounds.play_foley(FoleyType::PlasticHit);
+                    self.take_helm_damage(900, 0, fx);
+                }
+                HelmType::None | HelmType::Bobsled => self.take_damage(1800, 0, env, fx),
             }
-            HelmType::TrafficCone | HelmType::Football => {
-                fx.sounds.play_foley(FoleyType::PlasticHit);
-                self.take_helm_damage(900, 0, fx);
-            }
-            HelmType::None | HelmType::Bobsled => self.take_damage(1800, 0, env, fx),
         }
     }
 
@@ -3862,6 +4061,11 @@ impl Zombie {
             }
             ShieldType::Newspaper => {
                 self.stop_eating(env, fx);
+                if self.yucky_face {
+                    self.show_yucky_face(false, fx);
+                    self.yucky_face = false;
+                    self.yucky_face_counter = 0;
+                }
                 self.phase = ZombiePhase::NewspaperMaddening;
                 self.play_zombie_reanim(fx.effects, "anim_gasp", LoopType::PlayOnceAndHold, 10, 8.0);
                 self.detach_shield(env, fx);
@@ -4098,7 +4302,7 @@ impl Zombie {
     }
 
     /// The Zamboni and the catapult drive rather than walk.
-    fn is_vehicle(&self) -> bool {
+    pub(super) fn is_vehicle(&self) -> bool {
         matches!(self.zombie_type, ZombieType::Zamboni | ZombieType::Catapult)
     }
 
@@ -4334,6 +4538,11 @@ impl Zombie {
         }
         if let Some(surprise) = self.surprise.take() {
             fx.effects.kill(surprise);
+        }
+        if self.yucky_face {
+            self.show_yucky_face(false, fx);
+            self.yucky_face = false;
+            self.yucky_face_counter = 0;
         }
         self.stop_eating(env, fx);
         if self.shield_type != ShieldType::None {

@@ -22,7 +22,7 @@ use crate::resources::GameResources;
 
 use super::coin::Coin;
 use super::message::MessageStyle;
-use super::plant::{Plant, plant_draw_height_offset};
+use super::plant::{OnBungee, Plant, plant_draw_height_offset};
 use super::seed_bank::draw_seed_type;
 use super::tutorial::{AdviceType, TutorialState};
 use super::{Board, GameScene, GridSquareType, LAWN_YMIN, MAX_GRID_SIZE_X, MAX_GRID_SIZE_Y, render_layer};
@@ -38,6 +38,8 @@ pub enum CursorType {
     Shovel,
     /// Whack-a-zombie's mallet.
     Hammer,
+    /// Aiming a cob cannon (`CURSOR_TYPE_COBCANNON_TARGET`).
+    CobCannonTarget,
 }
 
 /// What the mouse is carrying (`CursorObject`).
@@ -46,11 +48,15 @@ pub struct CursorObject {
     pub cursor_type: CursorType,
     pub seed: Option<SeedType>,
     pub seed_bank_index: Option<usize>,
+    /// The cob cannon being aimed (`mCobCannonPlantID`).
+    pub cob_cannon: Option<sexy::data_array::Id<Plant>>,
+    /// The carried plant is an imitater's copy: it's planted as the imitater first.
+    pub imitater: bool,
 }
 
 impl Default for CursorObject {
     fn default() -> Self {
-        Self { cursor_type: CursorType::Normal, seed: None, seed_bank_index: None }
+        Self { cursor_type: CursorType::Normal, seed: None, seed_bank_index: None, cob_cannon: None, imitater: false }
     }
 }
 
@@ -82,6 +88,43 @@ pub enum PlantingReason {
     NotOnGrave,
     /// A doom-shroom's crater hasn't filled in yet.
     NotOnCrater,
+    /// An upgrade goes on top of its base plant.
+    NeedsUpgrade,
+}
+
+/// Whether `rect` contains `p`.
+fn rect_contains(rect: super::zombie::IRect, p: IVec2) -> bool {
+    p.x >= rect.x && p.x < rect.x + rect.w && p.y >= rect.y && p.y < rect.y + rect.h
+}
+
+/// The `[ADVICE_ONLY_ON_...]` key's name for an upgrade (`Board::MouseDownWithPlant`).
+fn upgrade_advice_name(seed: SeedType) -> &'static str {
+    use SeedType::*;
+    match seed {
+        Gatlingpea => "REPEATERS",
+        Twinsunflower => "SUNFLOWER",
+        Gloomshroom => "FUMESHROOM",
+        Cattail => "LILYPAD",
+        Wintermelon => "MELONPULT",
+        GoldMagnet => "MAGNETSHROOM",
+        Spikerock => "SPIKEWEED",
+        _ => "KERNELPULT",
+    }
+}
+
+/// The `[ADVICE_PLANT_NEEDS_...]` key's name for an upgrade (`SeedPacket::MouseDown`).
+fn upgrade_needs_name(seed: SeedType) -> &'static str {
+    use SeedType::*;
+    match seed {
+        Gatlingpea => "REPEATER",
+        Twinsunflower => "SUNFLOWER",
+        Gloomshroom => "FUMESHROOM",
+        Cattail => "LILYPAD",
+        Wintermelon => "MELONPULT",
+        GoldMagnet => "MAGNETSHROOM",
+        Spikerock => "SPIKEWEED",
+        _ => "KERNELPULT",
+    }
 }
 
 impl Board {
@@ -133,8 +176,15 @@ impl Board {
             return None;
         }
         self.plants.iter().map(|(_, p)| p).find(|p| {
-            p.col == grid_x && p.row == grid_y && !p.not_on_ground() && !matches!(p.seed, Lilypad | Flowerpot | Pumpkinshell | InstantCoffee)
+            // A cob cannon stands on two squares (`GetPlantsOnLawn`).
+            let covers = if p.seed == Cobcannon { (grid_x - 1..=grid_x).contains(&p.col) } else { p.col == grid_x };
+            covers && p.row == grid_y && !p.not_on_ground() && !matches!(p.seed, Lilypad | Flowerpot | Pumpkinshell | InstantCoffee)
         })
+    }
+
+    /// `Board::GetPumpkinAt`.
+    pub(super) fn pumpkin_at(&self, grid_x: i32, grid_y: i32) -> Option<&Plant> {
+        self.plants.iter().map(|(_, p)| p).find(|p| p.col == grid_x && p.row == grid_y && !p.not_on_ground() && p.seed == SeedType::Pumpkinshell)
     }
 
     /// `Board::GetFlowerPotAt`: whether a flower pot sits on `(grid_x, grid_y)`.
@@ -148,7 +198,6 @@ impl Board {
     }
 
     /// `Board::CanPlantAt`, for ordinary plants on grass, dirt and water.
-    /// TODO: pots, pumpkins and upgrades.
     pub fn can_plant_at(&self, grid_x: i32, grid_y: i32, seed: SeedType) -> PlantingReason {
         if !(0..MAX_GRID_SIZE_X as i32).contains(&grid_x) || !(0..MAX_GRID_SIZE_Y as i32).contains(&grid_y) {
             return PlantingReason::NotHere;
@@ -180,9 +229,41 @@ impl Board {
             return PlantingReason::NotHere;
         }
         let on_water = square == GridSquareType::Pool;
+        // Behaviour per ruslan831 decomp, Board::CanPlantAt: First Aid lets a
+        // hurt pumpkin, wall-nut or tall-nut be planted over again.
+        let hurt = |p: &Plant| p.health < p.max_health() * 2 / 3 && p.on_bungee != OnBungee::Grabbed;
+        let aid = self.first_aid;
+        // Behaviour per ruslan831 decomp, Board::CanPlantAt: a pumpkin goes over
+        // whatever's on the square (even a cattail on the water), once.
+        if seed == SeedType::Pumpkinshell {
+            let normal = self.normal_plant_at(grid_x, grid_y);
+            let over_cattail = normal.is_some_and(|p| p.seed == SeedType::Cattail);
+            if on_water && !self.has_lily_pad_at(grid_x, grid_y) && !over_cattail {
+                return PlantingReason::NotOnWater;
+            }
+            if self.stage_has_roof() && !self.has_flower_pot_at(grid_x, grid_y) {
+                return PlantingReason::NeedsPot;
+            }
+            if normal.is_some_and(|p| p.seed == SeedType::Cobcannon) {
+                return PlantingReason::NotHere;
+            }
+            return match self.pumpkin_at(grid_x, grid_y) {
+                None => PlantingReason::Ok,
+                Some(pumpkin) if aid && hurt(pumpkin) => PlantingReason::Ok,
+                Some(_) => PlantingReason::NotHere,
+            };
+        }
+        // Behaviour per ruslan831 decomp, Board::CanPlantAt: a cattail only goes
+        // on a lily pad, in place of it.
+        if seed == SeedType::Cattail {
+            if !on_water || self.normal_plant_at(grid_x, grid_y).is_some() {
+                return PlantingReason::NotHere;
+            }
+            return if self.has_lily_pad_at(grid_x, grid_y) { PlantingReason::Ok } else { PlantingReason::NeedsUpgrade };
+        }
         // Coffee beans only wake a mushroom that is asleep on the square.
         if seed == SeedType::InstantCoffee {
-            let asleep = self.normal_plant_at(grid_x, grid_y).is_some_and(Plant::is_asleep);
+            let asleep = self.normal_plant_at(grid_x, grid_y).is_some_and(|p| p.is_asleep() && !p.is_waking());
             return if asleep { PlantingReason::Ok } else { PlantingReason::NotHere };
         }
         // Behaviour per ruslan831 decomp, Board::CanPlantAt: water plants only
@@ -191,8 +272,19 @@ impl Board {
             let free = on_water && !self.has_lily_pad_at(grid_x, grid_y) && self.normal_plant_at(grid_x, grid_y).is_none();
             return if free { PlantingReason::Ok } else { PlantingReason::NotHere };
         }
+        // Behaviour per ruslan831 decomp, Board::CanPlantAt/Plant::IsUpgradableTo:
+        // an upgrade can go on its base plant.
+        let normal = self.normal_plant_at(grid_x, grid_y);
+        let upgrades_normal = normal.is_some_and(|p| {
+            seed.upgrade_is_ported()
+                && seed.upgrade_base() == Some(p.seed)
+                && p.on_bungee != OnBungee::Grabbed
+                && (seed != SeedType::Cobcannon || self.is_valid_cob_cannon_spot(grid_x, grid_y))
+        });
+        let replaces = upgrades_normal
+            || (aid && matches!(seed, SeedType::Wallnut | SeedType::Tallnut) && normal.is_some_and(|p| p.seed == seed && hurt(p)));
         if on_water {
-            if self.normal_plant_at(grid_x, grid_y).is_some() {
+            if normal.is_some() && !replaces {
                 return PlantingReason::NotHere;
             }
             if !seed.is_aquatic() && !self.has_lily_pad_at(grid_x, grid_y) {
@@ -217,13 +309,47 @@ impl Board {
                 return PlantingReason::NeedsPot;
             }
         }
-        if self.normal_plant_at(grid_x, grid_y).is_some() {
-            return PlantingReason::NotHere;
+        if normal.is_some() {
+            return if replaces {
+                PlantingReason::Ok
+            } else if seed.is_upgrade() {
+                PlantingReason::NeedsUpgrade
+            } else {
+                PlantingReason::NotHere
+            };
         }
         if seed.is_upgrade() {
-            return PlantingReason::NotHere;
+            return PlantingReason::NeedsUpgrade;
         }
         PlantingReason::Ok
+    }
+
+    /// `Board::PlantingRequirementsMet`: an upgrade's packet can only be
+    /// used while its base plant is on the lawn. TODO: the cob cannon's
+    /// two-square spot and the cattail's empty lily pad.
+    pub fn planting_requirements_met(&self, seed: SeedType) -> bool {
+        if seed == SeedType::Cobcannon {
+            return self.has_valid_cob_cannon_spot();
+        }
+        seed.upgrade_base().is_none_or(|base| self.plants.iter().any(|(_, p)| !p.dead && p.seed == base))
+    }
+
+    /// `Board::IsValidCobCannonSpotHelper`: a kernel-pult stands here.
+    fn is_kernel_pult_at(&self, grid_x: i32, grid_y: i32) -> bool {
+        self.pumpkin_at(grid_x, grid_y).is_none() && self.normal_plant_at(grid_x, grid_y).is_some_and(|p| p.seed == SeedType::Kernelpult)
+    }
+
+    /// `Board::IsValidCobCannonSpot`: two kernel-pults side by side, both in
+    /// a flower pot or neither.
+    pub fn is_valid_cob_cannon_spot(&self, grid_x: i32, grid_y: i32) -> bool {
+        self.is_kernel_pult_at(grid_x, grid_y)
+            && self.is_kernel_pult_at(grid_x + 1, grid_y)
+            && self.has_flower_pot_at(grid_x, grid_y) == self.has_flower_pot_at(grid_x + 1, grid_y)
+    }
+
+    /// `Board::HasValidCobCannonSpot`.
+    pub fn has_valid_cob_cannon_spot(&self) -> bool {
+        self.plants.iter().any(|(_, p)| !p.dead && p.seed == SeedType::Kernelpult && self.is_valid_cob_cannon_spot(p.col, p.row))
     }
 
     /// `Board::CountSunBeingCollected`.
@@ -256,7 +382,6 @@ impl Board {
     pub fn packet_can_pick_up(&self, index: usize) -> bool {
         let packet = &self.seed_bank.packets[index];
         let Some(seed) = packet.packet_type else { return false };
-        // TODO: upgrades also need their base plant on the lawn.
         !self.paused
             && self.scene == GameScene::Playing
             && packet.active
@@ -377,14 +502,42 @@ impl Board {
             self.coin_mouse_down(id, res, sounds);
             return;
         }
-        if self.is_plant_in_cursor() {
+        if self.cursor.cursor_type == CursorType::CobCannonTarget {
+            self.mouse_down_cob_cannon_fire(ip, right, effects, res);
+        } else if self.is_plant_in_cursor() {
             self.mouse_down_with_plant(ip, right, effects, res, images, sounds);
         } else if !right && let Some(index) = self.seed_packet_at(ip) {
             self.packet_mouse_down(index, res, sounds);
+        } else if !right
+            && self.cursor.cursor_type == CursorType::Normal
+            && self.scene == GameScene::Playing
+            && !self.paused
+            && let Some(id) = self.plants.iter().find(|(_, p)| p.is_cob_ready() && rect_contains(p.rect(), ip)).map(|(id, _)| id)
+        {
+            // Plant::MouseDown: a loaded cob cannon asks where to shoot.
+            self.cursor = CursorObject { cursor_type: CursorType::CobCannonTarget, cob_cannon: Some(id), ..Default::default() };
+            self.cob_cannon_cursor_delay = 30;
+            self.cob_cannon_mouse = (ip.x, ip.y);
         } else if !right && self.cursor.cursor_type == CursorType::Hammer && self.scene == GameScene::Playing && !self.paused {
             let mut fx = super::zombie::Fx { effects, res, images, sounds };
             self.whack_mouse_down(ip.x, ip.y, &mut fx);
         }
+    }
+
+    /// `Board::MouseDownCobcannonFire`: the next click aims the cannon (not
+    /// one too close to the click that picked it up).
+    fn mouse_down_cob_cannon_fire(&mut self, p: IVec2, right: bool, effects: &mut EffectSystem, res: &GameResources) {
+        if !right && p.y >= 80 {
+            let (mx, my) = self.cob_cannon_mouse;
+            let near = ((p.x - mx) as f32).hypot((p.y - my) as f32) < 100.0;
+            if self.cob_cannon_cursor_delay > 0 && near {
+                return;
+            }
+            if let Some(plant) = self.cursor.cob_cannon.and_then(|id| self.plants.get_mut(id)) {
+                plant.cob_cannon_fire(p.x, p.y, effects);
+            }
+        }
+        self.clear_cursor(res);
     }
 
     /// `Coin::MouseDown` + `Coin::Collect`'s sun handling.
@@ -403,6 +556,19 @@ impl Board {
                 sounds.play_sample(sound);
             }
             coin.collect();
+            // Behaviour per ruslan831 decomp, Coin::Collect: a money bag scatters
+            // gold, and the last level's award scatters diamonds.
+            let (ty, x, y) = (coin.ty, coin.pos_x, coin.pos_y);
+            if self.level == 50 {
+                self.pending_fan_out = Some((super::coin::CoinType::Diamond, 3, x, y));
+                sounds.play_sample("SOUND_DIAMOND");
+            } else if ty == super::coin::CoinType::MoneyBag {
+                self.pending_fan_out = Some((super::coin::CoinType::Gold, 5, x, y));
+                sounds.play_foley(FoleyType::Coin);
+            }
+            if ty == super::coin::CoinType::MoneyBag {
+                coin.start_fade();
+            }
             self.pending_fade_out = true;
             // TODO: the starburst and pickup particles around the packet.
             return;
@@ -459,9 +625,14 @@ impl Board {
             }
             return;
         }
-        // TODO: upgrades refuse to be picked up without their base plant.
+        if !self.planting_requirements_met(seed) {
+            sounds.play_sample("SOUND_BUZZER");
+            let key = format!("[ADVICE_PLANT_NEEDS_{}]", upgrade_needs_name(seed));
+            self.display_advice(res, &key, MessageStyle::HintLong, Some(AdviceType::PlantNeedsBase(seed)));
+            return;
+        }
         self.clear_advice(Some(AdviceType::CantAffordPlant));
-        self.cursor = CursorObject { cursor_type: CursorType::PlantFromBank, seed: Some(seed), seed_bank_index: Some(index) };
+        self.cursor = CursorObject { cursor_type: CursorType::PlantFromBank, seed: Some(seed), seed_bank_index: Some(index), imitater: self.seed_bank.packets[index].imitater, ..Default::default() };
         sounds.play_sample("SOUND_SEEDLIFT");
         if self.tutorial_state == TutorialState::Level1PickUpPeashooter {
             self.set_tutorial_state(res, TutorialState::Level1PlantPeashooter);
@@ -540,6 +711,13 @@ impl Board {
                 self.display_advice(res, "[ADVICE_PLANT_NOT_ON_CRATER]", MessageStyle::HintFast, advice);
                 return;
             }
+            PlantingReason::NeedsUpgrade => {
+                if seed.upgrade_base().is_some() {
+                    let key = format!("[ADVICE_ONLY_ON_{}]", upgrade_advice_name(seed));
+                    self.display_advice(res, &key, MessageStyle::HintFast, Some(AdviceType::PlantOnlyOnBase(seed)));
+                }
+                return;
+            }
             PlantingReason::NotHere => return,
         }
         for advice in [
@@ -550,6 +728,7 @@ impl Board {
             AdviceType::PlantNeedPot,
             AdviceType::PlantNotPassedLine,
             AdviceType::PlantGravebustersOnGraves,
+            AdviceType::PlantOnlyOnBase(seed),
         ] {
             self.clear_advice(Some(advice));
         }
@@ -557,7 +736,8 @@ impl Board {
         if !conveyor && !self.take_sun_money(seed.cost(), sounds) {
             return;
         }
-        self.add_plant(grid_x, grid_y, seed, effects, res, images, sounds);
+        let imitater = self.cursor.imitater;
+        self.add_plant_as(grid_x, grid_y, seed, imitater, effects, res, images, sounds);
         if let Some(i) = self.cursor.seed_bank_index {
             // SeedPacket::WasPlanted.
             if conveyor {
@@ -615,19 +795,66 @@ impl Board {
         images: &mut Assets<Image>,
         sounds: &mut Sounds,
     ) {
+        self.add_plant_as(grid_x, grid_y, seed, false, effects, res, images, sounds);
+    }
+
+    /// `Board::AddPlant` for a copy made by an imitater (`theImitaterType`): the
+    /// imitater goes down and turns into `seed` a moment later.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn add_plant_as(
+        &mut self,
+        grid_x: i32,
+        grid_y: i32,
+        seed: SeedType,
+        imitater: bool,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        sounds: &mut Sounds,
+    ) {
+        let planted = seed;
+        let seed = if imitater { SeedType::Imitater } else { seed };
         let (x, y) = (self.grid_to_pixel_x(grid_x), self.grid_to_pixel_y(grid_x, grid_y));
-        // Behaviour per ruslan831 decomp, Plant::DoSpecial (coffee bean): it
-        // wakes the mushroom on its square. TODO: the bean's own animation.
-        if seed == SeedType::InstantCoffee {
-            let sleeper = self.plants.iter().find(|(_, p)| p.col == grid_x && p.row == grid_y && !p.dead && p.is_asleep()).map(|(id, _)| id);
-            if let Some(plant) = sleeper.and_then(|id| self.plants.get_mut(id)) {
-                plant.set_sleeping(false, effects, res, images, sounds.rng());
+        // Behaviour per ruslan831 decomp, Board::AddPlant: an upgrade replaces
+        // the plant it goes on.
+        // Behaviour per ruslan831 decomp, Board::AddPlant: a new pumpkin, wall-nut
+        // or tall-nut takes the place of the hurt one it was repairing.
+        if matches!(planted, SeedType::Pumpkinshell | SeedType::Wallnut | SeedType::Tallnut) && !self.is_wallnut_bowling_level() {
+            for (_, p) in self.plants.iter_mut() {
+                if p.col == grid_x && p.row == grid_y && !p.dead && p.seed == planted {
+                    p.die(effects);
+                }
             }
-            sounds.play_foley(FoleyType::Plant);
-            return;
+        }
+        let mut base_awake = None;
+        if let Some(base) = seed.upgrade_base() {
+            let target = self
+                .plants
+                .iter()
+                .find(|(_, p)| p.col == grid_x && p.row == grid_y && !p.dead && !p.not_on_ground() && p.seed == base)
+                .map(|(id, _)| id);
+            if let Some(plant) = target.and_then(|id| self.plants.get_mut(id)) {
+                base_awake = Some(!plant.is_asleep());
+                plant.die(effects);
+            }
+        }
+        // Behaviour per ruslan831 decomp, Board::AddPlant: a cob cannon also takes
+        // the kernel-pult on its right.
+        if seed == SeedType::Cobcannon {
+            let right = self.normal_plant_at(grid_x + 1, grid_y).filter(|p| p.seed == SeedType::Kernelpult).map(|p| (p.col, p.row));
+            if let Some((col, row)) = right {
+                for (_, p) in self.plants.iter_mut() {
+                    if p.col == col && p.row == row && p.seed == SeedType::Kernelpult && !p.dead {
+                        p.die(effects);
+                    }
+                }
+            }
         }
         let bowling = self.is_wallnut_bowling_level();
         let mut plant = Plant::new(grid_x, grid_y, x, y, seed, bowling, effects, res, images, sounds.rng());
+        if imitater {
+            plant.set_imitating(planted);
+        }
         // On the roof everything stands in a pot (or is one): it sits 5 px higher.
         plant.in_pot = self.stage_has_roof();
         // A plant on water floats, and splashes in when it's planted
@@ -635,6 +862,11 @@ impl Board {
         let on_water = self.grid_square_type[grid_x as usize][grid_y as usize] == GridSquareType::Pool;
         plant.on_water = on_water;
         let id = self.plants.alloc(plant);
+        if seed == SeedType::Cobcannon
+            && let Some(plant) = self.plants.get_mut(id)
+        {
+            plant.start_cob_cannon(effects);
+        }
         sounds.play_foley(if on_water { FoleyType::PlantWater } else { FoleyType::Plant });
         if matches!(seed, SeedType::Cherrybomb | SeedType::Jalapeno) {
             sounds.play_foley(FoleyType::ReverseExplosion);
@@ -645,8 +877,8 @@ impl Board {
         if seed == SeedType::Plantern {
             sounds.play_sample("SOUND_PLANTERN");
         }
-        // Mushrooms sleep through the day.
-        if seed.is_nocturnal() && !self.stage_is_night()
+        // Mushrooms sleep through the day (a gloom-shroom keeps its fume-shroom's state).
+        if seed.is_nocturnal() && !self.stage_is_night() && base_awake != Some(true)
             && let Some(plant) = self.plants.get_mut(id)
         {
             plant.set_sleeping(true, effects, res, images, sounds.rng());
@@ -698,6 +930,15 @@ impl Board {
             && let (Some(p), Some(shovel)) = (self.mouse, res.image("IMAGE_SHOVEL"))
         {
             g.draw_image(shovel, p.x.floor() - 15.0, p.y.floor() - 65.0);
+            return;
+        }
+        if self.scene == GameScene::Playing
+            && self.cursor.cursor_type == CursorType::CobCannonTarget
+            && let (Some(p), Some(target)) = (self.mouse, res.image("IMAGE_COBCANNON_TARGET"))
+            && p.y >= 80.0
+        {
+            // The cursor object sits at the mouse less (25, 35).
+            g.draw_image(target, p.x.floor() - 25.0 - 11.0, p.y.floor() - 35.0 + 7.0);
             return;
         }
         if self.scene != GameScene::Playing || !self.is_plant_in_cursor() {

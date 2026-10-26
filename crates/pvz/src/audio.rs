@@ -54,7 +54,6 @@ pub enum MusicFile {
     Main,
     Drums,
     Hihats,
-    // TODO: the credits song (ZombiesOnYourLawn.ogg) once the credits exist.
 }
 
 impl MusicFile {
@@ -482,6 +481,12 @@ pub enum FoleyType {
     PoolCleaner,
     /// `FOLEY_SHOOP`: the pool cleaner sucking a zombie down.
     Shoop,
+    DolphinAppears,
+    Magnetshroom,
+    Yuck,
+    Coffee,
+    WakeUp,
+    CobLaunch,
     /// A jalapeno going off.
     JalapenoIgnite,
     /// A pea passing a torchwood, and a fire pea hitting.
@@ -607,7 +612,13 @@ impl FoleyType {
             Self::PlantWater => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_PLANT_WATER"], flags: 0 },
             Self::ZombieEnteringWater => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_ZOMBIE_ENTERING_WATER"], flags: 0 },
             Self::PoolCleaner => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_POOL_CLEANER"], flags: 0 },
+            Self::Coffee => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_COFFEE"], flags: 0 },
+            Self::WakeUp => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_WAKEUP"], flags: 0 },
+            Self::Yuck => FoleyParams { pitch_range: 1.0, sounds: &["SOUND_YUCK", "SOUND_YUCK", "SOUND_YUCK2"], flags: 0 },
+            Self::Magnetshroom => FoleyParams { pitch_range: 2.0, sounds: &["SOUND_MAGNETSHROOM"], flags: 0 },
+            Self::DolphinAppears => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_DOLPHIN_APPEARS"], flags: 0 },
             Self::Shoop => FoleyParams { pitch_range: -5.0, sounds: &["SOUND_SHOOP"], flags: 0 },
+            Self::CobLaunch => FoleyParams { pitch_range: 10.0, sounds: &["SOUND_COBLAUNCH"], flags: 0 },
             Self::Floop => FoleyParams { pitch_range: 0.0, sounds: &["SOUND_FLOOP"], flags: 0 },
             Self::BungeeScream => FoleyParams {
                 pitch_range: 2.0,

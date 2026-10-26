@@ -15,6 +15,7 @@ mod almanac;
 mod balloon;
 mod boss;
 mod butter;
+mod credits;
 mod fog;
 mod levels;
 mod options;
@@ -123,6 +124,8 @@ pub struct TestBoard {
     waves: bool,
     /// The countdown to the first wave, kept while waves are held back.
     first_wave_count_down: i32,
+    /// Money the player has picked up since the test began (what the board hands the profile).
+    pub money: i32,
 }
 
 impl TestBoard {
@@ -173,6 +176,7 @@ impl TestBoard {
                 shared,
                 waves: false,
                 first_wave_count_down,
+                money: 0,
             });
         }
         board.init_lawn_mowers();
@@ -202,6 +206,7 @@ impl TestBoard {
             shared,
             waves: false,
             first_wave_count_down,
+            money: 0,
         };
         // Graves come up fully (from as far as 50 ticks underground) and
         // the mowers finish rolling in before the test starts.
@@ -239,7 +244,8 @@ impl TestBoard {
         }
         let Shared { resources, images } = &mut *self.shared;
         let mut sounds = self.sounds.get_mut(&mut self.world).expect("sounds without an audio device");
-        self.board.tick(&mut self.effects, resources, images, &mut self.music, &mut sounds);
+        let outcome = self.board.tick(&mut self.effects, resources, images, &mut self.music, &mut sounds);
+        self.money += outcome.money;
         self.sounds.apply(&mut self.world);
         self.world.resource_mut::<UpdateCount>().0 += 1;
     }

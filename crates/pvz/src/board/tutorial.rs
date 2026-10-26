@@ -82,6 +82,10 @@ pub enum AdviceType {
     PlantNotOnCrater,
     PeashooterDied,
     HugeWave,
+    /// "Needs a repeater on the lawn" and friends, per upgrade.
+    PlantNeedsBase(crate::plant::SeedType),
+    /// "Only on repeaters" and friends, per upgrade.
+    PlantOnlyOnBase(crate::plant::SeedType),
 }
 
 impl Board {

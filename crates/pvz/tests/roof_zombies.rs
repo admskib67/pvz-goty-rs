@@ -179,3 +179,31 @@ fn a_gargantuar_leaves_a_flat_plant_that_can_be_replanted() {
     assert_eq!(t.board.can_plant_at(4, 2, SeedType::Wallnut), super::super::cursor::PlantingReason::Ok, "the square is free again");
     assert!(t.run_until(600, |b| b.plants.get(flower).is_none()), "and the flat plant goes after five seconds");
 }
+
+#[test]
+fn a_catapult_wears_a_spikerock_down_a_spike_at_a_time() {
+    let mut t = test_board!("1-6");
+    let rock = t.plant(SeedType::Spikerock, 5, 2);
+    let catapult = t.zombie(ZombieType::Catapult, 2, 700.0);
+    assert!(t.run_until(4000, |b| b.zombies.get(catapult).is_none_or(|z| z.is_dead_or_dying())), "the spikes get it");
+    assert_eq!(t.plant_ref(rock).unwrap().health, 400, "and cost the rock one spike");
+}
+
+#[test]
+fn a_catapult_destroys_the_spikeweed_it_pops_on() {
+    let mut t = test_board!("1-6");
+    let weed = t.plant(SeedType::Spikeweed, 5, 2);
+    let catapult = t.zombie(ZombieType::Catapult, 2, 700.0);
+    assert!(t.run_until(4000, |b| b.zombies.get(catapult).is_none_or(|z| z.is_dead_or_dying())));
+    assert!(t.plant_ref(weed).is_none(), "the weed goes with its victim");
+}
+
+#[test]
+fn a_gargantuar_wears_down_a_spikerock_and_is_hurt_by_it() {
+    let mut t = test_board!("1-6");
+    let rock = t.plant(SeedType::Spikerock, 4, 2);
+    let gargantuar = t.zombie(ZombieType::Gargantuar, 2, 650.0);
+    let before = t.zombie_ref(gargantuar).unwrap().body_health;
+    assert!(t.run_until(3000, |b| b.plants.get(rock).is_none_or(|p| p.health < 450)), "a smash chips it");
+    assert!(t.zombie_ref(gargantuar).unwrap().body_health < before, "and the spikes hurt back");
+}

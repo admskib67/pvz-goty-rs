@@ -9,7 +9,7 @@ use super::super::conveyor::mini_boss_seeds;
 use super::super::cursor::CursorType;
 use super::super::zombie::ZombiePhase;
 use super::super::{STORE_ITEM_PACKET_UPGRADE, cutscene};
-use super::test_board;
+use super::{TestBoard, test_board};
 
 #[test]
 fn night_mini_boss_belt_brings_night_plants() {
@@ -156,4 +156,95 @@ fn the_seed_chooser_warns_about_missing_sun_plants() {
     let t = test_board!("2-1");
     let warnings = t.board.chooser_warnings(|seed| seed == SeedType::Peashooter);
     assert_eq!(warnings, ["[SEED_CHOOSER_PUFFSHROOM_WARNING]", "[SEED_CHOOSER_NIGHT_SUN_WARNING]"], "2-1 asks twice");
+}
+
+#[test]
+fn the_seed_chooser_warns_about_pool_and_roof() {
+    let t = test_board!("3-2");
+    let warnings = t.board.chooser_warnings(|seed| seed == SeedType::Sunflower);
+    assert_eq!(warnings, ["[SEED_CHOOSER_POOL_WARNING]"], "water and no lily pad");
+    assert!(t.board.chooser_warnings(|seed| matches!(seed, SeedType::Sunflower | SeedType::Lilypad)).is_empty());
+    drop(t);
+    let t = test_board!("5-2");
+    let warnings = t.board.chooser_warnings(|seed| seed == SeedType::Sunflower);
+    assert!(warnings.contains(&"[SEED_CHOOSER_ROOF_WARNING]".into()), "{warnings:?}");
+    assert!(!t.board.chooser_warnings(|seed| matches!(seed, SeedType::Sunflower | SeedType::Flowerpot)).contains(&"[SEED_CHOOSER_ROOF_WARNING]".into()));
+}
+
+#[test]
+fn the_seed_chooser_warns_about_upgrades_without_their_base_plant() {
+    use crate::board::seed_chooser::ChooserWarning;
+    let t = test_board!("1-8");
+    let picked = |seed| matches!(seed, SeedType::Sunflower | SeedType::Gatlingpea);
+    let warnings = t.board.chooser_warnings(picked);
+    assert_eq!(warnings, [ChooserWarning::Upgrade { to: SeedType::Gatlingpea, from: SeedType::Repeater }]);
+    let picked = |seed| matches!(seed, SeedType::Sunflower | SeedType::Gatlingpea | SeedType::Repeater);
+    assert!(t.board.chooser_warnings(picked).is_empty());
+}
+
+#[test]
+fn the_seed_chooser_offers_store_upgrades_and_lets_the_imitater_copy_a_plant() {
+    use super::super::seed_chooser::SeedChooser;
+    use bevy::math::IVec2;
+    let Some(mut t) = TestBoard::with_player("2-1", |p| {
+        p.purchases[0] = 1; // gatling pea
+        p.purchases[8] = 1; // imitater
+    }) else {
+        return;
+    };
+    let owned = &t.board.owned_seeds;
+    assert!(owned[SeedType::Gatlingpea as usize] && owned[SeedType::Imitater as usize], "the store's plants count");
+    assert!(!owned[SeedType::Twinsunflower as usize]);
+    assert!(t.board.has_seven_chooser_rows(), "an upgrade makes a seventh row");
+    let mut chooser = SeedChooser::new(&t.board.owned_seeds, true, 0);
+    chooser.mouse_visible = true;
+    t.board.seed_chooser = Some(chooser);
+    // The gatling pea sits first on the sixth row.
+    t.with(|board, _, _, _, sounds| {
+        board.seed_chooser_mouse_down(IVec2::new(30, 480), sounds);
+    });
+    assert_eq!(t.board.seed_chooser.as_ref().unwrap().picked(), [(SeedType::Gatlingpea as usize, None)]);
+    // The imitater's button opens its panel, and a plant picked from it is copied.
+    t.with(|board, _, _, _, sounds| {
+        board.seed_chooser_mouse_down(IVec2::new(470, 520), sounds);
+    });
+    assert!(t.board.seed_chooser.as_ref().unwrap().imitater_panel_open());
+    // The panel's first plant, the peashooter.
+    t.with(|board, _, _, _, sounds| {
+        board.seed_chooser_mouse_down(IVec2::new(195, 195), sounds);
+    });
+    let picked = t.board.seed_chooser.as_ref().unwrap().picked();
+    assert!(picked.contains(&(SeedType::Imitater as usize, Some(SeedType::Peashooter))), "{picked:?}");
+}
+
+/// Wins the level by killing its last zombie with a cherry bomb.
+fn win_level(t: &mut TestBoard) {
+    t.board.waves.current_wave = t.board.waves.num_waves;
+    t.plant(SeedType::Cherrybomb, 4, 2);
+    t.zombie(ZombieType::Normal, 2, 450.0);
+}
+
+#[test]
+fn a_replayed_level_ends_with_a_money_bag_that_pays_out_with_the_mowers() {
+    use super::super::coin::CoinType;
+    let Some(mut t) = TestBoard::with_player("1-3", |p| p.finished_adventure = 1) else { return };
+    win_level(&mut t);
+    assert!(t.run_until(600, |b| b.coins.iter().any(|(_, c)| c.ty == CoinType::MoneyBag)), "the last zombie drops a money bag");
+    // Let it land, then click it.
+    t.ticks(200);
+    let (x, y) = t.board.coins.iter().find(|(_, c)| c.ty == CoinType::MoneyBag).map(|(_, c)| (c.pos_x as i32 + 20, c.pos_y as i32 + 20)).unwrap();
+    t.click(x, y);
+    assert!(t.board.has_level_award_dropped());
+    t.ticks(700);
+    assert!(t.money >= 25, "the bag's five gold coins are {}", t.money);
+    assert!(t.money >= 25 + 5 * 5, "and each of the five mowers turned into a gold coin: {}", t.money);
+}
+
+#[test]
+fn a_first_time_level_still_ends_with_its_award() {
+    use super::super::coin::CoinType;
+    let Some(mut t) = TestBoard::with_player("1-3", |_| {}) else { return };
+    win_level(&mut t);
+    assert!(t.run_until(600, |b| b.coins.iter().any(|(_, c)| c.ty == CoinType::FinalSeedPacket)));
+    assert!(!t.board.coins.iter().any(|(_, c)| c.ty == CoinType::MoneyBag));
 }

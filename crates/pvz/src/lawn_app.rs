@@ -178,6 +178,8 @@ struct DialogActions<'a, 'c, 'e> {
     changed: &'a mut MessageWriter<'c, PlayerChanged>,
     exit: &'a mut MessageWriter<'e, AppExit>,
     next_state: &'a mut NextState<AppState>,
+    /// The options' Credits button was pressed: show the zombie's note.
+    open_credits_note: bool,
 }
 
 impl DialogActions<'_, '_, '_> {
@@ -403,8 +405,9 @@ fn options_event(
                 app.dialogs.get(DialogId::NewOptions).and_then(|d| d.options()).is_some_and(|o| o.from_game_selector);
             if from_game_selector {
                 kill_new_options_dialog(app.dialogs, settings, windows);
-                // TODO: ShowAwardScreen(AWARD_CREDITS_ZOMBIENOTE) once the credits exist.
-                info!("the credits aren't ported yet");
+                // The options' Credits button: the zombie's note, then the credits.
+                app.open_credits_note = true;
+                app.next_state.set(AppState::Award);
             } else {
                 // Board::NeedSaveGame: a level in progress asks first. TODO:
                 // save it (TryToSaveGame), and leave without asking where
@@ -424,6 +427,7 @@ fn options_event(
 
 #[allow(clippy::too_many_arguments)]
 fn handle_dialog_events(
+    mut commands: Commands,
     mut dialogs: ResMut<Dialogs>,
     res: Option<Res<GameResources>>,
     profiles: Option<ResMut<ProfileMgr>>,
@@ -432,6 +436,7 @@ fn handle_dialog_events(
     mut next_state: ResMut<NextState<AppState>>,
     mut board: Option<ResMut<crate::board::Board>>,
     mut store: Option<ResMut<crate::store::StoreScreen>>,
+    mut credits: Option<ResMut<crate::credits::CreditScreen>>,
     mut settings: ResMut<Settings>,
     mut music: Option<ResMut<Music>>,
     mut sounds: Sounds,
@@ -447,6 +452,7 @@ fn handle_dialog_events(
         changed: &mut changed,
         exit: &mut exit,
         next_state: &mut next_state,
+        open_credits_note: false,
     };
     for event in events {
         match event {
@@ -472,6 +478,17 @@ fn handle_dialog_events(
                     store.dialog_answer = Some((id, button == DialogButton::Yes));
                 }
             }
+            // The credits' pause: resume, or back to the main menu.
+            DialogEvent::Button(DialogId::CreditsPause, button) => {
+                app.dialogs.kill_dialog(DialogId::CreditsPause);
+                if button == DialogButton::Yes {
+                    if let Some(credits) = credits.as_deref_mut() {
+                        credits.paused = false;
+                    }
+                } else {
+                    app.next_state.set(AppState::GameSelector);
+                }
+            }
             DialogEvent::Button(DialogId::ChooserWarning, button) => {
                 app.dialogs.kill_dialog(DialogId::ChooserWarning);
                 if let Some(board) = board.as_deref_mut() {
@@ -489,5 +506,8 @@ fn handle_dialog_events(
     // level), the settings are saved.
     if options_were_open && app.dialogs.get(DialogId::NewOptions).is_none() {
         settings.save();
+    }
+    if app.open_credits_note {
+        commands.insert_resource(crate::award::AwardScreen::credits_note());
     }
 }

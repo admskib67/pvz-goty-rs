@@ -49,6 +49,8 @@ pub(crate) enum AwardKind {
     HelpNote,
     /// Adventure's end: the silver sunflower trophy.
     Trophy,
+    /// `AWARD_CREDITS_ZOMBIENOTE`: the last note, before the credits roll.
+    CreditsNote,
 }
 
 impl AwardKind {
@@ -66,7 +68,7 @@ impl AwardKind {
     }
 
     fn is_paper_note(self) -> bool {
-        matches!(self, Self::Note(_) | Self::HelpNote)
+        matches!(self, Self::Note(_) | Self::HelpNote | Self::CreditsNote)
     }
 }
 
@@ -95,6 +97,25 @@ impl AwardScreen {
         Self { level: 1, kind: AwardKind::Trophy, fade_in: 180, start_over: false, menu_over: false }
     }
 
+    /// `LawnApp::CheckForGameEnd` for adventure: what follows a won level. The
+    /// last level gives the trophy (the first time) or the credits' note (every
+    /// time after); the first time through every level has its award, and a
+    /// replay only shows the notes after levels 9, 19, 29, 39 and 49.
+    pub fn after_level(first_time: bool, level: i32, overridden: bool, next_level: i32) -> Option<Self> {
+        if level == crate::board::FINAL_LEVEL && !overridden {
+            Some(if first_time { Self::trophy() } else { Self::credits_note() })
+        } else if first_time || matches!(level, 9 | 19 | 29 | 39 | 49) {
+            Self::new(next_level)
+        } else {
+            None
+        }
+    }
+
+    /// The note that comes before the credits (`ShowAwardScreen(AWARD_CREDITS_ZOMBIENOTE)`).
+    pub fn credits_note() -> Self {
+        Self { level: 1, kind: AwardKind::CreditsNote, fade_in: 180, start_over: false, menu_over: false }
+    }
+
     /// The help note from the main menu (`ShowAwardScreen(AWARD_HELP_ZOMBIENOTE)`).
     pub fn help(level: i32) -> Self {
         Self { level, kind: AwardKind::HelpNote, fade_in: 180, start_over: false, menu_over: false }
@@ -102,7 +123,7 @@ impl AwardScreen {
 
     fn menu_visible(&self) -> bool {
         // Hidden for the first few levels, and on the help note.
-        self.level > 3 && !matches!(self.kind, AwardKind::HelpNote | AwardKind::Trophy)
+        self.kind == AwardKind::CreditsNote || (self.level > 3 && !matches!(self.kind, AwardKind::HelpNote | AwardKind::Trophy))
     }
 
     /// `mStartButton`: x, y, width, height.
@@ -113,6 +134,9 @@ impl AwardScreen {
     const MENU_RECT: (f32, f32, f32, f32) = (677.0, 16.0, 111.0, 26.0);
 
     fn start_label(&self) -> &'static str {
+        if self.kind == AwardKind::CreditsNote {
+            return "[ROLL_CREDITS]";
+        }
         if matches!(self.kind, AwardKind::HelpNote | AwardKind::Trophy) {
             return "[MAIN_MENU_BUTTON]";
         }
@@ -137,6 +161,9 @@ fn start_award(
         groups.push(if n % 2 == 1 { "DelayLoad_Background1" } else { "DelayLoad_Background2" }.to_owned());
         groups.push("DelayLoad_ZombieNote".to_owned());
         groups.push(if n == 5 { "DelayLoad_ZombieFinalNote".to_owned() } else { format!("DelayLoad_ZombieNote{n}") });
+    }
+    if screen.kind == AwardKind::CreditsNote {
+        groups.extend(["DelayLoad_Background6", "DelayLoad_ZombieNote", "DelayLoad_Credits"].map(str::to_owned));
     }
     if screen.kind == AwardKind::HelpNote {
         groups.extend(["DelayLoad_Background1", "DelayLoad_ZombieNote", "DelayLoad_ZombieNoteHelp"].map(str::to_owned));
@@ -172,10 +199,15 @@ fn in_rect(p: Vec2, (x, y, w, h): (f32, f32, f32, f32)) -> bool {
 /// `AwardScreen::StartButtonPressed`: the help note goes back to the main
 /// menu, the almanac award opens it (`almanac` starts the next level when
 /// it closes), and the others go on to the next level.
-fn start_pressed(screen: &AwardScreen, next_state: &mut NextState<AppState>, dialogs: &mut Dialogs, res: &GameResources) {
+fn start_pressed(screen: &AwardScreen, next_state: &mut NextState<AppState>, dialogs: &mut Dialogs, res: &GameResources, commands: &mut Commands) {
     match screen.kind {
-        // TODO: after the trophy come the credits.
-        AwardKind::HelpNote | AwardKind::Trophy => next_state.set(AppState::GameSelector),
+        AwardKind::HelpNote => next_state.set(AppState::GameSelector),
+        // The trophy is for finishing adventure: the zombie's note and the credits follow.
+        AwardKind::Trophy => {
+            commands.insert_resource(AwardScreen::credits_note());
+            next_state.set(AppState::Award);
+        }
+        AwardKind::CreditsNote => next_state.set(AppState::Credits),
         AwardKind::Almanac => do_almanac_dialog(dialogs, res, AlmanacStart::Index),
         _ => next_state.set(AppState::Board),
     }
@@ -192,6 +224,7 @@ fn award_input(
     mut sounds: Sounds,
     mut dialogs: ResMut<Dialogs>,
     res: Res<GameResources>,
+    mut commands: Commands,
 ) {
     // The almanac, over the screen, takes the input.
     if dialogs.is_modal() || dialogs.took_input() {
@@ -207,13 +240,13 @@ fn award_input(
     }
     if mouse.just_released(MouseButton::Left) {
         if screen.start_over {
-            start_pressed(&screen, &mut next_state, &mut dialogs, &res);
+            start_pressed(&screen, &mut next_state, &mut dialogs, &res, &mut commands);
         } else if screen.menu_over {
             next_state.set(AppState::GameSelector);
         }
     }
     if keys.any_just_pressed([KeyCode::Space, KeyCode::Enter, KeyCode::Escape]) {
-        start_pressed(&screen, &mut next_state, &mut dialogs, &res);
+        start_pressed(&screen, &mut next_state, &mut dialogs, &res, &mut commands);
     }
 }
 
@@ -311,6 +344,24 @@ fn draw_award(screen: Res<AwardScreen>, resources: Res<GameResources>, mut g: Re
                 g.draw_image_cel_center_scaled(trophy, 325.0, 65.0, 0, 0.7, 0.7);
             }
         }
+        AwardKind::CreditsNote => {
+            if let Some(boss) = res.image("IMAGE_BACKGROUND6BOSS") {
+                g.push_state();
+                g.set_colorize_images(true);
+                g.set_color(SexyColor::rgba(125, 200, 255, 255));
+                draw_stretched(g, res, "IMAGE_BACKGROUND6BOSS", -900.0, -400.0, 2800.0, 1200.0);
+                let _ = boss;
+                g.pop_state();
+            }
+            g.push_state();
+            g.set_color(SexyColor::rgba(0, 0, 0, 64));
+            g.fill_rect(0.0, 525.0, crate::GAME_WIDTH, crate::GAME_HEIGHT);
+            g.pop_state();
+            if let Some(note) = res.image("IMAGE_ZOMBIE_NOTE") {
+                g.draw_image(note, 75.0, 60.0);
+            }
+            draw_stretched(g, res, "IMAGE_CREDITS_ZOMBIENOTE", 149.0, 103.0, 475.0, 325.0);
+        }
         AwardKind::HelpNote => {
             draw_stretched(g, res, "IMAGE_BACKGROUND1", -700.0, -300.0, 2800.0, 1200.0);
             if let Some(note) = res.image("IMAGE_ZOMBIE_NOTE") {
@@ -324,19 +375,26 @@ fn draw_award(screen: Res<AwardScreen>, resources: Res<GameResources>, mut g: Re
 
     // The two buttons.
     let (x, y, w, h) = screen.start_rect();
-    let image = "IMAGE_SEEDCHOOSER_BUTTON";
+    let credits = screen.kind == AwardKind::CreditsNote;
+    let image = if credits { "IMAGE_CREDITS_PLAYBUTTON" } else { "IMAGE_SEEDCHOOSER_BUTTON" };
     if let Some(button) = res.image(image) {
         g.draw_image(button, x, y);
     }
     if screen.start_over
+        && !credits
         && let Some(glow) = res.image("IMAGE_SEEDCHOOSER_BUTTON_GLOW")
     {
         g.draw_image(glow, x, y);
     }
-    if let Some(font) = res.font("FONT_DWARVENTODCRAFT15") {
+    let (font, color) = if credits {
+        ("FONT_HOUSEOFTERROR20", SexyColor::WHITE)
+    } else {
+        ("FONT_DWARVENTODCRAFT15", SexyColor::rgba(213, 159, 43, 255))
+    };
+    if let Some(font) = res.font(font) {
         let ascent = font.font.ascent;
         let baseline = y as i32 + (h as i32 - ascent / 6 - 1 + ascent) / 2 - 1;
-        g.tod_draw_string(font, (x + w / 2.0) as i32, baseline, &tr(screen.start_label()), SexyColor::rgba(213, 159, 43, 255), Justify::Center);
+        g.tod_draw_string(font, (x + w / 2.0) as i32, baseline, &tr(screen.start_label()), color, Justify::Center);
     }
     if screen.menu_visible() {
         let (x, y, w, h) = AwardScreen::MENU_RECT;
@@ -361,4 +419,29 @@ fn draw_award(screen: Res<AwardScreen>, resources: Res<GameResources>, mut g: Re
     g.set_color(if screen.kind.is_paper_note() { SexyColor::rgba(0, 0, 0, alpha) } else { SexyColor::rgba(255, 255, 255, alpha) });
     g.fill_rect(0.0, 0.0, crate::GAME_WIDTH, crate::GAME_HEIGHT);
     g.pop_state();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kind(award: Option<AwardScreen>) -> Option<AwardKind> {
+        award.map(|a| a.kind)
+    }
+
+    #[test]
+    fn what_follows_a_won_level() {
+        use crate::board::FINAL_LEVEL;
+        // The first time through, each level has its award.
+        assert_eq!(kind(AwardScreen::after_level(true, 4, false, 5)), Some(AwardKind::Shovel));
+        assert_eq!(kind(AwardScreen::after_level(true, 9, false, 10)), Some(AwardKind::Note(1)));
+        // A replay goes straight on, except for the notes.
+        assert_eq!(kind(AwardScreen::after_level(false, 4, false, 5)), None);
+        assert_eq!(kind(AwardScreen::after_level(false, 19, false, 20)), Some(AwardKind::Note(2)));
+        // Adventure's end: the trophy, then (and every time after) the credits' note.
+        assert_eq!(kind(AwardScreen::after_level(true, FINAL_LEVEL, false, 1)), Some(AwardKind::Trophy));
+        assert_eq!(kind(AwardScreen::after_level(false, FINAL_LEVEL, false, 1)), Some(AwardKind::CreditsNote));
+        // A level picked with `--lvl` isn't the adventure's end.
+        assert_ne!(kind(AwardScreen::after_level(true, FINAL_LEVEL, true, 51)), Some(AwardKind::Trophy));
+    }
 }

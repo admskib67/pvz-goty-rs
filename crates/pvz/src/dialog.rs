@@ -65,6 +65,8 @@ pub enum DialogId {
     Upgraded,
     /// The tree of wisdom's "visit it now?" after buying it.
     VisitTree,
+    /// The credits' pause: resume or go back to the main menu.
+    CreditsPause,
 }
 
 /// `Dialog::BUTTONS_*`.

@@ -29,7 +29,7 @@ mod lawn_mower;
 mod level_end;
 mod message;
 mod plant;
-mod pool;
+pub(crate) mod pool;
 mod projectile;
 mod seed_bank;
 mod seed_chooser;
@@ -62,6 +62,7 @@ use crate::graphics::{Graphics, Justify, SexyColor, SexyRect};
 use crate::input::GameCursor;
 use crate::player::{PlayerInfo, ProfileMgr};
 use crate::plant::{SeedType, seeds_available};
+use seed_chooser::ChooserWarning;
 use crate::particle::{ParticleEffect, draw_particle_system};
 use crate::reanim::{EffectSystem, ParticleSystemId, ReanimationType};
 use crate::resources::GameResources;
@@ -121,7 +122,7 @@ pub fn packet_upgrade_cost(bought: i32) -> i32 {
         _ => 8000,
     }
 }
-const FINAL_LEVEL: i32 = 50;
+pub const FINAL_LEVEL: i32 = 50;
 
 /// `GameMode`. Only adventure mode so far.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +194,22 @@ pub fn grid_to_pixel_y(background: BackgroundType, grid_x: i32, grid_y: i32) -> 
         grid_y * 85 + LAWN_YMIN
     } else {
         grid_y * 100 + LAWN_YMIN
+    }
+}
+
+/// `PixelToGridYKeepOnBoard`: the row at a point, even one off the lawn.
+pub fn row_at_pixel(background: BackgroundType, x: i32, y: i32) -> i32 {
+    let grid_x = ((x.max(80) - cursor::LAWN_XMIN) / 80).clamp(0, MAX_GRID_SIZE_X as i32 - 1);
+    if y < LAWN_YMIN {
+        return 0;
+    }
+    if background.has_roof() {
+        let y = if grid_x < 5 { y - (4 - grid_x) * 20 } else { y };
+        ((y - LAWN_YMIN) / 85).clamp(0, MAX_GRID_SIZE_Y as i32 - 2)
+    } else if background.has_pool() {
+        ((y - LAWN_YMIN) / 85).clamp(0, MAX_GRID_SIZE_Y as i32 - 1)
+    } else {
+        ((y - LAWN_YMIN) / 100).clamp(0, MAX_GRID_SIZE_Y as i32 - 2)
     }
 }
 
@@ -294,7 +311,11 @@ pub struct Board {
     /// Started with `--lvl-2-1`: finishing it leaves the saved player alone.
     level_overridden: bool,
     /// `GetSeedsAvailable`.
-    seeds_available: usize,
+    /// `SeedTypeAvailable` for every plant: what the seed chooser offers.
+    owned_seeds: Vec<bool>,
+    finished_adventure: bool,
+    /// The player bought First Aid: a hurt pumpkin or nut can be replaced.
+    first_aid: bool,
     /// `Challenge::mShowBowlingLine`.
     show_bowling_line: bool,
     /// The player's money, as shown by the coin bank (the profile holds the real total).
@@ -323,6 +344,14 @@ pub struct Board {
     pub defeated_zombies: [bool; crate::zombie::NUM_ZOMBIE_TYPES],
     pub show_shovel: bool,
     pub out_of_money_counter: i32,
+    /// `mScoreNextMowerCounter`: ticks until the next lawn mower turns into money.
+    score_next_mower_counter: i32,
+    /// Coins a collected money bag or trophy is about to scatter: type, how many, where.
+    pending_fan_out: Option<(CoinType, i32, f32, f32)>,
+    /// `mCobCannonCursorDelayCounter` and `mCobCannonMouseX/Y`: the click that picked
+    /// up a cob cannon's aim doesn't also fire it.
+    cob_cannon_cursor_delay: i32,
+    cob_cannon_mouse: (i32, i32),
     pub seed_bank: SeedBank,
     cut_scene: CutScene,
     advice: MessageWidget,
@@ -450,7 +479,9 @@ impl Board {
             dave: crazy_dave::CrazyDave::new(),
             player_name: String::new(),
             level_overridden: false,
-            seeds_available: player.map_or(0, |p| seeds_available(p).max(0) as usize),
+            owned_seeds: (0..=SeedType::Imitater as i32).map(|i| player.is_some_and(|p| SeedType::from_index(i).is_some_and(|s| crate::plant::has_seed_type(p, s)))).collect(),
+            finished_adventure: player.is_some_and(|p| p.has_finished_adventure()),
+            first_aid: player.is_some_and(|p| p.purchases[crate::store::StoreItem::FirstAid.slot()] > 0),
             show_bowling_line: false,
             player_coins: player.map_or(0, |p| p.coins),
             pending_money: 0,
@@ -469,6 +500,10 @@ impl Board {
             defeated_zombies: [false; crate::zombie::NUM_ZOMBIE_TYPES],
             show_shovel: false,
             out_of_money_counter: 0,
+            score_next_mower_counter: 0,
+            pending_fan_out: None,
+            cob_cannon_cursor_delay: 0,
+            cob_cannon_mouse: (0, 0),
             seed_bank: SeedBank::new(resources),
             cut_scene: CutScene::default(),
             advice: MessageWidget::default(),
@@ -881,7 +916,7 @@ fn new_game(
         }
     }
     // The seed chooser shows every plant the player has.
-    for index in 0..board.seeds_available {
+    for index in (0..board.owned_seeds.len()).filter(|&i| board.owned_seeds[i]) {
         if let Some(seed) = SeedType::from_index(index as i32)
             && let Err(e) = resources.reanim_definition(seed.definition().reanim.file(), &mut images)
         {
@@ -936,7 +971,7 @@ pub(super) struct TickOutcome {
     /// Dave is offering a seed slot: ask the player (slots after buying, price in coins).
     packet_offer: Option<(i32, i32)>,
     /// The seed chooser has another question before play starts.
-    chooser_warning: Option<&'static str>,
+    chooser_warning: Option<ChooserWarning>,
 }
 
 /// `Board::Update`, at 100 ticks per second: the game in [`Board::tick`],
@@ -985,12 +1020,7 @@ fn update_board(
         let (first_time, level) = (board.first_time_adventure, board.level);
         board.finish_level(&mut profiles);
         let next_level = if board.level_overridden { level + 1 } else { profiles.player().map_or(level + 1, |p| p.level) };
-        let award = if first_time && level == FINAL_LEVEL && !board.level_overridden {
-            // The last level's trophy.
-            Some(crate::award::AwardScreen::trophy())
-        } else {
-            first_time.then(|| crate::award::AwardScreen::new(next_level)).flatten()
-        };
+        let award = crate::award::AwardScreen::after_level(first_time, level, board.level_overridden, next_level);
         match award {
             Some(screen) => {
                 commands.insert_resource(screen);
@@ -1060,6 +1090,8 @@ impl Board {
         }
         if self.scene == GameScene::Playing {
             self.main_counter += 1;
+            self.cob_cannon_cursor_delay = (self.cob_cannon_cursor_delay - 1).max(0);
+            self.out_of_money_counter = (self.out_of_money_counter - 1).max(0);
             self.tick_fog_countdown();
             self.update_sun_spawning(effects, resources, images, sounds);
             if self.has_conveyor_belt_seed_bank() {
@@ -1081,7 +1113,7 @@ impl Board {
         if std::mem::take(&mut self.boss_music_fade) {
             music.fade_out(200);
         }
-        self.update_level_end_sequence(sounds);
+        self.update_level_end_sequence(effects, resources, images, sounds);
         self.process_delete_queue();
         outcome.game_over = std::mem::take(&mut self.pending_game_over);
         outcome.level_complete = self.level_complete;
@@ -1138,7 +1170,13 @@ impl Board {
         if playing || (self.scene == GameScene::LevelIntro && self.is_wallnut_bowling_level()) {
             let row_y: [i32; MAX_GRID_SIZE_Y] = std::array::from_fn(|row| self.grid_to_pixel_y(0, row as i32));
             let open_rows: [bool; MAX_GRID_SIZE_Y] = std::array::from_fn(|row| self.row_can_have_zombies(row as i32));
+            let last_wave = self.waves.current_wave == self.waves.num_waves;
+            let bowling_pays = !self.first_time_adventure || self.level > 10;
+            let coin_available = self.coins.iter().any(|(_, c)| c.is_gold_magnet_target());
             for (_, plant) in self.plants.iter_mut() {
+                plant.last_wave = last_wave;
+                plant.bowling_pays = bowling_pays;
+                plant.coin_available = coin_available;
                 plant.update(&self.zombies, &mut self.plant_actions, effects, res, images, &row_y, &open_rows, self.main_counter, sounds.rng());
             }
         }
@@ -1221,8 +1259,13 @@ impl Board {
             }
             if playing {
                 self.update_torchwoods(&mut fx);
+                let mut cob_landed = false;
                 for (_, projectile) in self.projectiles.iter_mut() {
                     projectile.update(&mut self.zombies, &mut self.plants, &env, &mut fx);
+                    cob_landed |= std::mem::take(&mut projectile.landed);
+                }
+                if cob_landed {
+                    self.shake_board(3, -4);
                 }
             }
             let kelp_targets: Vec<_> = self.plants.iter().filter_map(|(_, plant)| plant.tangle_kelp_target()).collect();
@@ -1451,14 +1494,17 @@ impl Board {
         sounds: &mut Sounds,
     ) {
         match action {
-            PlantAction::Shoot { x, y, row, render_order, projectile, short_range, drift, lob } => {
+            PlantAction::Shoot { x, y, row, render_order, projectile, motion, range_flags, short_range, drift, lob } => {
                 sounds.play_foley(FoleyType::Throw);
                 let shadow_y = self.projectile_shadow_y(x, row);
                 let mut shot = Projectile::new(x, y, render_order, row, shadow_y, projectile);
                 if let Some(lob) = lob {
                     shot.launch_lob(lob.range_x, lob.range_y, lob.range_flags, sounds.rng());
+                } else {
+                    shot.set_damage_range(range_flags);
                 }
                 shot.short_range = short_range;
+                shot.set_motion(motion, sounds.rng());
                 if drift != 0.0 {
                     shot.set_lane_drift(drift);
                 }
@@ -1469,20 +1515,50 @@ impl Board {
                 }
                 self.projectiles.alloc(shot);
             }
+            PlantAction::Cob { x, y, render_order, target_x, target_y } => {
+                // Behaviour per ruslan831 decomp, Plant::Fire: the cob comes down
+                // 40 px left of where the cannon was aimed.
+                let row = self.pixel_to_grid_y(target_x.max(80), target_y).max(0);
+                let col = self.pixel_to_grid_x(target_x - 40).max(0);
+                let land_y = self.grid_to_pixel_y(col, row) as f32;
+                let shadow_y = self.projectile_shadow_y(x, row);
+                let size = res.image("IMAGE_REANIM_COBCANNON_COB").map_or((40, 40), |i| (i.cel_width() as i32, i.cel_height() as i32));
+                let mut cob = Projectile::new(x, y, render_order, row, shadow_y, projectile::ProjectileType::Cob);
+                cob.launch_cob((target_x - 40) as f32, row, land_y, size);
+                self.projectiles.alloc(cob);
+            }
             PlantAction::Particle { x, y, render_order, effect } => {
                 self.add_particle(x as f32, y as f32, render_order, effect);
             }
             PlantAction::Foley(foley) => sounds.play_foley(foley),
-            PlantAction::RowAreaDamage { row, rect, damage, flags } => {
+            PlantAction::RowAreaDamage { col, row, spread, rect, damage, flags } => {
                 let env = self.zombie_env();
                 let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                let mut popped_vehicle = false;
                 for (_, zombie) in self.zombies.iter_mut() {
-                    if zombie.in_row(row)
+                    if (row - spread..=row + spread).any(|r| zombie.in_row(r))
                         && zombie.effected_by_damage(zombie::damage_range::GROUND)
                         && zombie::rect_overlap(rect, zombie.zombie_rect()) > 0
                     {
+                        popped_vehicle |= zombie.is_vehicle() && flags & zombie::damage::SPIKE != 0;
                         zombie.take_damage(damage, flags, &env, &mut fx);
                         fx.sounds.play_foley(FoleyType::Splat);
+                    }
+                }
+                // Behaviour per ruslan831 decomp, Plant::DoRowAreaDamage: a
+                // vehicle that runs onto spikes wrecks them, or a spikerock's spike.
+                if popped_vehicle {
+                    let spikes = self.plants.iter().find(|(_, p)| p.col == col && p.row == row && !p.dead && p.seed.is_spiky()).map(|(id, _)| id);
+                    let mut more = Vec::new();
+                    if let Some(plant) = spikes.and_then(|id| self.plants.get_mut(id)) {
+                        if plant.seed == SeedType::Spikerock {
+                            plant.spike_rock_take_damage(&mut more, effects);
+                        } else {
+                            plant.die(effects);
+                        }
+                    }
+                    for action in more {
+                        self.do_plant_action(action, effects, res, images, sounds);
                     }
                 }
             }
@@ -1594,13 +1670,13 @@ impl Board {
                 self.add_particle((x + 20) as f32, y as f32, order, ParticleEffect::PotatoMine);
                 self.shake_board(3, -4);
             }
-            PlantAction::BowlingHit(id) => {
+            PlantAction::BowlingHit { zombie: id, giant, bouncing } => {
                 sounds.play_foley(FoleyType::BowlingImpact);
                 self.shake_board(1, -2);
                 let env = self.zombie_env();
                 let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
                 if let Some(zombie) = self.zombies.get_mut(id) {
-                    zombie.bowling_damage(&env, &mut fx);
+                    zombie.bowling_damage(giant, bouncing, &env, &mut fx);
                 }
             }
             PlantAction::ExplodeONut { x, y, row } => {
@@ -1611,6 +1687,77 @@ impl Board {
                 self.kill_all_zombies_in_radius(row, x, y, 90, 1, true, zombie::damage_range::EXPLOSION, &env, &mut fx);
                 self.add_particle(x as f32, y as f32, render_layer::TOP, ParticleEffect::Powie);
                 self.shake_board(3, -4);
+            }
+            PlantAction::MagnetTake { col, row, zombie } => {
+                let env = self.zombie_env();
+                let loot = {
+                    let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                    self.zombies.get_mut(zombie).and_then(|z| z.magnet_take(&env, &mut fx))
+                };
+                if let Some(loot) = loot {
+                    let (w, h) = res.image(&loot.image).map_or((0.0, 0.0), |i| (i.width as f32, i.height as f32));
+                    let rng = sounds.rng();
+                    let (dest_x, dest_y) = (rng.range_f32(-10.0, 10.0) + loot.dest.0, rng.range_f32(-10.0, 10.0) + loot.dest.1);
+                    let (x, y) = if loot.centre { (loot.x - w / 2.0, loot.y - h / 2.0) } else { (loot.x, loot.y) };
+                    let magnet = self.plants.iter_mut().find(|(_, p)| p.col == col && p.row == row && p.seed == SeedType::Magnetshroom && !p.dead);
+                    if let Some((_, plant)) = magnet {
+                        plant.hold_magnet_item(plant::MagnetItem { image: loot.image, x, y, dest_x, dest_y, value: 0 });
+                    }
+                }
+            }
+            PlantAction::ShowCoinBank => self.show_coin_bank(),
+            PlantAction::AddMoney { amount } => {
+                self.pending_money += amount;
+                sounds.play_foley(FoleyType::Coin);
+            }
+            PlantAction::GoldMagnetCollect { col, row } => {
+                let magnet = self.plants.iter().find(|(_, p)| p.col == col && p.row == row && p.seed == SeedType::GoldMagnet && !p.dead);
+                let Some((magnet_id, centre)) = magnet.map(|(id, p)| (id, (p.x as f32 + 40.0, p.y as f32 + 40.0))) else { return };
+                // Behaviour per ruslan831 decomp, Plant::GoldMagnetFindTargets: the
+                // nearest money first, until its five places are full.
+                while self.plants.get(magnet_id).is_some_and(Plant::has_room_for_coin) {
+                    let nearest = self
+                        .coins
+                        .iter()
+                        .filter(|(_, c)| c.is_gold_magnet_target())
+                        .map(|(id, c)| (id, (centre.0 - c.middle().0).hypot(centre.1 - c.middle().1)))
+                        .min_by(|a, b| a.1.total_cmp(&b.1));
+                    let Some((coin_id, _)) = nearest else { break };
+                    let Some(coin) = self.coins.get_mut(coin_id) else { break };
+                    let rng = sounds.rng();
+                    let item = plant::MagnetItem {
+                        image: coin.magnet_image().to_string(),
+                        x: coin.pos_x + 15.0,
+                        y: coin.pos_y + 15.0,
+                        dest_x: rng.range_f32(20.0, 40.0),
+                        dest_y: rng.range_f32(-20.0, 0.0) + 20.0,
+                        value: coin.coin_value(),
+                    };
+                    coin.die(effects);
+                    if let Some(plant) = self.plants.get_mut(magnet_id) {
+                        plant.add_magnet_coin(item);
+                    }
+                }
+            }
+            PlantAction::ImitaterMorph { col, row, seed } => {
+                // Behaviour per ruslan831 decomp, Plant::ImitaterMorph: the copy
+                // takes its place, washed out.
+                self.add_plant(col, row, seed, effects, res, images, sounds);
+                let copy = self.plants.iter().filter(|(_, p)| p.col == col && p.row == row && p.seed == seed && !p.dead).map(|(id, _)| id).last();
+                if let Some(plant) = copy.and_then(|id| self.plants.get_mut(id)) {
+                    plant.wash_out(effects);
+                }
+            }
+            PlantAction::WakeUp { col, row } => {
+                let sleeper = self.plants.iter().find(|(_, p)| p.col == col && p.row == row && !p.dead && p.is_asleep()).map(|(id, _)| id);
+                if let Some(plant) = sleeper.and_then(|id| self.plants.get_mut(id)) {
+                    plant.start_waking();
+                }
+            }
+            PlantAction::MakeCoin { x, y, gold } => {
+                sounds.play_foley(FoleyType::SpawnSun);
+                let ty = if gold { CoinType::Gold } else { CoinType::Silver };
+                self.add_coin(x as f32, y as f32, ty, CoinMotion::Coin, effects, res, images, sounds);
             }
             PlantAction::MakeSun { x, y, small } => {
                 sounds.play_foley(FoleyType::SpawnSun);
@@ -1678,13 +1825,14 @@ impl Board {
         res: &mut GameResources,
         images: &mut Assets<Image>,
         sounds: &mut Sounds,
-    ) {
+    ) -> sexy::data_array::Id<Coin> {
         let coin = Coin::new(x, y, ty, motion, effects, res, images, sounds.rng());
-        self.coins.alloc(coin);
+        let id = self.coins.alloc(coin);
         if self.first_time_adventure && self.level == 1 {
             let style = MessageStyle::TutorialLevel1Stay;
             self.display_advice(res, "[ADVICE_CLICK_ON_SUN]", style, Some(AdviceType::ClickOnSun));
         }
+        id
     }
 }
 
@@ -1807,9 +1955,9 @@ fn do_purchase_packet_slot_dialog(dialogs: &mut Dialogs, res: &GameResources, sl
 }
 
 /// `SeedChooserScreen::DisplayRepickWarningDialog`.
-fn do_chooser_warning_dialog(dialogs: &mut Dialogs, res: &GameResources, warning: &str) {
+fn do_chooser_warning_dialog(dialogs: &mut Dialogs, res: &GameResources, warning: ChooserWarning) {
     let header = res.translate("[DIALOG_WARNING]");
-    let dialog = dialogs.do_dialog(res, DialogId::ChooserWarning, &header, &res.translate(warning), "", ButtonMode::YesNo);
+    let dialog = dialogs.do_dialog(res, DialogId::ChooserWarning, &header, &warning.text(res), "", ButtonMode::YesNo);
     if let Some(yes) = &mut dialog.yes_button {
         yes.label = res.translate("[DIALOG_BUTTON_YES]");
     }
@@ -1820,6 +1968,7 @@ fn do_chooser_warning_dialog(dialogs: &mut Dialogs, res: &GameResources, warning
 
 /// What the board draws, sorted by render order (`RenderObjectType`).
 enum RenderItem {
+    PumpkinBack(sexy::data_array::Id<Plant>),
     Backdrop,
     BottomUi,
     IntroOverlay,
@@ -1859,6 +2008,9 @@ fn draw_board(
         // A bungee zombie draws the plant it has hold of.
         if plant.on_bungee == plant::OnBungee::No {
             items.push((plant.render_order, RenderItem::Plant(id)));
+            if plant.seed == SeedType::Pumpkinshell {
+                items.push((plant.pumpkin_back_order(), RenderItem::PumpkinBack(id)));
+            }
         }
     }
     for (id, coin) in board.coins.iter() {
@@ -1953,6 +2105,11 @@ fn draw_board(
             RenderItem::Plant(id) => {
                 if let Some(plant) = board.plants.get(id) {
                     plant.draw(&mut g, board.stage_is_night(), &effects, &resources);
+                }
+            }
+            RenderItem::PumpkinBack(id) => {
+                if let Some(plant) = board.plants.get(id) {
+                    plant.draw_pumpkin_back(&mut g, &effects, &resources);
                 }
             }
             RenderItem::FadeOut => board.draw_fade_out(&mut g),

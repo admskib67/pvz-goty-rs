@@ -37,21 +37,43 @@ pub enum ProjectileType {
     Kernel,
     Butter,
     Melon,
+    /// The winter melon's melon: a melon whose splash chills.
+    Wintermelon,
     /// The catapult zombie's basketball, thrown at plants.
     Basketball,
+    /// The cactus's and cattail's spike (`PROJECTILE_SPIKE`).
+    Spike,
+    /// The starfruit's star (`PROJECTILE_STAR`).
+    Star,
+    /// The cob cannon's cob (`PROJECTILE_COBBIG`): up and out of sight, then
+    /// down on the spot it was aimed at.
+    Cob,
 }
 
 impl ProjectileType {
     /// `ProjectileDefinition::mDamage`.
     fn damage(self) -> i32 {
         match self {
-            Self::Pea | Self::Snowpea | Self::Puff => 20,
+            Self::Pea | Self::Snowpea | Self::Puff | Self::Spike | Self::Star => 20,
             Self::Fire | Self::Cabbage | Self::Butter => 40,
             Self::Kernel => 20,
-            Self::Melon => 80,
+            Self::Melon | Self::Wintermelon => 80,
             Self::Basketball => 75,
+            Self::Cob => 300,
         }
     }
+}
+
+/// `ProjectileMotion`, for the shots that don't fly straight right.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ProjectileMotion {
+    Straight,
+    /// A split pea's back head: it flies left (`MOTION_BACKWARDS`).
+    Backwards,
+    /// A starfruit's star, at this speed (`MOTION_STAR`).
+    Star { vel_x: f32, vel_y: f32 },
+    /// A cattail's spike, steering towards a zombie (`MOTION_HOMING`).
+    Homing(sexy::data_array::Id<Zombie>),
 }
 
 #[derive(Debug)]
@@ -71,6 +93,7 @@ pub struct Projectile {
     damage_range_flags: u32,
     /// A puff-shroom's puff only goes so far (`MOTION_PUFF`).
     pub short_range: bool,
+    motion: ProjectileMotion,
     /// The trail that follows it (`mAttachmentID`), and its offset.
     trail: Option<(ParticleSystemId, f32, f32)>,
     /// A threepeater's side pea drifts towards its lane at this speed
@@ -89,6 +112,10 @@ pub struct Projectile {
     acc_z: f32,
     rotation: f32,
     rotation_speed: f32,
+    /// Where a cob lands (`mCobTargetX`, `mCobTargetRow`) and its square's y.
+    cob_target: Option<(f32, i32, f32)>,
+    /// A cob has just come down: the board shakes.
+    pub landed: bool,
     pub dead: bool,
 }
 
@@ -111,6 +138,7 @@ impl Projectile {
             age: 0,
             damage_range_flags: damage_range::GROUND,
             short_range: false,
+            motion: ProjectileMotion::Straight,
             trail: None,
             vel_y: 0.0,
             fire: None,
@@ -121,6 +149,8 @@ impl Projectile {
             acc_z: 0.0,
             rotation: 0.0,
             rotation_speed: 0.0,
+            cob_target: None,
+            landed: false,
             dead: false,
         }
     }
@@ -135,10 +165,24 @@ impl Projectile {
         self.damage_range_flags = range_flags;
         (self.rotation, self.rotation_speed) = match self.ty {
             ProjectileType::Cabbage | ProjectileType::Butter => (-7.0 * std::f32::consts::PI / 25.0, rng.range_f32(-0.08, -0.02)),
-            ProjectileType::Melon => (-2.0 * std::f32::consts::PI / 5.0, rng.range_f32(-0.08, -0.02)),
+            ProjectileType::Melon | ProjectileType::Wintermelon => (-2.0 * std::f32::consts::PI / 5.0, rng.range_f32(-0.08, -0.02)),
             ProjectileType::Kernel => (0.0, rng.range_f32(-0.2, -0.08)),
             _ => (0.0, 0.0),
         };
+    }
+
+    /// `Plant::Fire` for a cob cannon: the cob shoots straight up out of sight
+    /// and comes back down at `target_x` in `target_row`, whose square is
+    /// `land_y` down. `size` is the cob's picture (its hit box is a 230 px square around it).
+    pub fn launch_cob(&mut self, target_x: f32, target_row: i32, land_y: f32, size: (i32, i32)) {
+        self.lobbed = true;
+        self.vel_x = 0.001;
+        self.vel_y = 0.0;
+        self.acc_z = 0.0;
+        self.vel_z = -8.0;
+        self.damage_range_flags = damage_range::EXPLOSION;
+        self.cob_target = Some((target_x, target_row, land_y));
+        (self.width, self.height) = size;
     }
 
     /// `Zombie::ZombieCatapultFire`: a catapult zombie's basketball, lobbed
@@ -164,7 +208,34 @@ impl Projectile {
             | ProjectileType::Kernel
             | ProjectileType::Butter
             | ProjectileType::Melon
+            | ProjectileType::Wintermelon
+            | ProjectileType::Cob
+            | ProjectileType::Spike
+            | ProjectileType::Star
             | ProjectileType::Basketball => None,
+        }
+    }
+
+    /// `mDamageRangeFlags`: which zombies it can hit.
+    pub fn set_damage_range(&mut self, flags: u32) {
+        self.damage_range_flags = flags;
+    }
+
+    /// `Plant::Fire`: how the shot flies.
+    pub fn set_motion(&mut self, motion: ProjectileMotion, rng: &mut MtRand) {
+        self.motion = motion;
+        match motion {
+            ProjectileMotion::Star { vel_x, vel_y } => {
+                self.vel_x = vel_x;
+                self.vel_y = vel_y;
+                self.shadow_y += 15.0;
+                self.rotation_speed = rng.range_f32(0.05, 0.1) * if rng.next_range(2) == 0 { -1.0 } else { 1.0 };
+            }
+            ProjectileMotion::Homing(_) => {
+                self.vel_x = 2.0;
+                self.vel_y = 0.0;
+            }
+            ProjectileMotion::Straight | ProjectileMotion::Backwards => {}
         }
     }
 
@@ -191,7 +262,9 @@ impl Projectile {
         match self.ty {
             ProjectileType::Fire => IRect::new(self.x, self.y, self.width - 10, self.height),
             ProjectileType::Pea | ProjectileType::Snowpea => IRect::new(self.x - 15, self.y, self.width + 15, self.height),
-            ProjectileType::Melon => IRect::new(self.x + 20, self.y, 60, self.height),
+            ProjectileType::Spike | ProjectileType::Star => IRect::new(self.x, self.y, self.width, self.height),
+            ProjectileType::Melon | ProjectileType::Wintermelon => IRect::new(self.x + 20, self.y, 60, self.height),
+            ProjectileType::Cob => IRect::new(self.x + self.width / 2 - 115, self.y + self.height / 2 - 115, 230, 230),
             ProjectileType::Puff | ProjectileType::Cabbage | ProjectileType::Kernel | ProjectileType::Butter | ProjectileType::Basketball => {
                 IRect::new(self.x, self.y, self.width, self.height)
             }
@@ -296,11 +369,39 @@ impl Projectile {
 
     /// `Projectile::UpdateNormalMotion`.
     fn update_normal_motion(&mut self, zombies: &mut DataArray<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
-        self.pos_x += 3.33;
-        if self.vel_y != 0.0 {
-            self.pos_y += self.vel_y;
-            self.vel_y *= 0.97;
-            self.shadow_y += self.vel_y;
+        match self.motion {
+            ProjectileMotion::Backwards => self.pos_x -= 3.33,
+            ProjectileMotion::Homing(target) => {
+                if let Some(zombie) = zombies.get(target).filter(|z| z.effected_by_damage(self.damage_range_flags)) {
+                    let rect = zombie.zombie_rect();
+                    let to_target = Vec2::new(zombie.target_lead_x(0.0), (rect.y + rect.h / 2) as f32)
+                        - Vec2::new(self.pos_x + self.width as f32 / 2.0, self.pos_y + self.height as f32 / 2.0);
+                    let steer = to_target.normalize_or_zero() * (0.001 * self.age as f32);
+                    let motion = (Vec2::new(self.vel_x, self.vel_y) + steer).normalize_or_zero() * 2.0;
+                    (self.vel_x, self.vel_y) = (motion.x, motion.y);
+                    self.rotation = -self.vel_y.atan2(self.vel_x);
+                }
+                self.pos_y += self.vel_y;
+                self.pos_x += self.vel_x;
+                self.shadow_y += self.vel_y;
+                self.row = super::row_at_pixel(env.background, self.pos_x as i32, self.pos_y as i32);
+            }
+            ProjectileMotion::Star { .. } => {
+                self.pos_y += self.vel_y;
+                self.pos_x += self.vel_x;
+                self.shadow_y += self.vel_y;
+                if self.vel_y != 0.0 {
+                    self.row = super::row_at_pixel(env.background, self.pos_x as i32, self.pos_y as i32);
+                }
+            }
+            ProjectileMotion::Straight => {
+                self.pos_x += 3.33;
+                if self.vel_y != 0.0 {
+                    self.pos_y += self.vel_y;
+                    self.vel_y *= 0.97;
+                    self.shadow_y += self.vel_y;
+                }
+            }
         }
         self.check_for_collision(zombies, env, fx);
     }
@@ -308,6 +409,18 @@ impl Projectile {
     /// `Projectile::UpdateLobMotion`: up and over, landing on the first zombie
     /// it comes down on, or the ground.
     fn update_lob_motion(&mut self, zombies: &mut DataArray<Zombie>, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
+        // Behaviour per ruslan831 decomp, Projectile::UpdateLobMotion: a cob
+        // that has left the screen reappears above its target.
+        if let (ProjectileType::Cob, Some((x, row, y))) = (self.ty, self.cob_target)
+            && self.pos_z < -700.0
+        {
+            self.vel_z = 8.0;
+            self.row = row;
+            self.pos_x = x;
+            self.pos_y = y;
+            self.shadow_y = y + 67.0;
+            self.rotation = -std::f32::consts::FRAC_PI_2;
+        }
         self.vel_z += self.acc_z;
         self.pos_x += self.vel_x;
         self.pos_z += self.vel_z;
@@ -318,8 +431,9 @@ impl Projectile {
         let mut min_collision_z = match self.ty {
             ProjectileType::Basketball => 60.0,
             ProjectileType::Butter => -32.0,
-            ProjectileType::Melon => -35.0,
+            ProjectileType::Melon | ProjectileType::Wintermelon => -35.0,
             ProjectileType::Cabbage | ProjectileType::Kernel => -30.0,
+            ProjectileType::Cob => -60.0,
             _ => 0.0,
         };
         if env.pool_rows.get(self.row as usize).copied().unwrap_or(false) {
@@ -336,8 +450,12 @@ impl Projectile {
             return;
         }
         let target = self.find_collision_target(zombies);
-        let hit_ground = self.pos_z > 80.0;
+        let hit_ground = self.pos_z > if self.ty == ProjectileType::Cob { -40.0 } else { 80.0 };
         if target.is_none() && !hit_ground {
+            return;
+        }
+        if self.ty == ProjectileType::Cob {
+            self.do_cob_impact(zombies, env, fx);
             return;
         }
         self.do_lob_impact(zombies, target, env, fx);
@@ -354,8 +472,23 @@ impl Projectile {
             self.die(fx);
             return;
         }
+        // A homing spike hits its zombie when it reaches it.
+        if let ProjectileMotion::Homing(target) = self.motion {
+            if let Some(zombie) = zombies.get(target).filter(|z| z.effected_by_damage(self.damage_range_flags)) {
+                let rect = zombie.zombie_rect();
+                if rect_overlap(self.rect(), rect) >= 0 && self.pos_y > rect.y as f32 && self.pos_y < (rect.y + rect.h) as f32 {
+                    self.do_impact(zombies, target, env, fx);
+                }
+            }
+            return;
+        }
+        // Stars fall off the top and bottom of the lawn.
+        if self.ty == ProjectileType::Star && (self.pos_y > 600.0 || self.pos_y < 40.0) {
+            self.die(fx);
+            return;
+        }
         // Peas lifted well off the ground go over everyone.
-        if self.shadow_y - self.pos_y > 90.0 {
+        if matches!(self.ty, ProjectileType::Pea | ProjectileType::Star) && self.shadow_y - self.pos_y > 90.0 {
             return;
         }
         if let Some(id) = self.find_collision_target(zombies) {
@@ -456,7 +589,12 @@ impl Projectile {
         }
         let Some(zombie) = zombies.get_mut(id) else { return };
         self.play_impact_sound(zombie, fx);
-        let flags = if self.ty == ProjectileType::Snowpea { damage::FREEZE } else { 0 };
+        let mut flags = if self.ty == ProjectileType::Snowpea { damage::FREEZE } else { 0 };
+        // Behaviour per ruslan831 decomp, Projectile::GetDamageFlags: shots that
+        // come from behind, or fly left, get past a shield.
+        if self.motion == ProjectileMotion::Backwards || (matches!(self.motion, ProjectileMotion::Star { .. }) && self.vel_x < 0.0) {
+            flags |= damage::BYPASSES_SHIELD;
+        }
         zombie.take_damage(self.ty.damage(), flags, env, fx);
 
         // The splat sits on the zombie and moves with it.
@@ -464,17 +602,25 @@ impl Projectile {
             ProjectileType::Pea => (-15.0, ParticleEffect::PeaSplat),
             ProjectileType::Snowpea => (-15.0, ParticleEffect::SnowpeaSplat),
             ProjectileType::Puff => (-20.0, ParticleEffect::PuffSplat),
+            ProjectileType::Spike | ProjectileType::Star => {
+                self.die(fx);
+                return;
+            }
             ProjectileType::Fire
             | ProjectileType::Cabbage
             | ProjectileType::Kernel
             | ProjectileType::Butter
             | ProjectileType::Melon
+            | ProjectileType::Wintermelon
+            | ProjectileType::Cob
             | ProjectileType::Basketball => return,
         };
         let (splat_x, splat_y) = (self.pos_x + 12.0 + splat_offset, self.pos_y + 12.0);
         let mut x = splat_x + 52.0 - zombie.x as f32;
         let y = (splat_y - zombie.y as f32).clamp(20.0, 100.0);
-        if self.pos_x > (zombie.x + 40) as f32 {
+        if self.motion == ProjectileMotion::Backwards {
+            x -= 80.0;
+        } else if self.pos_x > (zombie.x + 40) as f32 {
             x -= 60.0;
         }
         zombie.add_attached_particle(x, y, effect, fx);
@@ -503,7 +649,7 @@ impl Projectile {
                 }
             }
         }
-        if self.ty == ProjectileType::Melon {
+        if matches!(self.ty, ProjectileType::Melon | ProjectileType::Wintermelon) {
             let full = self.ty.damage();
             let splashed: Vec<_> = zombies.iter().filter(|(id, z)| Some(*id) != target && self.is_hit_by_splash(z)).map(|(id, _)| id).collect();
             let mut splash = full / 3;
@@ -512,7 +658,9 @@ impl Projectile {
             if total > cap {
                 splash = (full * cap / (total * 3)).max(1);
             }
-            let flags = damage::HITS_SHIELD_AND_BODY;
+            // Behaviour per ruslan831 decomp, Projectile::GetDamageFlags: the winter melon chills.
+            let chill = if self.ty == ProjectileType::Wintermelon { damage::FREEZE } else { 0 };
+            let flags = damage::HITS_SHIELD_AND_BODY | chill;
             if let Some(zombie) = target.and_then(|id| zombies.get_mut(id)) {
                 zombie.take_damage(full, flags, env, fx);
             }
@@ -536,9 +684,14 @@ impl Projectile {
             ProjectileType::Butter => (last_x - 20.0, last_y + 63.0, Some(ParticleEffect::ButterSplat)),
             _ => (self.pos_x + 12.0, self.pos_y + 12.0, None),
         };
-        if self.ty == ProjectileType::Melon {
+        let splash_effect = match self.ty {
+            ProjectileType::Melon => Some(ParticleEffect::Melonsplash),
+            ProjectileType::Wintermelon => Some(ParticleEffect::Wintermelon),
+            _ => None,
+        };
+        if let Some(splash_effect) = splash_effect {
             let rng = fx.sounds.rng();
-            fx.effects.add_particle(last_x + 30.0, last_y + 30.0, order, ParticleEffect::Melonsplash, fx.res, fx.images, rng);
+            fx.effects.add_particle(last_x + 30.0, last_y + 30.0, order, splash_effect, fx.res, fx.images, rng);
         }
         if let Some(effect) = effect {
             if let Some(zombie) = target.and_then(|id| zombies.get_mut(id)) {
@@ -553,6 +706,30 @@ impl Projectile {
                 fx.effects.add_particle(splat_x, splat_y, order, effect, fx.res, fx.images, rng);
             }
         }
+        self.die(fx);
+    }
+
+    /// `Projectile::DoImpact` for a cob: everything within 115 px burns, in
+    /// its row and the ones beside it, and the lawn is left scorched.
+    fn do_cob_impact(&mut self, zombies: &mut DataArray<Zombie>, env: &ZombieEnv, fx: &mut Fx) {
+        let (cx, cy) = (self.pos_x as i32 + 80, self.pos_y as i32 + 40);
+        for (_, zombie) in zombies.iter_mut() {
+            let row_dist = if zombie.is_boss() { 0 } else { zombie.row - self.row };
+            if zombie.effected_by_damage(self.damage_range_flags)
+                && row_dist.abs() <= 1
+                && super::circle_rect_overlap(cx, cy, 115, zombie.zombie_rect())
+            {
+                zombie.apply_burn(env, fx);
+            }
+        }
+        let ground = make_render_order(render_layer::GROUND, self.row, 2);
+        let order = self.render_order + 1;
+        let rng = fx.sounds.rng();
+        fx.effects.add_particle(cx as f32, cy as f32, ground, ParticleEffect::Blastmark, fx.res, fx.images, rng);
+        let rng = fx.sounds.rng();
+        fx.effects.add_particle(cx as f32, cy as f32, order, ParticleEffect::Popcornsplash, fx.res, fx.images, rng);
+        fx.sounds.play_sample("SOUND_DOOMSHROOM");
+        self.landed = true;
         self.die(fx);
     }
 
@@ -610,15 +787,29 @@ impl Projectile {
         let id = match self.ty {
             ProjectileType::Pea => "IMAGE_PROJECTILEPEA",
             ProjectileType::Snowpea => "IMAGE_PROJECTILESNOWPEA",
+            ProjectileType::Spike => "IMAGE_PROJECTILECACTUS",
+            ProjectileType::Star => "IMAGE_PROJECTILE_STAR",
             ProjectileType::Puff => "IMAGE_PUFFSHROOM_PUFF1",
             // The flames are a reanimation of their own.
             ProjectileType::Fire => return,
-            ProjectileType::Cabbage | ProjectileType::Kernel | ProjectileType::Butter | ProjectileType::Melon | ProjectileType::Basketball => return,
+            ProjectileType::Cabbage
+            | ProjectileType::Kernel
+            | ProjectileType::Butter
+            | ProjectileType::Melon
+            | ProjectileType::Wintermelon
+            | ProjectileType::Cob
+            | ProjectileType::Basketball => return,
         };
         let Some(image) = res.image(id) else { return };
         g.push_state();
         g.translate(self.x as f32, self.y as f32);
-        if self.ty == ProjectileType::Puff {
+        if matches!(self.ty, ProjectileType::Star | ProjectileType::Spike) && self.rotation != 0.0 {
+            // Stars spin; a homing spike points where it's going.
+            let (w, h) = (image.width as f32, image.height as f32);
+            let (dx, dy) = (self.pos_x - self.x as f32 + w * 0.5, self.pos_y + self.pos_z - self.y as f32 + h * 0.5);
+            let transform = Affine2::from_angle_translation(self.rotation, Vec2::new(dx, dy)) * Affine2::from_translation(Vec2::new(-w * 0.5, -h * 0.5));
+            g.draw_image_matrix(image, transform);
+        } else if self.ty == ProjectileType::Puff {
             // Puffs grow as they leave the mushroom.
             let scale = animate_curve_float(0, 30, self.age, 0.3, 1.0, TodCurve::Linear);
             let (dx, dy) = (self.pos_x - self.x as f32, self.pos_y + self.pos_z - self.y as f32);
@@ -636,6 +827,8 @@ impl Projectile {
             ProjectileType::Kernel => ("IMAGE_REANIM_CORNPULT_KERNAL", 0.95),
             ProjectileType::Butter => ("IMAGE_REANIM_CORNPULT_BUTTER", 0.8),
             ProjectileType::Basketball => ("IMAGE_REANIM_ZOMBIE_CATAPULT_BASKETBALL", 1.1),
+            ProjectileType::Cob => ("IMAGE_REANIM_COBCANNON_COB", 0.9),
+            ProjectileType::Wintermelon => ("IMAGE_REANIM_WINTERMELON_PROJECTILE", 1.0),
             _ => ("IMAGE_REANIM_MELONPULT_MELON", 1.0),
         };
         let Some(image) = res.image(id) else { return };

@@ -27,6 +27,8 @@ pub struct SeedPacket {
     pub refreshing: bool,
     pub active: bool,
     pub offset_x: i32,
+    /// An imitater packet: `packet_type` is the plant it copies (`mImitaterType`).
+    pub imitater: bool,
 }
 
 impl Default for SeedPacket {
@@ -40,6 +42,7 @@ impl Default for SeedPacket {
             refreshing: false,
             active: true,
             offset_x: 0,
+            imitater: false,
         }
     }
 }
@@ -48,6 +51,7 @@ impl SeedPacket {
     /// `SetPacketType`: expensive plants start the level recharging.
     pub fn set_packet_type(&mut self, seed: Option<SeedType>) {
         self.packet_type = seed;
+        self.imitater = false;
         self.refresh_counter = 0;
         self.refresh_time = 0;
         self.refreshing = false;
@@ -103,11 +107,10 @@ impl SeedPacket {
             || (board.tutorial_state.is_sunflower_pick_up() && seed == SeedType::Sunflower)
         {
             grayness = flashing_gray(board.main_counter, 75);
-        } else if (!board.can_take_sun_money(cost) && !conveyor) || percent_dark > 1.0 {
-            // TODO: upgrades are also gray without their base plant.
+        } else if (!board.can_take_sun_money(cost) && !conveyor) || percent_dark > 1.0 || !board.planting_requirements_met(seed) {
             grayness = 128;
         }
-        draw_seed_packet(g, res, self.offset_x as f32, 0.0, seed, percent_dark, grayness, !conveyor);
+        draw_seed_packet_as(g, res, self.offset_x as f32, 0.0, seed, self.imitater, percent_dark, grayness, !conveyor);
     }
 }
 
@@ -302,6 +305,23 @@ pub fn draw_seed_packet(
     grayness: i32,
     draw_cost: bool,
 ) {
+    draw_seed_packet_as(g, res, x, y, seed, false, percent_dark, grayness, draw_cost);
+}
+
+/// `DrawSeedPacket` for an imitater packet when `imitater` is set: the
+/// imitater's background with a washed-out copy of the plant.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_seed_packet_as(
+    g: &mut Graphics,
+    res: &GameResources,
+    x: f32,
+    y: f32,
+    seed: SeedType,
+    imitater: bool,
+    percent_dark: f32,
+    grayness: i32,
+    draw_cost: bool,
+) {
     let Some(seeds) = res.image("IMAGE_SEEDS") else { return };
     g.push_state();
     if grayness != 255 {
@@ -313,7 +333,7 @@ pub fn draw_seed_packet(
         g.set_colorize_images(true);
     }
 
-    let background = if seed == SeedType::Imitater {
+    let background = if seed == SeedType::Imitater || imitater {
         0
     } else if seed.is_upgrade() {
         1
@@ -324,7 +344,16 @@ pub fn draw_seed_packet(
 
     let (scale, offset_x, offset_y) = packet_seed_placement(seed);
     let offset_y = offset_y + 1.0;
+    let washed = imitater && grayness == 255 && percent_dark <= 0.0;
+    if washed {
+        g.push_state();
+        g.set_color(SexyColor::rgba(185, 185, 185, 255));
+        g.set_colorize_images(true);
+    }
     seed_packet_draw_seed(g, res, x, y, seed, offset_x, offset_y, scale);
+    if washed {
+        g.pop_state();
+    }
 
     if percent_dark > 0.0 {
         let dark_height = sexy::tod::float_round_to_int(68.0 * percent_dark) + 2;

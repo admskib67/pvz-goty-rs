@@ -169,6 +169,33 @@ impl SeedType {
         &PLANT_DEFS[self as usize]
     }
 
+    /// The plant an upgrade goes on top of (`Plant::IsUpgradableTo`, and the
+    /// pairs `Board::PlantingRequirementsMet` counts).
+    pub fn upgrade_base(self) -> Option<Self> {
+        use SeedType::*;
+        Some(match self {
+            Gatlingpea => Repeater,
+            Wintermelon => Melonpult,
+            Twinsunflower => Sunflower,
+            Spikerock => Spikeweed,
+            Cobcannon => Kernelpult,
+            GoldMagnet => Magnetshroom,
+            Gloomshroom => Fumeshroom,
+            Cattail => Lilypad,
+            _ => return None,
+        })
+    }
+
+    /// `Plant::IsSpiky`.
+    pub fn is_spiky(self) -> bool {
+        matches!(self, Self::Spikeweed | Self::Spikerock)
+    }
+
+    /// The upgrades whose behaviour is ported, so they can be planted.
+    pub fn upgrade_is_ported(self) -> bool {
+        matches!(self, Self::Gatlingpea | Self::Twinsunflower | Self::Spikerock | Self::Wintermelon | Self::Gloomshroom | Self::Cobcannon | Self::GoldMagnet | Self::Cattail)
+    }
+
     /// `Plant::IsUpgrade`: plants placed on top of another plant.
     pub fn is_upgrade(self) -> bool {
         use SeedType::*;

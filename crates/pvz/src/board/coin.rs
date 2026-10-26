@@ -42,6 +42,8 @@ pub enum CoinType {
     WateringCan,
     /// The silver sunflower trophy the last level ends with (`COIN_AWARD_SILVER_SUNFLOWER`).
     SilverSunflower,
+    /// What a replayed level ends with (`COIN_AWARD_MONEY_BAG`): click it for money.
+    MoneyBag,
     /// Worth 1, 5 and 100 coins (`COIN_SILVER`, `COIN_GOLD`, `COIN_DIAMOND`).
     Silver,
     Gold,
@@ -58,6 +60,7 @@ impl CoinType {
             Self::Taco => Some("IMAGE_TACO"),
             Self::WateringCan => Some("IMAGE_WATERINGCAN"),
             Self::SilverSunflower => Some("IMAGE_SUNFLOWER_TROPHY"),
+            Self::MoneyBag => Some("IMAGE_MONEYBAG"),
             _ => None,
         }
     }
@@ -75,6 +78,10 @@ pub enum CoinMotion {
     Coin,
     /// What the boss drops as he falls (`COIN_MOTION_FROM_BOSS`).
     FromBoss,
+    /// Coins a money bag or trophy scatters: they fly out, slow down, and are collected by themselves.
+    FromPresent,
+    /// A lawn mower turned into money at the end of a level: it flies straight to the bank.
+    LawnmowerCoin,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +245,14 @@ impl Coin {
                 coin.pos_y = if ty == CoinType::SilverSunflower { 130.0 } else { 245.0 };
                 coin.ground_y = coin.pos_y + 40.0;
             }
+            CoinMotion::FromPresent => {
+                coin.ground_y = 600.0;
+                coin.render_order = make_render_order(render_layer::ABOVE_UI, 0, 1);
+            }
+            CoinMotion::LawnmowerCoin => {
+                coin.ground_y = 600.0;
+                coin.collect();
+            }
             CoinMotion::Coin => {
                 coin.vel_y = -3.0 - rng.range_f32(0.0, 2.0);
                 coin.vel_x = -0.5 + rng.range_f32(0.0, 1.0);
@@ -272,6 +287,7 @@ impl Coin {
                 | CoinType::Taco
                 | CoinType::WateringCan
                 | CoinType::SilverSunflower
+                | CoinType::MoneyBag
         )
     }
 
@@ -322,6 +338,41 @@ impl Coin {
         SexyColor::WHITE
     }
 
+    /// `Plant::FindGoldMagnetTarget`'s test: money the player could pick up
+    /// that has been lying about a while.
+    pub fn is_gold_magnet_target(&self) -> bool {
+        self.is_money() && !self.dead && !self.is_being_collected && self.coin_age >= 50
+    }
+
+    /// The coin's middle.
+    pub fn middle(&self) -> (f32, f32) {
+        (self.pos_x + self.width / 2.0, self.pos_y + self.height / 2.0)
+    }
+
+    /// The picture a gold magnet draws for this coin while it pulls it in.
+    pub fn magnet_image(&self) -> &'static str {
+        match self.ty {
+            CoinType::Silver => "IMAGE_REANIM_COIN_SILVER_DOLLAR",
+            CoinType::Gold => "IMAGE_REANIM_COIN_GOLD_DOLLAR",
+            _ => "IMAGE_REANIM_DIAMOND",
+        }
+    }
+
+    /// `Coin::StartFade`.
+    pub fn start_fade(&mut self) {
+        self.fade_count = 15;
+    }
+
+    /// Sets how fast the coin flies (a fanned-out coin's `mVelX`, `mVelY`).
+    pub fn set_velocity(&mut self, vel_x: f32, vel_y: f32) {
+        (self.vel_x, self.vel_y) = (vel_x, vel_y);
+    }
+
+    /// Whether it's one of the coins a bag scattered (`COIN_MOTION_FROM_PRESENT`).
+    pub fn is_from_present(&self) -> bool {
+        self.motion == CoinMotion::FromPresent
+    }
+
     /// `Coin::Die`.
     pub fn die(&mut self, effects: &mut EffectSystem) {
         self.dead = true;
@@ -367,8 +418,8 @@ impl Coin {
         self.coin_age += 1;
         let mut event = None;
         if self.fade_count != 0 {
-            // UpdateFade: awards never fade.
-            if !self.is_level_award() {
+            // UpdateFade: awards never fade (a collected money bag does).
+            if !self.is_level_award() || self.ty == CoinType::MoneyBag {
                 self.fade_count -= 1;
                 if self.fade_count == 0 {
                     self.die(effects);
@@ -416,6 +467,18 @@ impl Coin {
         images: &mut Assets<Image>,
         rng: &mut MtRand,
     ) -> bool {
+        // Behaviour per ruslan831 decomp, Coin::UpdateFall: coins fanned out of a
+        // bag drift on, slowing, and collect themselves after 0.8 s.
+        if self.motion == CoinMotion::FromPresent {
+            self.pos_x += self.vel_x;
+            self.pos_y += self.vel_y;
+            self.vel_x *= 0.95;
+            self.vel_y *= 0.95;
+            if self.coin_age >= 80 {
+                self.collect();
+            }
+            return false;
+        }
         let mut landed = false;
         if self.pos_y + self.vel_y < self.ground_y {
             self.pos_y += self.vel_y;
@@ -436,7 +499,7 @@ impl Coin {
             if (self.is_level_award() || self.needs_bouncy_arrow) && self.arrow.is_none() {
                 // The bouncing arrow (CoinGetsBouncyArrow) shows it's the one to click.
                 let (mut ox, mut oy) = (self.width / 2.0, self.height / 2.0 - 60.0);
-                let effect = if self.is_money() {
+                let effect = if self.is_money() || self.ty == CoinType::MoneyBag {
                     (ox, oy) = (ox + 12.0, oy + 21.0);
                     ParticleEffect::CoinPickupArrow
                 } else {
@@ -468,6 +531,9 @@ impl Coin {
 
     /// `Coin::UpdateCollected` for sun: glides to the sun counter.
     fn update_collected(&mut self, effects: &mut EffectSystem) -> Option<CoinEvent> {
+        if self.ty == CoinType::MoneyBag {
+            return None;
+        }
         if self.is_level_award() {
             // The award glides to the middle of the screen. TODO: it also
             // grows to twice its size on the way.
@@ -506,6 +572,7 @@ impl Coin {
     pub fn pickup_sound(&self) -> &'static [&'static str] {
         match self.ty {
             CoinType::Shovel => &["SOUND_SHOVEL"],
+            CoinType::MoneyBag => &[],
             CoinType::Diamond => &["SOUND_DIAMOND"],
             CoinType::CarKeys | CoinType::Taco | CoinType::WateringCan => &["SOUND_TAP2"],
             _ => &["SOUND_SEEDLIFT", "SOUND_TAP2"],

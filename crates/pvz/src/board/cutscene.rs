@@ -229,7 +229,7 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
     }
     if board.choose_seeds_on_current_level() {
         let y = super::seed_chooser::offset_y(res);
-        board.seed_chooser = Some(super::seed_chooser::SeedChooser::new(board.seeds_available, y));
+        board.seed_chooser = Some(super::seed_chooser::SeedChooser::new(&board.owned_seeds, board.has_seven_chooser_rows(), y));
     }
     if board.cut_scene.crazy_dave_time > 0 {
         // Dave talks first; the house's name isn't shown.

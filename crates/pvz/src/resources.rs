@@ -153,6 +153,20 @@ impl GameResources {
         Ok(def)
     }
 
+    /// Changes a loaded reanimation definition for everything made from it from now on
+    /// (`PreLoadCredits` swaps fonts in the credits' definitions).
+    pub fn modify_reanim_definition(
+        &mut self,
+        path: &str,
+        assets: &mut Assets<Image>,
+        edit: impl FnOnce(&mut ReanimDefinition),
+    ) -> Result<(), String> {
+        let mut def = (*self.reanim_definition(path, assets)?).clone();
+        edit(&mut def);
+        self.reanim_definitions.insert(path.to_owned(), Arc::new(def));
+        Ok(())
+    }
+
     /// `TodParticleLoadADef`: parses a particle effect and loads its images,
     /// on first use. (The original loads every effect at startup.)
     pub fn particle_definition(&mut self, path: &str, assets: &mut Assets<Image>) -> Result<Arc<ParticleDefinition>, String> {
