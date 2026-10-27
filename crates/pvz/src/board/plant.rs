@@ -303,6 +303,8 @@ pub struct Plant {
     pub on_bungee: OnBungee,
     /// The plantern's glow over the fog.
     light: Option<ParticleSystemId>,
+    /// A particle the plant owns and moves with itself (`mParticleID`).
+    particle: Option<(ParticleSystemId, f32, f32)>,
     /// Lit up under the shovel's cursor (`mHighlighted`).
     pub highlighted: bool,
     /// `PlantDrawHeightOffset`'s row and stage offset for the spikeweeds.
@@ -423,6 +425,7 @@ impl Plant {
             on_water: false,
             bob: 0.0,
             light: None,
+            particle: None,
             highlighted: false,
             spike_offset: 0.0,
             another_magnet_about_to_suck: false,
@@ -703,6 +706,11 @@ impl Plant {
     ) {
         // Floating plants bob while the board runs (`PlantDrawHeightOffset`).
         self.bob = if self.on_water { pool_bob_offset(main_counter, self.col, self.row) } else { 0.0 };
+        if let Some((id, dx, dy)) = self.particle
+            && let Some(system) = effects.particle_mut(id)
+        {
+            system.system_move(self.x as f32 + dx, self.y as f32 + dy);
+        }
         self.upgrade_tint = self.upgrade_flash.then(|| {
             let gray = super::seed_bank::flashing_gray(main_counter, 90) as u8;
             [gray, gray, gray, 255]
@@ -1286,7 +1294,7 @@ impl Plant {
             self.update_production_plant(actions, rng);
         }
         if self.seed == SeedType::Gravebuster {
-            self.update_grave_buster(actions, effects);
+            self.update_grave_buster(actions, effects, res, images, rng);
         }
         if self.seed == SeedType::Scaredyshroom {
             self.update_scaredy_shroom(zombies, effects, rng);
@@ -1952,20 +1960,30 @@ impl Plant {
 
     /// `Plant::UpdateGraveBuster`: it lands on the grave, chews it for four
     /// seconds, then the grave and the grave buster are gone.
-    fn update_grave_buster(&mut self, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem) {
+    fn update_grave_buster(
+        &mut self,
+        actions: &mut Vec<PlantAction>,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut sexy::rand::MtRand,
+    ) {
         match self.state {
             PlantState::GravebusterLanding => {
                 if self.body.and_then(|b| effects.get(b)).is_some_and(|b| b.loop_count > 0) {
                     self.play_body_reanim(effects, "anim_idle", LoopType::Loop, 10, 12.0);
                     self.state_countdown = 400;
                     self.state = PlantState::GravebusterEating;
-                    // TODO: the original attaches this to the plant (AddAttachedParticle).
-                    actions.push(PlantAction::Particle {
-                        x: self.x + 40,
-                        y: self.y + 40,
-                        render_order: self.render_order + 4,
-                        effect: ParticleEffect::GraveBuster,
-                    });
+                    self.add_attached_particle(
+                        40.0,
+                        40.0,
+                        self.render_order + 4,
+                        ParticleEffect::GraveBuster,
+                        effects,
+                        res,
+                        images,
+                        rng,
+                    );
                 }
             }
             PlantState::GravebusterEating if self.state_countdown == 0 => {
@@ -2864,6 +2882,34 @@ impl Plant {
     }
 
     /// `Plant::Die`.
+    /// Whether an owned particle is alive (tests).
+    #[cfg(test)]
+    pub fn has_attached_particle(&self) -> bool {
+        self.particle.is_some()
+    }
+
+    /// `Plant::AddAttachedParticle`: the plant owns one particle; a new one
+    /// replaces it and it dies with the plant.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_attached_particle(
+        &mut self,
+        x: f32,
+        y: f32,
+        render_order: i32,
+        effect: ParticleEffect,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut sexy::rand::MtRand,
+    ) {
+        if let Some((id, _, _)) = self.particle.take() {
+            effects.remove_particle(id);
+        }
+        if let Some(id) = effects.add_particle(self.x as f32 + x, self.y as f32 + y, render_order, effect, res, images, rng) {
+            self.particle = Some((id, x, y));
+        }
+    }
+
     pub fn die(&mut self, effects: &mut EffectSystem) {
         self.dead = true;
         let extra_heads = std::mem::take(&mut self.extra_heads);
@@ -2881,6 +2927,9 @@ impl Plant {
         }
         if let Some(light) = self.light.take() {
             effects.remove_particle(light);
+        }
+        if let Some((particle, _, _)) = self.particle.take() {
+            effects.remove_particle(particle);
         }
     }
 

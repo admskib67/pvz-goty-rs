@@ -39,25 +39,22 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 ### Board and levels
 
 ### Plants
-- Attached particles (`AddAttachedParticle`): the coffee bean's and grave buster's effects are pinned to the plant in the original; particles can't follow a reanimation track yet, so they're spawned in place (`board/plant.rs`).
 
 ### Zombies
 - `anim_dance`: the original's typed cheat-code dance mode (`mDanceMode`), not a game mode; the cheat isn't ported.
-- Boss: the pots' and fireballs' smoke trails (particles attached to reanimation tracks, `ApplyBossSmokeParticles`).
 - Rising out of pool/roof graves: graves only stand on grass or high ground, so adventure content never grows one on water; the decomp's pool branch is unused here.
 
 ### Menus and screens
-- Main menu: Zen "needs water" bubble (`game_selector.rs:892`), the other mode buttons, the trophy's tooltip.
-- Store: Zen items and their "coming soon" rule (`store.rs:306`, `:862`, `:188`), going to the tree (`:746`), bonus mower and chocolate pages, award-screen intro talks, opening from the seed chooser (our store is a screen that returns to the main menu, so it can't open over a level yet).
+- Main menu: the trophy's tooltip.
+- Store: bonus mower and chocolate pages, award-screen intro talks, and opening the store over a level/seed chooser (the store is a screen that returns to the menu).
 - Seed chooser: its Store button (same reason as above). The Almanac button works.
 - Widgets: vertical sliders (no screen uses them), clipboard and password characters in `EditWidget` (no OS clipboard here; nothing asks for a password).
 
 ### Engine
-- Per-mode music (Zen Garden, mini-games).
 
 ## Suggested order
 
-1. Presentation polish: attached particles (coffee bean, grave buster) and boss smoke trails.
+1. Screen integration: store over the seed chooser, award-screen store talks, trophy tooltip.
 2. Windows visual pass and `.au` decoder; Linux.
 
 ## Code TODO index

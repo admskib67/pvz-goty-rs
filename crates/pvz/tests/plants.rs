@@ -350,7 +350,12 @@ fn hypno_shroom_turns_the_zombie_that_eats_it() {
 fn grave_buster_eats_a_grave() {
     let mut t = test_board!("2-1");
     let (col, row) = t.board.grid_items.iter().map(|(_, g)| (g.grid_x, g.grid_y)).next().expect("2-1 has graves");
-    t.plant(SeedType::Gravebuster, col, row);
+    let buster = t.plant(SeedType::Gravebuster, col, row);
+    assert!(
+        t.run_until(300, |b| b.plants.get(buster).is_some_and(|p| p.state() == PlantState::GravebusterEating)),
+        "the grave buster starts chewing"
+    );
+    assert!(t.plant_ref(buster).unwrap().has_attached_particle(), "the chew particle belongs to the plant");
     assert!(t.run_until(800, |b| b.grave_stone_at(col, row).is_none()), "the grave is eaten");
     t.tick();
     assert!(t.plant_at(col, row).is_none(), "and the grave buster with it");
