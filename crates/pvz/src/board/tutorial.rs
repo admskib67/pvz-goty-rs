@@ -150,8 +150,7 @@ impl Board {
     /// `Board::TutorialArrowShow`: a bouncing arrow over the seed packet at
     /// `index` (positioned by its slot even if it's empty).
     fn tutorial_arrow_show(&mut self, index: usize) {
-        let bank = &self.seed_bank;
-        let (x, y) = (bank.x + bank.packets[index].x, bank.y + bank.packets[index].y);
+        let (x, y) = self.seed_bank.packet_screen_pos(index);
         self.tutorial_arrow_show_at(x, y);
     }
 
@@ -346,8 +345,7 @@ impl Board {
         if !self.packet_can_pick_up(index) {
             return;
         }
-        let bank = &self.seed_bank;
-        let (x, y) = (bank.x + bank.packets[index].x, bank.y + bank.packets[index].y);
+        let (x, y) = self.seed_bank.packet_screen_pos(index);
         let order = make_render_order(render_layer::UI_BOTTOM, 0, 2);
         self.add_particle(x as f32, y as f32, order, ParticleEffect::SeedPacketFlash);
         if self.tutorial_state == TutorialState::Level1RefreshPeashooter {

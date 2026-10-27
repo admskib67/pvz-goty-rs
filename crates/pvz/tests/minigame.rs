@@ -16,6 +16,25 @@ fn board(game: MiniGame) -> Option<TestBoard> {
 }
 
 #[test]
+fn a_ready_conveyor_packet_flashes_over_itself() {
+    let Some(mut t) = TestBoard::new("1-10") else { return };
+    assert!(t.board.has_conveyor_belt_seed_bank());
+    t.with(|board, effects, res, images, sounds| {
+        board.seed_bank.add_seed(crate::plant::SeedType::Peashooter);
+        assert!(board.seed_bank.packets[0].packet_type.is_some(), "packet added");
+        assert!(board.packet_can_pick_up(0), "packet ready");
+        let expected = board.seed_bank.packet_screen_pos(0);
+        let before: Vec<_> = effects.particle_ids().map(|(id, _)| id).collect();
+        board.flash_if_ready(res, 0);
+        board.flush_particle_requests(effects, res, images, sounds.rng());
+        let after: Vec<_> = effects.particle_ids().map(|(id, _)| id).collect();
+        let new = after.iter().find(|id| !before.contains(id)).expect("a flash particle");
+        let center = effects.particle(*new).expect("the particle").emitters[0].system_center;
+        assert_eq!((center.0 as i32, center.1 as i32), expected, "the flash is on the packet, not the empty left slot");
+    });
+}
+
+#[test]
 fn war_and_peas_waves_are_zombotany_only() {
     let Some(t) = board(MiniGame::WarAndPeas) else { return };
     assert_eq!(t.board.waves.num_waves, 20);

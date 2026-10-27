@@ -310,6 +310,13 @@ impl SeedBank {
         self.packets[..self.num_packets].iter().filter(|p| p.packet_type == Some(seed)).count()
     }
 
+    /// Where a packet is drawn, relative to the screen (its slot plus the
+    /// conveyor belt's riding offset).
+    pub fn packet_screen_pos(&self, index: usize) -> (i32, i32) {
+        let packet = &self.packets[index];
+        (self.x + packet.x + packet.offset_x, self.y + packet.y)
+    }
+
     /// `SeedBank::AddSeed`: a new packet rides in from the right.
     pub fn add_seed(&mut self, seed: SeedType) {
         let n = self.num_seeds_on_conveyor_belt();
