@@ -397,7 +397,6 @@ impl LawnMower {
         if let Some(id) = self.reanim.take() {
             effects.kill(id);
         }
-        // TODO: bonus mowers roll back in (mBonusLawnMowersRemaining).
     }
 
     /// `LawnMower::Draw`: its shadow, then the mower.

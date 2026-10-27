@@ -6,15 +6,8 @@
 //! `InitZombieWaves`) and `Lawn/Board.cpp` (`PickBackground`, the
 //! `mNumWaves` table, `PickZombieWaves`' per-mode points and fixed waves).
 //!
-//! Ported so far (`MiniGame::is_ported`): War and Peas 1 and 2, Wall-nut
-//! Bowling 1 and 2, Big Trouble Little Zombie, Bobsled Bonanza,
-//! Whack a Zombie, Pogo Party, Column Like You See 'Em, Invisighoul and
-//! Dr. Zomboss's Revenge. The rest of the page shows as Coming Soon.
-//!
-//! Not yet: the per-game extras for the rest of the page (Slot Machine,
-//! Raining Seeds, Beghouled 1 and 2, Seeing Stars, Zombiquarium, Portal
-//! Combat, Zombies on Speed, Last Stand) and War and Peas' debug-only head
-//! spawns.
+//! All twenty challenge-page mini-games are playable. Remaining polish is
+//! per-game presentation and War and Peas' debug-only head spawns.
 
 use sexy::rand::MtRand;
 

@@ -7,9 +7,9 @@
 //! `TrySpawnLevelAward`; `LawnApp.cpp`: `UpdatePlayerProfileForFinishingLevel`
 //! and `CheckForGameEnd`.
 //!
-//! Not yet: the other awards (shovel, almanac, trophies, money bags), the
-//! money coins, the award screen between levels, and the roof and boss
-//! lawns' endings (the pool lawn's house position is in `Zombie::walk_into_house`).
+//! Every lawn and boss ending uses this path; the pool lawn's house position
+//! is in `Zombie::walk_into_house`. The award screen between levels and the
+//! board's saves are handled by their own modules.
 
 use bevy::prelude::*;
 use sexy::tod::{TodCurve, animate_curve};

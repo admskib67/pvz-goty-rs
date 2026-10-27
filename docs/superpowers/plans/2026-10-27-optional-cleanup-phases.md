@@ -75,16 +75,16 @@ filtering; no change to existing screens.
 
 **Files:** `docs/llms/status-and-todo.md`, `agents.md`, source TODO comments
 
-- [ ] Run `grep -rn -E "TODO|Not ported|not yet" crates --include='*.rs'`
+- [x] Run `grep -rn -E "TODO|Not ported|not yet" crates --include='*.rs'`
       and classify each hit: **done/stale**, **real gap**, or **intentional**.
-- [ ] Verify and remove stale entries that are already implemented:
+- [x] Verify and remove stale entries that are already implemented:
       foley pause, almanac pool water, coin bank/fade/preview, level-1 sod
       flash, bonus-mower rollback, trophy/store/Zen items, and the award
       growth note if it is already covered.
-- [ ] Update `status-and-todo.md`’s snapshot date, “What works” list, missing
+- [x] Update `status-and-todo.md`’s snapshot date, “What works” list, missing
       tables, and suggested order. Remove completed “Not yet” sentences from
       module headers (`store.rs`, `game_selector.rs`, `award.rs`, etc.).
-- [ ] Add a one-line policy: a TODO must name the missing behavior and the
+- [x] Add a one-line policy: a TODO must name the missing behavior and the
       reference function, not just “TODO”.
 
 **Acceptance:** every remaining `TODO` is actionable; no doc claims a done

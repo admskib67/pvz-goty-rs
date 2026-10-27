@@ -11,8 +11,8 @@
 //! `DrawProgressMeter`; and
 //! `Lawn/TodCommon.cpp` (`TodPickFromSmoothArray`).
 //!
-//! Not yet: the huge wave banner's animated letters, the music's drum burst
-//! and zombies rising from graves.
+//! The huge-wave banner, drum burst and night graves' rising zombies are
+//! included.
 
 use bevy::prelude::*;
 use sexy::data_array::Id;

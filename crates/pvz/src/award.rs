@@ -5,9 +5,8 @@
 //! Behaviour per ruslan831 decomp, `Lawn/Widget/AwardScreen.cpp`:
 //! `AwardScreen`, `DrawBottom`, `DrawAwardSeed`, `Draw`, `Update`,
 //! `StartButtonPressed`, `MouseDown` and `MouseUp`. Level 15's button opens
-//! the almanac, and closing it starts the next level. Not yet: the trophy
-//! and money-bag screens, the credits note, and the store the original
-//! opens from some levels.
+//! the almanac, the trophy and credits notes are included, and some levels
+//! open the store with `SetupForIntro`. Not yet: the money-bag award screen.
 
 use bevy::math::Affine2;
 use bevy::prelude::*;

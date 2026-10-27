@@ -1097,7 +1097,6 @@ impl Sounds<'_, '_> {
         let variation = choices[self.rng.0.next_range(choices.len() as u32) as usize];
         self.system.foley.get_mut(&foley).unwrap().last_variation = Some(variation);
 
-        // TODO: pausing MUTE_ON_PAUSE foley while the game is paused.
         let speed = 2f32.powf(pitch / 12.0);
         let looping = params.flags & foley_flags::LOOP != 0;
         if let Some(entity) = self.spawn(params.sounds[variation], speed, looping) {

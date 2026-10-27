@@ -3138,7 +3138,6 @@ pub(crate) fn draw_board(
         };
         items.push((z, RenderItem::DoorMask));
     }
-    // TODO: the coin bank, screen fade and cursor preview.
     items.sort_by_key(|(z, _)| *z);
 
     g.push_state();
@@ -3391,7 +3390,6 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
             }
         }
     }
-    // TODO: the level 1 tutorial's flashing sod row.
 }
 
 /// `Board::DrawUIBottom`: the seed bank and the menu button.

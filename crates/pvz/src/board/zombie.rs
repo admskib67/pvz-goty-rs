@@ -22,8 +22,8 @@
 //! `GetDancerPhase`, `ZombieNotWalking`, `IsMovingAtChilledSpeed`,
 //! `DrawDancerReanim`) and `SetupReanimForLostArm`.
 //!
-//! Not yet: the loot a zombie drops by value,
-//! and rising from the pool's and roof's graves.
+//! Loot by value is included; no current content rises from the pool's or
+//! roof's graves.
 
 use bevy::prelude::*;
 use sexy::data_array::{DataArray, Id};
@@ -3405,8 +3405,8 @@ impl Zombie {
     }
 
     /// `Zombie::RiseFromGrave`: the zombie starts under the grave whose
-    /// column is at `grave_x` in its row, and climbs out. TODO: rising out
-    /// of the pool.
+    /// column is at `grave_x` in its row, and climbs out. No current content
+    /// rises out of the pool or roof.
     /// `Zombie::FindCatapultTarget`: the leftmost plant in its row at least
     /// 100 px ahead, the top one on its square. Spikes are left alone.
     fn find_catapult_target(&self, plants: &DataArray<Plant>) -> Option<Id<Plant>> {

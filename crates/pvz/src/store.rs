@@ -10,10 +10,10 @@
 //! `EnableButtons`. The logic (what is for sale, at what price, what buying
 //! does) is plain functions of the `PlayerInfo`, tested without the game.
 //!
-//! Not yet: the bonus lawn mower and chocolate (not on any page), the trial
-//! and "buy the game" items, the store intro talks from the award screen, the
-//! diamond Dave hands out, the hand cursor, and opening the store from the
-//! seed chooser.
+//! Not yet: the bonus lawn mower and chocolate (the decomp's page table has no
+//! entries for them), the trial/"buy the game" items, the diamond Dave hands
+//! out, and the hand cursor. The award-screen intro talks and opening from the
+//! seed chooser are included.
 
 use bevy::math::Affine2;
 use bevy::prelude::*;

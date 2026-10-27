@@ -549,7 +549,7 @@ impl Board {
     }
 
     /// `Board::SpawnZombiesFromGraves`: one zombie out of each grave that's
-    /// fully up. TODO: the pool and roof levels' versions.
+    /// fully up. No current content puts a grave in water or on the roof.
     pub(super) fn spawn_zombies_from_graves(&mut self, fx: &mut Fx) {
         let graves: Vec<_> = self
             .grid_items

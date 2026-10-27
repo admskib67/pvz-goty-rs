@@ -515,7 +515,6 @@ impl Almanac {
         let seed = self.selected_seed;
         let night = seed.is_nocturnal() || matches!(seed, SeedType::Gravebuster | SeedType::Plantern);
         let ground = match seed {
-            // TODO: the pool's animated water (PoolEffectDraw) over the pool ground.
             SeedType::Seashroom => "IMAGE_ALMANAC_GROUNDNIGHTPOOL",
             SeedType::Lilypad | SeedType::Tanglekelp | SeedType::Cattail => "IMAGE_ALMANAC_GROUNDPOOL",
             _ if night => "IMAGE_ALMANAC_GROUNDNIGHT",

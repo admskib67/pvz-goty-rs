@@ -1,6 +1,6 @@
 # Status and TODO
 
-Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMode`, `AppState`) and from `agents.md`. **Check an item against the code before you start on it**, and update this file when you finish or find one.
+Snapshot of branch `core` on 2026-10-27, from the code (`TODO` comments, `GameMode`, `AppState`) and from `agents.md`. **Check an item against the code before you start on it**, and update this file when you finish or find one.
 
 ## What works (macOS, Mac pak)
 
@@ -41,18 +41,18 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 ### Plants
 
 ### Zombies
-- Rising out of pool/roof graves: graves only stand on grass or high ground, so adventure content never grows one on water; the decomp's pool branch is unused here.
+- Rising out of pool/roof graves: no current content places a grave in water or on the roof; the decomp branch is intentionally unused.
 
 ### Menus and screens
-- Store: bonus mower and chocolate pages (not present in the decomp's page table).
-- Widgets: vertical sliders and `EditWidget` password masks are implemented (unit-tested, no current screen uses them); clipboard operations stay unsupported.
+- Store: bonus mower and chocolate pages are no-ops — the decomp's page table has no entries for them.
+- Widgets: vertical sliders and `EditWidget` password masks exist as tested engine-completeness APIs; clipboard operations stay unsupported (no OS clipboard, no consumer).
 
 ### Engine
 
 ## Suggested order
 
-1. Platform parity: Windows visual/audio pass, then Linux/Wayland.
-2. Optional/cleanup phases: `docs/superpowers/plans/2026-10-27-optional-cleanup-phases.md` (dance cheat, potted-plant icon, widgets, stale-TODO audit, no-action decisions).
+1. **Required:** platform parity — Windows visual/audio pass, then Linux/Wayland.
+2. **Optional:** phase 18 no-action decisions in `docs/superpowers/plans/2026-10-27-optional-cleanup-phases.md` (phases 15–17 are done).
 
 ## Code TODO index
 

@@ -375,8 +375,8 @@ impl LabelButton {
 /// A horizontal `Slider`: a track image in three cels (left end, middle
 /// tiled, right end) and a thumb to drag. `value` runs from 0 to 1.
 /// Coordinates are relative to its parent. The original only instantiates
-/// horizontal sliders; the vertical mode is kept for completeness. Not ported:
-/// the dragging cursor.
+/// horizontal sliders; the vertical mode is kept for completeness. The
+/// dragging cursor is owned by the screen, not the widget.
 #[derive(Debug, Clone)]
 pub struct Slider {
     pub x: i32,

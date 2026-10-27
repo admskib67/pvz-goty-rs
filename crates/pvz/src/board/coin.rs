@@ -1,14 +1,15 @@
-//! Things to click on the lawn (`Coin`). So far sun: it falls from the
-//! sky (or pops out of a plant), waits on the ground, fades away if
-//! ignored, and flies to the sun counter when clicked; and the seed packet
-//! the last zombie of a level drops, which ends the level.
+//! Coins, sun and level awards: sun falls from the sky or a plant and flies
+//! to the counter; money lands and goes to the coin bank; the last zombie's
+//! seed packet, shovel, notes, almanac, keys, taco, watering can, trophies
+//! and money bags are the level awards; usable seed packets come out of
+//! Vasebreaker pots; and the Zen Garden's present/chocolate drops live here.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Coin.cpp`: `CoinInitialize`,
 //! `Update`, `UpdateFall`, `UpdateCollected`, `UpdateFade`, `GetColor`,
 //! `Collect`, `ScoreCoin`, `MouseHitTest`, `GetDisappearTime`,
 //! `IsLevelAward`, `GetFinalSeedPacketType` and `Draw`; money (silver, gold
 //! and diamond) lands, flies to the coin bank and is added to the player's
-//! coins. Not yet ported: the other level awards.
+//! coins.
 
 use bevy::prelude::*;
 use sexy::rand::MtRand;
@@ -639,8 +640,8 @@ impl Coin {
             return None;
         }
         if self.is_level_award() {
-            // The award glides to the middle of the screen. TODO: it also
-            // grows to twice its size on the way.
+            // The award glides to the middle of the screen, growing to twice
+            // its size on the way.
             self.disappear_counter += 1;
             let (dest_x, dest_y) = (400.0 - self.width / 2.0, 200.0 - self.height / 2.0);
             let t = self.disappear_counter;

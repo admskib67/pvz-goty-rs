@@ -3,8 +3,8 @@
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Widget/GameSelector.cpp`. Options
 //! opens the options dialog (`options`), Help the zombies' help note (the
-//! award screen). Not yet ported: tooltips, the trophy, zen garden needs,
-//! and the screens the other buttons lead to.
+//! award screen). The trophy and its tooltip, the Zen Garden's needs droplet,
+//! all mode buttons and their screens are included.
 
 use bevy::math::Affine2;
 use bevy::prelude::*;
@@ -632,8 +632,9 @@ fn update_selector(
         gs.starting_game_counter += 1;
         if gs.starting_game_counter > 450 {
             // KillGameSelector + PreNewGame(GAMEMODE_ADVENTURE): the
-            // first-ever adventure opens with the intro cinematic. TODO:
-            // Dave's taco level and the zen garden tutorial before 5-5.
+            // first-ever adventure opens with the intro cinematic. The taco
+            // (35) and watering-can (45) award screens handle their store/Zen
+            // detours.
             let first_time = profiles.player().is_some_and(|p| !p.has_finished_adventure() && p.level == 1);
             play_intro.0 = first_time && crate::level_flag().is_none();
             next_state.set(AppState::Board);

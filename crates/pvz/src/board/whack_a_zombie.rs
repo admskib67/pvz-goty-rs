@@ -7,8 +7,7 @@
 //! Behaviour per ruslan831 decomp, `Lawn/Challenge.cpp`:
 //! `WhackAZombiePlaceGraves`, `WhackAZombieSpawning`, `MouseDownWhackAZombie`,
 //! `StartLevel` and `ClearCursor`; `Lawn/CursorObject.cpp` (the mallet
-//! cursor); `Board::DropLootPiece`'s sun. Not yet: its tutorial (the seed
-//! packets flashing once there's sun).
+//! cursor) and `Board::DropLootPiece`'s sun; its packet tutorial is included.
 
 use bevy::prelude::*;
 use sexy::data_array::Id;

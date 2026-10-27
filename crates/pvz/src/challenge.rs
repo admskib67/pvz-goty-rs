@@ -12,8 +12,8 @@
 //! unlocking follows the ported games in page order: the first three are
 //! free and each trophy opens the next.
 //!
-//! Not yet: the puzzle and Limbo pages, page buttons, the unlock shake/fade
-//! animation and tooltips.
+//! Not yet: the Limbo page, page buttons, the unlock shake/fade animation and
+//! tooltips.
 
 use std::path::{Path, PathBuf};
 

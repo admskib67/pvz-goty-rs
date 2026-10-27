@@ -8,8 +8,8 @@
 //! `MouseDown`, `CloseSeedChooser` and `EnableStartButton`; and
 //! `CutScene::StartSeedChooser`/`EndSeedChooser`, `ShowToolTip`,
 //! `SeedNotRecommendedToPick` and `OnStartButton`'s repick warnings; and
-//! `Board::SeedNotRecommendedForLevel`. Not yet: the almanac, store and
-//! imitater buttons (none of them are unlocked by then on a first playthrough).
+//! `Board::SeedNotRecommendedForLevel`. The Almanac and Store buttons and
+//! the imitater panel are included; the Store opens over the live board.
 
 use bevy::prelude::*;
 

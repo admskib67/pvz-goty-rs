@@ -231,7 +231,6 @@ pub fn start_level_intro(
         TIME_READY_SET_PLANT_END - TIME_READY_SET_PLANT_START
     };
     cs.lawn_mower_time = 550;
-    // TODO: fog and the boss.
     cs.crazy_dave_dialog_start = dave_start;
     cs.crazy_dave_time = if cs.crazy_dave_dialog_start != -1 { TIME_EARLY_DAVE_LEAVE_END - TIME_PAN_RIGHT_START } else { 0 };
     if cs.crazy_dave_time > 0 && level == super::FINAL_LEVEL {
