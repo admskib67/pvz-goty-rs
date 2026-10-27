@@ -44,7 +44,7 @@ mod projectile;
 mod seed_bank;
 mod seed_chooser;
 mod survival;
-mod tooltip;
+pub(crate) mod tooltip;
 mod tutorial;
 mod waves;
 mod zombiquarium;
@@ -524,6 +524,11 @@ pub struct Board {
     pub survival_repick: bool,
     /// Vasebreaker's mallet animation before a pot opens (`mReanimChallenge`).
     scary_mallet: Option<(i32, i32, crate::reanim::ReanimationId)>,
+    /// A puzzle endless round cleared on an award stage: wait for its coin.
+    puzzle_award_pending: bool,
+    /// The seed packets' refresh state before a survival repick
+    /// (`SeedChooserScreen` keeps it on the packets).
+    repick_refresh: Vec<(SeedType, bool, i32, i32)>,
     /// The repick chooser just closed; start its stage on this tick.
     pending_survival_repick_start: bool,
     /// It's Raining Seeds: ticks until the next packet falls.
@@ -784,6 +789,8 @@ impl Board {
             can_show_store: player.is_some_and(PlayerInfo::can_show_store),
             survival_repick: false,
             scary_mallet: None,
+            puzzle_award_pending: false,
+            repick_refresh: Vec::new(),
             pending_survival_repick_start: false,
             raining_seeds_counter: if mode == GameMode::MiniGame(MiniGame::RainingSeeds) { 100 } else { 0 },
             rain_splash_counter: 0,
@@ -1663,6 +1670,7 @@ impl Board {
         self.update_slot_machine(effects, resources, images, sounds);
         self.update_zombiquarium();
         self.update_izombie(effects, resources, images, sounds);
+        self.update_puzzle_award(effects, resources, images, sounds);
         // Last Stand's button is up while the lawn waits for the onslaught.
         if self.onslaught_button.is_some() {
             let waiting = !self.last_stand_onslaught
@@ -2086,6 +2094,41 @@ impl Board {
                 self.flash_if_ready(res, i);
             }
         }
+    }
+
+    /// `PuzzlePhaseComplete`'s award coin was collected: deal the next round.
+    fn update_puzzle_award(
+        &mut self,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        sounds: &mut Sounds,
+    ) {
+        if !self.puzzle_award_pending {
+            return;
+        }
+        if self.coins.iter().any(|(_, coin)| coin.puzzle_award && !coin.dead) {
+            return;
+        }
+        self.puzzle_award_pending = false;
+        self.survival_stage += 1;
+        self.level_award_spawned = false;
+        let mut rng = sexy::rand::MtRand::new(self.board_rand_seed.wrapping_add(self.survival_stage as u32));
+        let message = match self.puzzle_level() {
+            Some(PuzzleLevel::VasebreakerEndless) => {
+                self.scary_potter_populate(effects, res, images, &mut rng);
+                res.translate("[ADVICE_MORE_SCARY_POTS]").replace("{STREAK}", &self.survival_stage.to_string())
+            }
+            Some(PuzzleLevel::IZombieEndless) => {
+                self.izombie_score = 0;
+                self.izombie_setup(effects, res, images, &mut rng);
+                res.translate("[ADVICE_MORE_IZOMBIE]").replace("{STREAK}", &self.survival_stage.to_string())
+            }
+            _ => return,
+        };
+        self.display_advice(res, &message, MessageStyle::BigMiddle, None);
+        let order = make_render_order(render_layer::TOP, 0, 0);
+        effects.add_particle(BOARD_WIDTH as f32 / 2.0, BOARD_HEIGHT as f32 / 2.0, order, crate::particle::ParticleEffect::ScreenFlash, res, images, sounds.rng());
     }
 
     /// `Board::UpdateIce`: the trail melts away when its timer runs out.

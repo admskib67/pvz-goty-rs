@@ -111,6 +111,16 @@ impl AwardScreen {
         }
     }
 
+    /// `SetupForIntro`'s message when the award leads into the store.
+    fn store_intro(&self) -> Option<i32> {
+        match self.kind {
+            AwardKind::Keys => Some(301),
+            AwardKind::Taco => Some(601),
+            AwardKind::Seed(_) if self.level == 42 => Some(3100),
+            _ => None,
+        }
+    }
+
     /// The note that comes before the credits (`ShowAwardScreen(AWARD_CREDITS_ZOMBIENOTE)`).
     pub fn credits_note() -> Self {
         Self { level: 1, kind: AwardKind::CreditsNote, fade_in: 180, start_over: false, menu_over: false }
@@ -199,6 +209,12 @@ fn in_rect(p: Vec2, (x, y, w, h): (f32, f32, f32, f32)) -> bool {
 /// `AwardScreen::StartButtonPressed`: the help note goes back to the main
 /// menu, the almanac award opens it (`almanac` starts the next level when
 /// it closes), and the others go on to the next level.
+fn open_store_intro(message: i32, next_state: &mut NextState<AppState>, commands: &mut Commands) {
+    commands.insert_resource(crate::store::StoreReturn(Some(AppState::Board)));
+    commands.insert_resource(crate::store::StoreIntro(message));
+    next_state.set(AppState::Store);
+}
+
 fn start_pressed(screen: &AwardScreen, next_state: &mut NextState<AppState>, dialogs: &mut Dialogs, res: &GameResources, commands: &mut Commands) {
     match screen.kind {
         AwardKind::HelpNote => next_state.set(AppState::GameSelector),
@@ -209,6 +225,13 @@ fn start_pressed(screen: &AwardScreen, next_state: &mut NextState<AppState>, dia
         }
         AwardKind::CreditsNote => next_state.set(AppState::Credits),
         AwardKind::Almanac => do_almanac_dialog(dialogs, res, AlmanacStart::Index),
+        // `AwardScreen::StartButtonPressed`: Dave's car opens with its intro
+        // talk on the keys and taco, and after level 42.
+        _ if screen.store_intro().is_some() => {
+            open_store_intro(screen.store_intro().unwrap(), next_state, commands);
+        }
+        // Finishing 4-5 shows the watering can, then the Zen Garden tutorial.
+        AwardKind::WateringCan => next_state.set(AppState::ZenGarden),
         _ => next_state.set(AppState::Board),
     }
 }
@@ -427,6 +450,15 @@ mod tests {
 
     fn kind(award: Option<AwardScreen>) -> Option<AwardKind> {
         award.map(|a| a.kind)
+    }
+
+    #[test]
+    fn award_store_intros_match_the_levels() {
+        assert_eq!(AwardScreen::new(25).as_ref().and_then(AwardScreen::store_intro), Some(301));
+        assert_eq!(AwardScreen::new(35).as_ref().and_then(AwardScreen::store_intro), Some(601));
+        assert_eq!(AwardScreen::new(42).as_ref().and_then(AwardScreen::store_intro), Some(3100));
+        assert_eq!(AwardScreen::new(41).as_ref().and_then(AwardScreen::store_intro), None);
+        assert_eq!(AwardScreen::new(45).as_ref().and_then(AwardScreen::store_intro), None);
     }
 
     #[test]

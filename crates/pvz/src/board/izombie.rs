@@ -389,7 +389,7 @@ impl Board {
         images: &mut Assets<Image>,
         sounds: &mut crate::audio::Sounds,
     ) {
-        if !self.is_izombie_level() || self.has_level_award_dropped() {
+        if !self.is_izombie_level() || self.has_level_award_dropped() || self.puzzle_award_pending {
             return;
         }
         let zombies: Vec<(i32, i32)> = self
@@ -427,7 +427,7 @@ impl Board {
         }
     }
 
-    fn award_brain(&mut self, res: &mut GameResources, effects: &mut EffectSystem, images: &mut Assets<Image>, sounds: &mut crate::audio::Sounds) {
+    pub(super) fn award_brain(&mut self, res: &mut GameResources, effects: &mut EffectSystem, images: &mut Assets<Image>, sounds: &mut crate::audio::Sounds) {
         let scored = self.izombie_score;
         self.waves.progress_meter_width =
             sexy::tod::animate_curve(0, BRAIN_COUNT, scored, 0, 500, sexy::tod::TodCurve::Linear);
@@ -447,6 +447,9 @@ impl Board {
                 images,
                 sounds,
             );
+        } else if self.survival_stage % 3 == 0 {
+            self.drop_puzzle_award(400.0, 300.0, effects, res, images, sounds);
+            self.puzzle_award_pending = true;
         } else {
             self.survival_stage += 1;
             self.izombie_score = 0;

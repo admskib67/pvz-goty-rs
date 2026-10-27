@@ -713,6 +713,14 @@ fn clearing_vasebreaker_one_awards_and_endless_deals_another_round() {
         }
         board.scary_potter_complete(effects, res, images, sounds);
     });
+    assert_eq!(t.board.survival_stage, 0, "the first clear is an award stage");
+    assert!(t.board.puzzle_award_pending);
+    assert!(t.board.coins.iter().any(|(_, c)| c.puzzle_award), "the award coin dropped");
+    // Collect (or let it go): the next round then starts.
+    for (_, coin) in t.board.coins.iter_mut() {
+        coin.puzzle_award = false;
+    }
+    t.tick();
     assert_eq!(t.board.survival_stage, 1, "the endless streak moves on");
     assert!(t.board.grid_items.iter().any(|(_, g)| g.item_type == crate::board::grid_item::GridItemType::ScaryPot));
 }
@@ -767,6 +775,23 @@ fn the_seed_chooser_shop_button_opens_the_store_once_it_is_unlocked() {
     early.board.start_seed_choosing();
     let result = early.with(|board, _, _, _, sounds| board.seed_chooser_mouse_down(bevy::math::IVec2::new(730, 585), sounds));
     assert!(!matches!(result, Some(ChooserClick::Store)));
+}
+
+#[test]
+fn i_zombie_endless_awards_every_third_round() {
+    let Some(mut t) = TestBoard::puzzle(crate::board::PuzzleLevel::IZombieEndless) else { return };
+    t.board.izombie_score = 5;
+    t.with(|board, effects, res, images, sounds| board.award_brain(res, effects, images, sounds));
+    assert_eq!(t.board.survival_stage, 0);
+    assert!(t.board.puzzle_award_pending);
+    assert!(t.board.coins.iter().any(|(_, c)| c.puzzle_award), "the award coin dropped");
+    for (_, coin) in t.board.coins.iter_mut() {
+        coin.puzzle_award = false;
+    }
+    t.tick();
+    assert_eq!(t.board.survival_stage, 1);
+    assert!(!t.board.puzzle_award_pending);
+    assert!(t.board.grid_items.iter().any(|(_, g)| g.item_type == crate::board::grid_item::GridItemType::IzombieBrain));
 }
 
 #[test]

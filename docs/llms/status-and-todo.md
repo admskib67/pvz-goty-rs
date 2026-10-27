@@ -28,7 +28,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 
 | Area | Notes |
 |------|-------|
-| **Game modes** | `GameMode` has `Adventure`, `Intro`, `Survival`, `MiniGame` and `Puzzle`; adventure, all 20 mini-games, and the puzzle page (Vasebreaker + I, Zombie, 18 trophies) are playable. Survival has its between-stage seed repick (music fades out and back in), per-mode saved runs, and the per-tile Continue dialog. |
+| **Game modes** | `GameMode` has `Adventure`, `Intro`, `Survival`, `MiniGame` and `Puzzle`; adventure, all 20 mini-games, and the puzzle page (Vasebreaker + I, Zombie, 18 trophies) are playable. Survival has its between-stage seed repick (music fade, View Lawn, packet refresh state), per-mode saved runs, and the per-tile Continue dialog. Endless puzzles drop their award every 10 (Vasebreaker) or 3 (I, Zombie) rounds. |
 | **Zen Garden** | done: three gardens, needs/tools, chocolate, Stinky, wheelbarrow, sales, shop, menu bubble, Dave's tutorial and potted-plant/chocolate drops from zombies. |
 | **Tree of Wisdom** | done: growth, tree food, speech (shop and garden both lead there). |
 | **Achievements** | Out of scope: GOTY's achievements are Steamworks platform features, not game content. The pak's strings/icons are unused by the port. |
@@ -45,16 +45,15 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 - Rising out of pool/roof graves: graves only stand on grass or high ground, so adventure content never grows one on water; the decomp's pool branch is unused here.
 
 ### Menus and screens
-- Main menu: the trophy's tooltip.
-- Store: bonus mower and chocolate pages, and the award-screen intro talks.
+- Store: bonus mower and chocolate pages.
 - Widgets: vertical sliders (no screen uses them), clipboard and password characters in `EditWidget` (no OS clipboard here; nothing asks for a password).
 
 ### Engine
 
 ## Suggested order
 
-1. Screen integration leftovers: award-screen store talks, trophy tooltip, endless puzzle award stages, survival repick View Lawn.
-2. Windows visual pass and `.au` decoder; Linux.
+1. Platform parity: `.au` decoder for Windows paks, then Windows visual/audio pass and Linux/Wayland.
+2. Optional cleanup: dance cheat, bonus mower/chocolate store pages, stale TODO/doc pruning.
 
 ## Code TODO index
 

@@ -130,6 +130,8 @@ pub struct Coin {
     pub usable_seed: Option<SeedType>,
     /// The packet is in the cursor (`mCoinID`), so it isn't drawn on the lawn.
     pub usable_held: bool,
+    /// A puzzle endless stage's award: the next round waits for it to go.
+    pub puzzle_award: bool,
     collect_x: f32,
     collect_y: f32,
     /// The bouncing arrow over an award that's landed.
@@ -194,6 +196,7 @@ impl Coin {
             award_seed: None,
             usable_seed: None,
             usable_held: false,
+            puzzle_award: false,
             collect_x: 0.0,
             collect_y: 0.0,
             arrow: None,
@@ -788,7 +791,7 @@ impl super::Board {
 
     /// The plant a dropped potted-plant present carries, by lawn
     /// (`Coin::CoinInitialize`).
-    fn present_seed(&self, rng: &mut MtRand) -> SeedType {
+    pub(super) fn present_seed(&self, rng: &mut MtRand) -> SeedType {
         use SeedType::*;
         let list: &[SeedType] = match self.background {
             crate::board::BackgroundType::Night => &[Puffshroom, Sunshroom, Fumeshroom, Gravebuster, Hypnoshroom, Scaredyshroom, Iceshroom, Doomshroom],
@@ -797,6 +800,33 @@ impl super::Board {
             _ => &[Peashooter, Sunflower, Cherrybomb, Wallnut, Repeater, Potatomine, Snowpea, Chomper],
         };
         list[rng.next_range(list.len() as u32) as usize]
+    }
+
+    /// `Challenge::PuzzlePhaseComplete`: an endless puzzle stage's award.
+    pub(crate) fn drop_puzzle_award(
+        &mut self,
+        x: f32,
+        y: f32,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        sounds: &mut crate::audio::Sounds,
+    ) {
+        let roll = sounds.rng().range_int(0, 99);
+        let has_room = self.finished_adventure && self.zen_garden_slots + (self.potted_plants_collected as usize) < 32;
+        let can_chocolate = self.has_stinky && self.chocolate_charges < 10;
+        let mut coin = if roll < 15 && has_room {
+            let seed = self.present_seed(sounds.rng());
+            let mut coin = Coin::new(x, y, CoinType::PresentPlant, CoinMotion::Coin, effects, res, images, sounds.rng());
+            coin.award_seed = Some(seed);
+            coin
+        } else if roll < 30 && can_chocolate {
+            Coin::new(x, y, CoinType::Chocolate, CoinMotion::Coin, effects, res, images, sounds.rng())
+        } else {
+            Coin::new(x, y, CoinType::Diamond, CoinMotion::Coin, effects, res, images, sounds.rng())
+        };
+        coin.puzzle_award = true;
+        self.coins.alloc(coin);
     }
 
     /// `Board::DropLootPiece`: a dead zombie may drop Zen loot or money.

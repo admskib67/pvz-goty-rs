@@ -41,6 +41,16 @@ pub const PURCHASE_COUNT_OFFSET: i32 = 1000;
 /// itself (`ZenGarden::OpenStore`) and expects to come back; the menu does not.
 #[derive(Resource, Clone, Copy, Default)]
 pub struct StoreReturn(pub Option<AppState>);
+
+/// The store was opened on top of a live board (the seed chooser's Shop
+/// button); closing it returns to that board instead of changing state.
+#[derive(Resource, Default)]
+pub struct StoreOverlay;
+
+/// `StoreScreen::SetupForIntro`: Dave's first message when the store opens
+/// after an award, before the pages unlock.
+#[derive(Resource, Clone, Copy)]
+pub struct StoreIntro(pub i32);
 /// `MAX_PAGE_SPOTS`.
 const MAX_PAGE_SPOTS: usize = 8;
 /// `GAMEMODE_TREE_OF_WISDOM`, the index of its challenge record.
@@ -413,6 +423,8 @@ pub struct StoreScreen {
     store_time: i32,
     bubble_countdown: i32,
     bubble_click_to_continue: bool,
+    /// `mStartDialog`: an intro message to say before the buttons unlock.
+    start_dialog: i32,
     ambient_countdown: i32,
     previous_ambient: i32,
     page: StorePage,
@@ -461,6 +473,7 @@ impl StoreScreen {
             store_time: 0,
             bubble_countdown: 0,
             bubble_click_to_continue: false,
+            start_dialog: -1,
             ambient_countdown: 200,
             previous_ambient: -1,
             page: StorePage::SlotUpgrades,
@@ -523,6 +536,15 @@ struct Ctx<'a, 'w, 's> {
 }
 
 impl StoreScreen {
+    /// `StoreScreen::SetupForIntro`: a fixed opening talk, hatch shut, buttons
+    /// locked, and a Next Level back button.
+    fn setup_for_intro(&mut self, message: i32, player: &PlayerInfo, res: &GameResources) {
+        self.start_dialog = message;
+        self.hatch_open = false;
+        self.back.label = res.translate("[STORE_NEXT_LEVEL_BUTTON]");
+        self.enable_buttons(player, false);
+    }
+
     /// `SetBubbleText`.
     fn set_bubble_text(&mut self, message: i32, time: i32, click_to_continue: bool, player: &PlayerInfo, ctx: &mut Ctx) {
         let vars = dave_vars(player);
@@ -652,9 +674,11 @@ fn start_store(
     mut sounds: Sounds,
     profiles: Res<ProfileMgr>,
     return_to: Option<Res<StoreReturn>>,
+    intro: Option<Res<StoreIntro>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     let return_to = return_to.map(|r| *r).unwrap_or_default();
+    let intro = intro.map(|i| *i);
     let Some(player) = profiles.player() else {
         next_state.set(AppState::GameSelector);
         return;
@@ -667,6 +691,10 @@ fn start_store(
         store.page = if matches!(return_to, AppState::ZenGarden) { StorePage::Zen1 } else { store.page };
         store.back.label = resources.translate("[STORE_BACK_TO_GAME]");
     }
+    if let Some(intro) = intro {
+        store.setup_for_intro(intro.0, player, &resources);
+        commands.remove_resource::<StoreIntro>();
+    }
     store.dave.enter(&mut effects, &mut resources, &mut images, sounds.rng());
     commands.insert_resource(store);
 }
@@ -678,6 +706,8 @@ fn end_store(mut commands: Commands, store: Option<ResMut<StoreScreen>>, mut eff
     }
     commands.remove_resource::<StoreScreen>();
     commands.remove_resource::<StoreReturn>();
+    commands.remove_resource::<StoreOverlay>();
+    commands.remove_resource::<StoreIntro>();
 }
 
 /// Opens the store as an overlay on the live board (the seed chooser's Shop
@@ -699,6 +729,7 @@ pub fn open_store_over_board(
     store.dave.enter(effects, resources, images, sounds.rng());
     commands.insert_resource(store);
     commands.insert_resource(StoreReturn(Some(AppState::Board)));
+    commands.insert_resource(StoreOverlay);
 }
 
 /// `StoreScreen::Update`, once a tick.
@@ -724,6 +755,12 @@ fn update_store(
         return;
     }
     store.store_time += 1;
+    if store.start_dialog != -1 && store.dave.state != DaveState::Entering {
+        let message = store.start_dialog;
+        store.start_dialog = -1;
+        store.set_bubble_text(message, 0, true, player, &mut ctx);
+        store.enable_buttons(player, false);
+    }
     if store.dave.state != DaveState::Entering {
         if store.hatch_timer > 0 {
             store.hatch_timer -= 1;
@@ -794,6 +831,7 @@ fn store_input(
     mut sounds: Sounds,
     mut profiles: ResMut<ProfileMgr>,
     return_to: Option<Res<StoreReturn>>,
+    overlay: Option<Res<StoreOverlay>>,
     mut music: ResMut<Music>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
@@ -804,10 +842,11 @@ fn store_input(
         match id {
             DialogId::StorePurchase => store.finish_purchase(yes, &mut profiles, &mut dialogs, &mut ctx),
             DialogId::VisitTree if yes => {
-                if back_state == AppState::Board {
+                if back_state == AppState::Board && overlay.is_some() {
                     store.dave.die(ctx.effects, ctx.sounds);
                     commands.remove_resource::<StoreScreen>();
                     commands.remove_resource::<StoreReturn>();
+                    commands.remove_resource::<StoreOverlay>();
                 }
                 next_state.set(AppState::TreeOfWisdom);
             }
@@ -843,12 +882,13 @@ fn store_input(
     if mouse.just_released(MouseButton::Left) {
         if store.back.is_down && over_back {
             store.back.is_down = false;
-            if back_state == AppState::Board {
+            if back_state == AppState::Board && overlay.is_some() {
                 // Overlay store: back to the live board, Dave leaves with it.
                 store.dave.die(&mut effects, &mut sounds);
                 music.make_sure_music_is_playing(MusicTune::ChooseYourSeeds);
                 commands.remove_resource::<StoreScreen>();
                 commands.remove_resource::<StoreReturn>();
+                commands.remove_resource::<StoreOverlay>();
                 return;
             }
             next_state.set(back_state);

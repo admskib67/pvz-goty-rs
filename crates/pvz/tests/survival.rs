@@ -114,6 +114,20 @@ fn clearing_a_stage_brings_the_next_one_after_the_advice() {
 }
 
 #[test]
+fn a_repick_can_hide_the_chooser_to_view_the_lawn() {
+    let Some(mut t) = TestBoard::survival(SurvivalLawn::Day, SurvivalDifficulty::Normal) else { return };
+    t.with(|board, _, _, _, sounds| {
+        board.open_survival_repick();
+        board.seed_chooser.as_mut().expect("chooser").mouse_visible = true;
+        assert!(!board.seed_chooser.as_ref().expect("chooser").viewing_lawn());
+        board.seed_chooser_mouse_down(bevy::math::IVec2::new(50, 575), sounds);
+        assert!(board.seed_chooser.as_ref().expect("chooser").viewing_lawn(), "the button hides the chooser");
+        board.seed_chooser_mouse_down(bevy::math::IVec2::new(50, 575), sounds);
+        assert!(!board.seed_chooser.as_ref().expect("chooser").viewing_lawn(), "and brings it back");
+    });
+}
+
+#[test]
 fn the_fifth_stage_is_the_last_of_a_normal_run() {
     let Some(mut t) = day_normal() else { return };
     t.board.survival_stage = 4;

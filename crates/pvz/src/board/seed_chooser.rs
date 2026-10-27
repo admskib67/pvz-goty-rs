@@ -33,6 +33,8 @@ const ALMANAC_BUTTON: (i32, i32) = (560, 572);
 const ALMANAC_BUTTON_SIZE: (i32, i32) = (111, 26);
 /// `mStoreButton`: `[SHOP_BUTTON]`, at the bottom right of the chooser.
 const STORE_BUTTON: (i32, i32) = (680, 572);
+/// `mViewLawnButton`: only shown for a survival repick.
+const VIEW_LAWN_BUTTON: (i32, i32) = (22, 561);
 /// What a click in the chooser asked for besides picking seeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ChooserClick {
@@ -122,6 +124,9 @@ pub struct SeedChooser {
     seven_rows: bool,
     /// The imitater's panel is up, asking which plant to copy.
     imitater_panel: bool,
+    /// `mViewLawnTime`'s visible state: the repick chooser is tucked away and
+    /// the lawn is being looked at.
+    view_lawn: bool,
 }
 
 /// `SEED_CHOOSER_OFFSET_Y`: where the chooser waits, just off the bottom of the screen.
@@ -166,7 +171,7 @@ impl SeedChooser {
                 }
             })
             .collect();
-        Self { seeds, age: 0, in_flight: 0, in_bank: 0, y, mouse_visible: false, warnings_accepted: 0, warning_answer: None, seven_rows, imitater_panel: false }
+        Self { seeds, age: 0, in_flight: 0, in_bank: 0, y, mouse_visible: false, warnings_accepted: 0, warning_answer: None, seven_rows, imitater_panel: false, view_lawn: false }
     }
 
     /// What's been picked: each seed's index and the plant it copies, if an imitater.
@@ -184,6 +189,12 @@ impl SeedChooser {
     #[cfg(test)]
     pub fn imitater_panel_open(&self) -> bool {
         self.imitater_panel
+    }
+
+    /// Whether the survival repick is looking at the lawn.
+    #[cfg(test)]
+    pub fn viewing_lawn(&self) -> bool {
+        self.view_lawn
     }
 
     /// Fills the bank with the first `count` choosable seeds, for tests that
@@ -397,6 +408,21 @@ impl Board {
         // The chooser's own coordinates.
         let p = p - IVec2::new(0, chooser.y);
 
+        // `mViewLawnButton`: tuck the chooser away for a survival repick.
+        if self.survival_repick
+            && p.x >= VIEW_LAWN_BUTTON.0
+            && p.x < VIEW_LAWN_BUTTON.0 + ALMANAC_BUTTON_SIZE.0
+            && p.y >= VIEW_LAWN_BUTTON.1
+            && p.y < VIEW_LAWN_BUTTON.1 + ALMANAC_BUTTON_SIZE.1
+        {
+            chooser.view_lawn = !chooser.view_lawn;
+            sounds.play_sample("SOUND_TAP");
+            return None;
+        }
+        if chooser.view_lawn {
+            return None;
+        }
+
         let seven_rows = chooser.seven_rows;
         // The imitater's panel: pick a plant to copy, or click away.
         if chooser.imitater_panel {
@@ -536,7 +562,15 @@ impl Board {
             let seed = copied.or_else(|| index.and_then(|i| SeedType::from_index(i as i32)));
             self.seed_bank.packets[slot].set_packet_type(seed);
             self.seed_bank.packets[slot].imitater = copied.is_some();
+            if let Some((_, refreshing, counter, time)) =
+                self.repick_refresh.iter().find(|(saved, ..)| Some(*saved) == seed)
+            {
+                self.seed_bank.packets[slot].refreshing = *refreshing;
+                self.seed_bank.packets[slot].refresh_counter = *counter;
+                self.seed_bank.packets[slot].refresh_time = *time;
+            }
         }
+        self.repick_refresh.clear();
         chooser.mouse_visible = false;
         self.cut_scene.end_seed_choosing();
         // `CutScene::IsSurvivalRepick` ends here; the board starts the stage
@@ -557,6 +591,23 @@ impl Board {
         g.push_state();
         g.translate(-self.x as f32, -self.y as f32);
         g.translate(0.0, chooser.y as f32);
+        if chooser.view_lawn {
+            // Only the button remains, over the lawn.
+            if self.survival_repick
+                && let Some(button) = res.image("IMAGE_SEEDCHOOSER_BUTTON2")
+            {
+                let (vx, vy) = VIEW_LAWN_BUTTON;
+                g.draw_image(button, vx as f32, vy as f32);
+                if let Some(font) = res.font("FONT_BRIANNETOD12") {
+                    let label = res.translate("[VIEW_LAWN]");
+                    let ascent = font.font.ascent;
+                    let y = vy + (ALMANAC_BUTTON_SIZE.1 - ascent / 6 - 1 + ascent) / 2 - 1;
+                    g.tod_draw_string(font, vx + ALMANAC_BUTTON_SIZE.0 / 2, y, &label, SexyColor::rgba(42, 42, 90, 255), Justify::Center);
+                }
+            }
+            g.pop_state();
+            return;
+        }
         g.draw_image(background, 0.0, 87.0);
         let title = res.translate("[CHOOSE_YOUR_SEEDS]");
         let title = if title.starts_with("<Missing") { res.translate("[CHOOSE_YOUR_PLANTS]") } else { title };
@@ -691,6 +742,19 @@ impl Board {
                 let ascent = font.font.ascent;
                 let y = sy + (ALMANAC_BUTTON_SIZE.1 - ascent / 6 - 1 + ascent) / 2 - 1;
                 g.tod_draw_string(font, sx + ALMANAC_BUTTON_SIZE.0 / 2, y, &label, SexyColor::rgba(42, 42, 90, 255), Justify::Center);
+            }
+        }
+        // The survival repick's View Lawn button, bottom left.
+        if self.survival_repick
+            && let Some(button) = res.image("IMAGE_SEEDCHOOSER_BUTTON2")
+        {
+            let (vx, vy) = VIEW_LAWN_BUTTON;
+            g.draw_image(button, vx as f32, vy as f32);
+            if let Some(font) = res.font("FONT_BRIANNETOD12") {
+                let label = res.translate("[VIEW_LAWN]");
+                let ascent = font.font.ascent;
+                let y = vy + (ALMANAC_BUTTON_SIZE.1 - ascent / 6 - 1 + ascent) / 2 - 1;
+                g.tod_draw_string(font, vx + ALMANAC_BUTTON_SIZE.0 / 2, y, &label, SexyColor::rgba(42, 42, 90, 255), Justify::Center);
             }
         }
         // ShowToolTip: the plant under the mouse, when nothing's moving.

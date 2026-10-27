@@ -61,7 +61,7 @@ impl Board {
         matches!(self.mode, GameMode::Puzzle(level) if level.is_vasebreaker())
     }
 
-    fn puzzle_level(&self) -> Option<PuzzleLevel> {
+    pub(super) fn puzzle_level(&self) -> Option<PuzzleLevel> {
         match self.mode {
             GameMode::Puzzle(level) => Some(level),
             _ => None,
@@ -254,7 +254,7 @@ impl Board {
         (banned, specs)
     }
 
-    fn scary_potter_populate(
+    pub(super) fn scary_potter_populate(
         &mut self,
         _effects: &mut EffectSystem,
         _res: &mut GameResources,
@@ -471,11 +471,17 @@ impl Board {
             );
             return;
         }
-        // Endless: clear the board, count the streak and deal a new one.
+        // Endless: every tenth clear is an award stage; the next round waits
+        // for its coin. Otherwise clear the board and deal a new one.
         for (_, zombie) in self.zombies.iter_mut() {
             if !zombie.is_dead_or_dying() {
                 zombie.die_no_loot(effects);
             }
+        }
+        if self.survival_stage % 10 == 0 {
+            self.drop_puzzle_award(400.0, 300.0, effects, res, images, sounds);
+            self.puzzle_award_pending = true;
+            return;
         }
         self.survival_stage += 1;
         sounds.play_sample("SOUND_HUGE_WAVE");

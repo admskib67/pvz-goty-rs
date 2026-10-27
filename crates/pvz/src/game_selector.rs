@@ -969,6 +969,7 @@ fn draw_selector(
     effects: Res<EffectSystem>,
     resources: Res<GameResources>,
     profiles: Res<ProfileMgr>,
+    cursor: Res<crate::input::GameCursor>,
     mut g: ResMut<Graphics>,
 ) {
     let gs = &*selector;
@@ -1017,6 +1018,15 @@ fn draw_selector(
     }
     if let Some(sparkle) = gs.trophy_sparkle.and_then(|id| effects.particle(id)) {
         draw_particle_system(&mut g, sparkle, &resources);
+    }
+    // `GameSelector::UpdateTooltip`: the silver trophy's label.
+    if gs.has_trophy
+        && cursor.0.is_some_and(|p| p.x >= 50.0 && p.x < 135.0 && p.y >= 325.0 && p.y <= 550.0)
+        && let Some(mut tip) = crate::board::tooltip::ToolTip::new(&resources, "", "[SILVER_SUNFLOWER_TOOLTIP]", "")
+    {
+        tip.x = 20;
+        tip.y = 495;
+        tip.draw(&mut g, &resources);
     }
 
     // Widgets stacked over the screen, back to front.
