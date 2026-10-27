@@ -492,6 +492,12 @@ impl MenuButton {
 }
 
 /// The level being played.
+/// The raw `PottedPlant::mWhichZenGarden` at offset 4 (the save record is
+/// opaque to `board`).
+fn pvz_potted_garden(plant: &[u8; 0x58]) -> i32 {
+    i32::from_le_bytes([plant[4], plant[5], plant[6], plant[7]])
+}
+
 #[derive(Resource)]
 pub struct Board {
     pub mode: GameMode,
@@ -553,6 +559,15 @@ pub struct Board {
     finished_adventure: bool,
     /// The player bought First Aid: a hurt pumpkin or nut can be replaced.
     first_aid: bool,
+    /// Zen Garden loot: main-garden pots already in use and dropped presents
+    /// picked up this level (`CanDropPottedPlantLoot`).
+    zen_garden_slots: usize,
+    potted_plants_collected: i32,
+    /// Chocolate drops (`CanDropChocolate`).
+    has_stinky: bool,
+    chocolate_charges: i32,
+    pending_potted_plant: Option<SeedType>,
+    pending_chocolate: bool,
     /// `Challenge::mShowBowlingLine`.
     show_bowling_line: bool,
     /// The player's money, as shown by the coin bank (the profile holds the real total).
@@ -785,6 +800,12 @@ impl Board {
             owned_seeds: (0..=SeedType::Imitater as i32).map(|i| player.is_some_and(|p| SeedType::from_index(i).is_some_and(|s| crate::plant::has_seed_type(p, s)))).collect(),
             finished_adventure: player.is_some_and(|p| p.has_finished_adventure()),
             first_aid: player.is_some_and(|p| p.purchases[crate::store::StoreItem::FirstAid.slot()] > 0),
+            zen_garden_slots: player.map_or(0, |p| p.potted_plants.iter().filter(|pp| pvz_potted_garden(pp) == 0).count()),
+            potted_plants_collected: 0,
+            has_stinky: player.is_some_and(|p| p.purchases[crate::store::StoreItem::StinkyTheSnail.slot()] > 0),
+            chocolate_charges: player.map_or(0, |p| (p.purchases[crate::store::StoreItem::Chocolate.slot()] - crate::store::PURCHASE_COUNT_OFFSET).max(0)),
+            pending_potted_plant: None,
+            pending_chocolate: false,
             show_bowling_line: false,
             player_coins: player.map_or(0, |p| p.coins),
             pending_money: 0,
@@ -1411,6 +1432,10 @@ pub(super) struct TickOutcome {
     chooser_warning: Option<ChooserWarning>,
     /// A present was picked up: unlock the mode for the player.
     unlocked: Option<coin::PresentUnlock>,
+    /// A potted-plant present was picked up.
+    potted_plant: Option<SeedType>,
+    /// A chocolate was picked up.
+    chocolate: bool,
 }
 
 /// `Board::Update`, at 100 ticks per second: the game in [`Board::tick`],
@@ -1459,6 +1484,23 @@ fn update_board(
                 coin::PresentUnlock::Minigames => player.has_unlocked_minigames = true,
                 coin::PresentUnlock::Puzzle => player.has_unlocked_puzzle_mode = true,
             }
+        }
+        profiles.save_current_details();
+    }
+    if let Some(seed) = outcome.potted_plant
+        && let Some(player) = profiles.player_mut()
+        && crate::zen_garden::add_potted_plant(player, seed)
+    {
+        profiles.save_current_details();
+    }
+    if outcome.chocolate
+        && let Some(player) = profiles.player_mut()
+    {
+        let slot = crate::store::StoreItem::Chocolate.slot();
+        if player.purchases[slot] < crate::store::PURCHASE_COUNT_OFFSET {
+            player.purchases[slot] = crate::store::PURCHASE_COUNT_OFFSET + 1;
+        } else {
+            player.purchases[slot] += 1;
         }
         profiles.save_current_details();
     }
@@ -1574,6 +1616,8 @@ impl Board {
         // UpdateGame, twice on Zombies on Speed (`Challenge::Update` calls
         // `Board::UpdateGame` a second time there).
         self.update_game(effects, resources, images, music, sounds);
+        outcome.potted_plant = self.pending_potted_plant.take();
+        outcome.chocolate = std::mem::take(&mut self.pending_chocolate);
         if self.minigame() == Some(MiniGame::Speed) && self.scene == GameScene::Playing {
             self.update_game(effects, resources, images, music, sounds);
         }
@@ -1969,6 +2013,8 @@ impl Board {
             self.update_bungee_plants(effects);
             self.collect_zombie_loot(effects, res, images, sounds);
             let mut scored = 0;
+            let mut potted = None;
+            let mut chocolate = false;
             for (_, coin) in self.coins.iter_mut() {
                 match coin.update(effects, res, images, sounds.rng()) {
                     Some(CoinEvent::Scored(sun)) => scored += sun,
@@ -1978,8 +2024,20 @@ impl Board {
                     }
                     Some(CoinEvent::Landed(CoinType::Gold)) => sounds.play_foley(FoleyType::MoneyFalls),
                     Some(CoinEvent::Unlocked(unlock)) => self.pending_unlock = Some(unlock),
+                    Some(CoinEvent::PottedPlant(seed)) => potted = Some(seed),
+                    Some(CoinEvent::Chocolate) => chocolate = true,
                     Some(CoinEvent::Landed(_)) | None => {}
                 }
+            }
+            if let Some(seed) = potted {
+                self.potted_plants_collected += 1;
+                self.display_advice(res, "[ADVICE_FOUND_PLANT]", MessageStyle::HintFast, None);
+                self.pending_potted_plant = Some(seed);
+            }
+            if chocolate {
+                self.chocolate_charges += 1;
+                self.display_advice(res, "[ADVICE_FOUND_CHOCOLATE]", MessageStyle::HintTallFast, None);
+                self.pending_chocolate = true;
             }
             self.add_sun_money(scored);
         }

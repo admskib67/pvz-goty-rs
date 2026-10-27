@@ -55,6 +55,11 @@ pub enum CoinType {
     /// A seed packet that falls from the sky and is planted straight from the
     /// lawn (`COIN_USABLE_SEED_PACKET`): It's Raining Seeds.
     UsableSeedPacket,
+    /// A dropped potted plant (`COIN_PRESENT_PLANT`): its seed is in
+    /// `Coin::award_seed`.
+    PresentPlant,
+    /// A dropped chocolate bar (`COIN_CHOCOLATE`).
+    Chocolate,
 }
 
 /// What a present unlocks when it's picked up.
@@ -148,6 +153,10 @@ pub enum CoinEvent {
     Landed(CoinType),
     /// A present reached the advice box and unlocks a mode.
     Unlocked(PresentUnlock),
+    /// A potted plant present was picked up (`ZenGarden::AddPottedPlant`).
+    PottedPlant(SeedType),
+    /// A chocolate was picked up.
+    Chocolate,
 }
 
 impl Coin {
@@ -193,11 +202,17 @@ impl Coin {
             hit_ground: false,
             attach_offset: (0.0, 0.0),
         };
-        if coin.is_present() {
+        if coin.uses_present_art() {
             if let Some(image) = res.image("IMAGE_PRESENT") {
                 coin.width = image.cel_width() as f32;
                 coin.height = image.cel_height() as f32;
             }
+        } else if coin.ty == CoinType::Chocolate {
+            if let Some(image) = res.image("IMAGE_CHOCOLATE") {
+                coin.width = image.cel_width() as f32;
+                coin.height = image.cel_height() as f32;
+            }
+            coin.render_order = make_render_order(render_layer::ABOVE_UI, 0, 0);
         } else if coin.is_level_award() {
             let image = match ty {
                 CoinType::Shovel => "IMAGE_SHOVEL",
@@ -234,7 +249,7 @@ impl Coin {
                 }
                 Err(e) => error!("{e}"),
             }
-        } else {
+        } else if !coin.uses_present_art() && coin.ty != CoinType::Chocolate {
             // AttachReanim at the coin's center.
             let (cx, cy) = (coin.width * 0.5, coin.height * 0.5);
             coin.attach_offset = (cx, cy);
@@ -340,6 +355,11 @@ impl Coin {
     /// `IsPresentWithAdvice`: a present that flies to the advice box.
     pub fn is_present(&self) -> bool {
         matches!(self.ty, CoinType::PresentMinigames | CoinType::PresentPuzzle)
+    }
+
+    /// Presents drawn with the wrapped present art (`DrawPresent`).
+    fn uses_present_art(&self) -> bool {
+        self.is_present() || self.ty == CoinType::PresentPlant
     }
 
     /// What this present unlocks.
@@ -591,6 +611,14 @@ impl Coin {
 
     /// `Coin::UpdateCollected` for sun: glides to the sun counter.
     fn update_collected(&mut self, effects: &mut EffectSystem) -> Option<CoinEvent> {
+        if self.ty == CoinType::PresentPlant {
+            self.die(effects);
+            return Some(CoinEvent::PottedPlant(self.award_seed?));
+        }
+        if self.ty == CoinType::Chocolate {
+            self.die(effects);
+            return Some(CoinEvent::Chocolate);
+        }
         if self.ty == CoinType::MoneyBag {
             return None;
         }
@@ -654,9 +682,9 @@ impl Coin {
 
     /// `Coin::Draw`: the sun is just its animation.
     pub fn draw(&self, g: &mut crate::graphics::Graphics, effects: &EffectSystem, res: &GameResources) {
-        if self.is_present() {
-            // The present, open once it's been picked up (`DrawPresent`).
-            let id = if self.is_being_collected { "IMAGE_PRESENTOPEN" } else { "IMAGE_PRESENT" };
+        if self.uses_present_art() {
+            // The present, open once it has been picked up (`DrawPresent`).
+            let id = if self.is_present() && self.is_being_collected { "IMAGE_PRESENTOPEN" } else { "IMAGE_PRESENT" };
             if let Some(image) = res.image(id) {
                 g.push_state();
                 if !self.is_being_collected {
@@ -694,6 +722,11 @@ impl Coin {
                 g.draw_image_cel_center_scaled(dollar, self.pos_x + 8.0, self.pos_y + 10.0, 0, self.scale, self.scale);
             }
             g.pop_state();
+        }
+        if self.ty == CoinType::Chocolate
+            && let Some(chocolate) = res.image("IMAGE_CHOCOLATE")
+        {
+            g.draw_image_cel_center_scaled(chocolate, self.pos_x + self.width / 2.0, self.pos_y + self.height / 2.0, 0, self.scale, self.scale);
         }
         if self.ty == CoinType::Shovel
             && let Some(shovel) = res.image("IMAGE_SHOVEL")
@@ -753,8 +786,20 @@ impl super::Board {
         self.coin_bank_fade_count = 15 * 40;
     }
 
-    /// `Board::DropLootPiece` for adventure: a dead zombie may drop money.
-    /// Not yet: presents, potted plants and chocolate.
+    /// The plant a dropped potted-plant present carries, by lawn
+    /// (`Coin::CoinInitialize`).
+    fn present_seed(&self, rng: &mut MtRand) -> SeedType {
+        use SeedType::*;
+        let list: &[SeedType] = match self.background {
+            crate::board::BackgroundType::Night => &[Puffshroom, Sunshroom, Fumeshroom, Gravebuster, Hypnoshroom, Scaredyshroom, Iceshroom, Doomshroom],
+            crate::board::BackgroundType::Pool | crate::board::BackgroundType::Fog => &[Lilypad, Tanglekelp, Seashroom, Cattail],
+            crate::board::BackgroundType::Roof => &[Cabbagepult, Kernelpult, Melonpult],
+            _ => &[Peashooter, Sunflower, Cherrybomb, Wallnut, Repeater, Potatomine, Snowpea, Chomper],
+        };
+        list[rng.next_range(list.len() as u32) as usize]
+    }
+
+    /// `Board::DropLootPiece`: a dead zombie may drop Zen loot or money.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn drop_loot_piece(
         &mut self,
@@ -782,7 +827,32 @@ impl super::Board {
                 return;
             }
         }
+        // Zen Garden loot (`Board::DropLootPiece`): potted plants once the
+        // adventure is finished and the garden has room, chocolate once
+        // Stinky is bought.
+        let has_room = self.zen_garden_slots + (self.potted_plants_collected as usize) < 32;
+        let potted_chance = if self.finished_adventure && has_room {
+            if self.first_time_adventure { 12 } else { 24 }
+        } else {
+            0
+        };
+        let mut chocolate_chance = potted_chance;
+        if self.has_stinky && self.chocolate_charges < 10 {
+            chocolate_chance += if self.first_time_adventure { 36 } else { 72 };
+        }
         let mut hit = sounds.rng().next_range(30000) as i32;
+        if hit < potted_chance * drop_factor {
+            let seed = self.present_seed(sounds.rng());
+            let mut coin = Coin::new(x as f32, y as f32, CoinType::PresentPlant, CoinMotion::Coin, effects, res, images, sounds.rng());
+            coin.award_seed = Some(seed);
+            self.coins.alloc(coin);
+            return;
+        }
+        if hit < chocolate_chance * drop_factor {
+            let coin = Coin::new(x as f32, y as f32, CoinType::Chocolate, CoinMotion::Coin, effects, res, images, sounds.rng());
+            self.coins.alloc(coin);
+            return;
+        }
         // Whack-a-zombie's zombies drop sun, more often the less the player has.
         if self.is_whack_a_zombie_level() {
             let max = match self.sun_money {

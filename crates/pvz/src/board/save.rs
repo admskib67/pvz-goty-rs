@@ -217,6 +217,8 @@ fn coin_type_to_int(ty: CoinType) -> i32 {
         CoinType::PresentPuzzle => 16,
         // Falling packets belong to It's Raining Seeds, which isn't saved.
         CoinType::UsableSeedPacket => 17,
+        // Zen loot is transient and filtered out below.
+        CoinType::PresentPlant | CoinType::Chocolate => -1,
     }
 }
 
@@ -296,7 +298,11 @@ impl SaveData {
             coins: board
                 .coins
                 .iter()
-                .filter(|(_, c)| !c.dead && !c.is_being_collected)
+                .filter(|(_, c)| {
+                    !c.dead
+                        && !c.is_being_collected
+                        && !matches!(c.ty, CoinType::PresentPlant | CoinType::Chocolate)
+                })
                 .map(|(_, c)| CoinSave { ty: coin_type_to_int(c.ty), pos_x: c.pos_x, pos_y: c.pos_y })
                 .collect(),
             waves: WaveSave {

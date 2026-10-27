@@ -1,6 +1,6 @@
-//! Crazy Dave's Twiddydinkies: the store opened from the main menu. Dave
-//! sells plant upgrades, seed slots and garden tools out of his car; the
-//! player pages through them with the arrows and pays with their coins.
+//! Crazy Dave's Twiddydinkies: the store opened from the main menu or the Zen
+//! Garden. Dave sells plant upgrades, seed slots and garden tools out of his
+//! car; the player pages through them with the arrows and pays with coins.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Widget/StoreScreen.cpp`:
 //! `gStoreItemSpots`, `GetStoreItemType`, `IsPageShown`, `IsComingSoon`,
@@ -10,12 +10,10 @@
 //! `EnableButtons`. The logic (what is for sale, at what price, what buying
 //! does) is plain functions of the `PlayerInfo`, tested without the game.
 //!
-//! Not yet: the potted marigolds and anything else tied to the Zen Garden
-//! (they show "Coming Soon"), the tree of wisdom visit after buying it, the
-//! bonus lawn mower and chocolate (not on any page), the trial and
-//! "buy the game" items, the store intro talks from the award screen, the
-//! diamond Dave hands out, the night background, the hand cursor, and
-//! opening the store from the seed chooser.
+//! Not yet: the bonus lawn mower and chocolate (not on any page), the trial
+//! and "buy the game" items, the store intro talks from the award screen, the
+//! diamond Dave hands out, the hand cursor, and opening the store from the
+//! seed chooser.
 
 use bevy::math::Affine2;
 use bevy::prelude::*;
@@ -38,6 +36,11 @@ use crate::{AppState, UiSet};
 /// `PURCHASE_COUNT_OFFSET`: consumables count from here, so that "none
 /// bought yet" (0) differs from "bought and used up" (1000).
 pub const PURCHASE_COUNT_OFFSET: i32 = 1000;
+
+/// Where the store's back button goes. The Zen Garden opens the store over
+/// itself (`ZenGarden::OpenStore`) and expects to come back; the menu does not.
+#[derive(Resource, Clone, Copy, Default)]
+pub struct StoreReturn(pub Option<AppState>);
 /// `MAX_PAGE_SPOTS`.
 const MAX_PAGE_SPOTS: usize = 8;
 /// `GAMEMODE_TREE_OF_WISDOM`, the index of its challenge record.
@@ -185,9 +188,7 @@ pub fn is_coming_soon(player: &PlayerInfo, item: StoreItem) -> bool {
     let bought = |i: StoreItem| player.purchases[i.slot()] != 0;
     match item {
         StoreItem::WheelBarrow => !bought(StoreItem::MushroomGarden) && !bought(StoreItem::AquariumGarden),
-        // TODO: the original says "coming soon" until adventure is finished;
-        // here they stay so until the Zen Garden exists to put them in.
-        i if i.is_potted_plant() => true,
+        i if i.is_potted_plant() => false,
         StoreItem::TreeFood => {
             !bought(StoreItem::TreeOfWisdom) || player.purchases[StoreItem::TreeFood.slot()] < PURCHASE_COUNT_OFFSET
         }
@@ -203,8 +204,10 @@ pub fn is_sold_out(player: &PlayerInfo, item: StoreItem) -> bool {
         StoreItem::Fertilizer | StoreItem::BugSpray => count - PURCHASE_COUNT_OFFSET > 15,
         StoreItem::TreeFood => count - PURCHASE_COUNT_OFFSET >= 10,
         StoreItem::BonusLawnMower => count >= 2,
-        // Potted plants are one a day once the Zen Garden exists.
-        i if i.is_potted_plant() => false,
+        // One potted plant of each kind a day, while the garden has room.
+        i if i.is_potted_plant() => {
+            crate::zen_garden::main_garden_full(player) || count == days_since_2000()
+        }
         _ => count != 0,
     }
 }
@@ -275,10 +278,19 @@ pub enum Bought {
     FirstAid,
 }
 
+/// `GetCurrentDaysSince2000`, the original's one-a-day marker.
+fn days_since_2000() -> i32 {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    ((now - 946_684_800) / 86_400) as i32
+}
+
 /// The money part of `StoreScreen::PurchaseItem` after the player said yes:
 /// pays and records the purchase. `now` is the time in seconds (Stinky
 /// remembers when he was bought). `None` when the player can't afford it.
 pub fn buy(player: &mut PlayerInfo, item: StoreItem, now: i32) -> Option<Bought> {
+    if item.is_potted_plant() && crate::zen_garden::main_garden_full(player) {
+        return None;
+    }
     let cost = item_cost(player, item);
     if player.coins < cost {
         return None;
@@ -301,9 +313,21 @@ pub fn buy(player: &mut PlayerInfo, item: StoreItem, now: i32) -> Option<Bought>
         StoreItem::TreeOfWisdom => {
             player.purchases[slot] = 1;
             player.challenge_records[GAMEMODE_TREE_OF_WISDOM] = 1;
+            // Dave's first-visit gift (`CutScene::AdvanceCrazyDaveDialog`,
+            // message 3200): five tree foods so the tree can be fed.
+            if player.purchases[StoreItem::TreeFood.slot()] < PURCHASE_COUNT_OFFSET {
+                player.purchases[StoreItem::TreeFood.slot()] = PURCHASE_COUNT_OFFSET + 5;
+            }
             result = Bought::VisitTree;
         }
-        // TODO: potted plants go into the Zen Garden, which isn't ported.
+        i if i.is_potted_plant() => {
+            // `ZenGarden::AddPottedPlant`: the marigold lands in the first
+            // empty main-garden spot.
+            if !crate::zen_garden::add_potted_plant(player, SeedType::Marigold) {
+                return None;
+            }
+            player.purchases[slot] = days_since_2000();
+        }
         _ => player.purchases[slot] = 1,
     }
     if item == StoreItem::FirstAid {
@@ -616,6 +640,7 @@ fn item_rect(spot: usize) -> Rect {
     Rect::new(x as f32, y as f32, (x + 50) as f32, (y + 87) as f32)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_store(
     mut commands: Commands,
     mut resources: ResMut<GameResources>,
@@ -623,8 +648,10 @@ fn start_store(
     mut effects: ResMut<EffectSystem>,
     mut sounds: Sounds,
     profiles: Res<ProfileMgr>,
+    return_to: Option<Res<StoreReturn>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
+    let return_to = return_to.map(|r| *r).unwrap_or_default();
     let Some(player) = profiles.player() else {
         next_state.set(AppState::GameSelector);
         return;
@@ -633,6 +660,10 @@ fn start_store(
         error!("{e}");
     }
     let mut store = StoreScreen::new(&resources, player);
+    if let Some(return_to) = return_to.0 {
+        store.page = if matches!(return_to, AppState::ZenGarden) { StorePage::Zen1 } else { store.page };
+        store.back.label = resources.translate("[STORE_BACK_TO_GAME]");
+    }
     store.dave.enter(&mut effects, &mut resources, &mut images, sounds.rng());
     commands.insert_resource(store);
 }
@@ -643,6 +674,7 @@ fn end_store(mut commands: Commands, store: Option<ResMut<StoreScreen>>, mut eff
         store.dave.die(&mut effects, &mut sounds);
     }
     commands.remove_resource::<StoreScreen>();
+    commands.remove_resource::<StoreReturn>();
 }
 
 /// `StoreScreen::Update`, once a tick.
@@ -736,15 +768,17 @@ fn store_input(
     mut images: ResMut<Assets<Image>>,
     mut sounds: Sounds,
     mut profiles: ResMut<ProfileMgr>,
+    return_to: Option<Res<StoreReturn>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
+    let back_state = return_to.as_ref().and_then(|r| r.0).unwrap_or(AppState::GameSelector);
     let store = &mut *store;
     let mut ctx = Ctx { effects: &mut effects, res: &mut resources, images: &mut images, sounds: &mut sounds };
     if let Some((id, yes)) = store.dialog_answer.take() {
         match id {
             DialogId::StorePurchase => store.finish_purchase(yes, &mut profiles, &mut dialogs, &mut ctx),
             // TODO: go to the Tree of Wisdom once it exists.
-            DialogId::VisitTree if yes => info!("the Tree of Wisdom isn't ported yet"),
+            DialogId::VisitTree if yes => next_state.set(AppState::TreeOfWisdom),
             _ => {}
         }
     }
@@ -776,7 +810,7 @@ fn store_input(
     }
     if mouse.just_released(MouseButton::Left) {
         if store.back.is_down && over_back {
-            next_state.set(AppState::GameSelector);
+            next_state.set(back_state);
         }
         store.back.is_down = false;
     }
@@ -1074,6 +1108,17 @@ mod tests {
         assert!(!is_sold_out(&p, Fertilizer));
         p.purchases[Fertilizer.slot()] = PURCHASE_COUNT_OFFSET + 16;
         assert!(is_sold_out(&p, Fertilizer));
+    }
+
+    #[test]
+    fn buying_a_potted_plant_puts_it_in_the_garden() {
+        let mut p = finished();
+        p.coins = 300;
+        assert_eq!(buy(&mut p, PottedMarigold1, 0), Some(Bought::Done));
+        assert_eq!(p.coins, 50);
+        assert_eq!(p.potted_plants.len(), 1);
+        assert!(p.purchases[PottedMarigold1.slot()] > 1);
+        assert!(!can_buy(&p, PottedMarigold1));
     }
 
     #[test]

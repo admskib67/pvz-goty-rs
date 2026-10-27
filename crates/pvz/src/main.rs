@@ -22,6 +22,7 @@ mod resources;
 mod setup;
 mod store;
 mod title;
+mod tree_of_wisdom;
 mod widgets;
 mod zen_garden;
 mod zombie;
@@ -61,6 +62,8 @@ pub enum AppState {
     Challenges,
     /// The Zen Garden greenhouse.
     ZenGarden,
+    /// The Tree of Wisdom.
+    TreeOfWisdom,
     /// The credits movie.
     Credits,
 }
@@ -160,7 +163,7 @@ fn main() {
             almanac::AlmanacPlugin,
             devshot::DevShotPlugin,
         ))
-        .add_plugins((credits::CreditsPlugin, challenge::ChallengePlugin, zen_garden::ZenGardenPlugin))
+        .add_plugins((credits::CreditsPlugin, challenge::ChallengePlugin, zen_garden::ZenGardenPlugin, tree_of_wisdom::TreeOfWisdomPlugin))
         .add_systems(Startup, spawn_camera)
         .add_systems(OnEnter(AppState::Boot), boot)
         .run();

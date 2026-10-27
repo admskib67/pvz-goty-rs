@@ -23,7 +23,7 @@ PVZ_AUTO_START=adventure PVZ_SCREENSHOT='/tmp/shot{}.png' PVZ_SCREENSHOT_FRAME=4
 
 - `PVZ_SCREENSHOT_FRAME` takes several frames; `{}` in the file name becomes the frame number. The app exits shortly after the last one.
 - Frames are wall-clock: loading takes about 300 frames, and timing varies run to run.
-- `PVZ_AUTO_START=` `1` / `adventure` / `options` / `help` / `store` / `almanac` / `almanac-plants` / `almanac-zombies` / `credits`.
+- `PVZ_AUTO_START=` `1` / `adventure` / `options` / `help` / `store` / `almanac` / `almanac-plants` / `almanac-zombies` / `credits` / `zen` / `tree`; `PVZ_ZEN_GARDEN=mushroom|aquarium` opens another Zen garden for eye-checks; `PVZ_ZEN_TUTORIAL=1` forces Dave's Zen lesson.
 - `PVZ_DEV_SCENE=butter|boss|boss-stomp|boss-rv|boss-bungee|pool` sets up a scene (`board/dev_scene.rs`).
 - `PVZ_CREDITS_JUMP=2:318` starts the credits part 2 at about frame 318.
 - macOS captures sometimes come out fully black; that is the capture, not the game. Don't debug it; retake or ask the user to look.

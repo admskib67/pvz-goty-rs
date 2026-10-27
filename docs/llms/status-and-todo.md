@@ -9,7 +9,8 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 - **Plants: all 49 adventure/store plants** (every `SeedType` except Zen Garden's `Sprout`), including upgrades (gatling, twin sunflower, gloom, cattail, winter melon, gold magnet, spikerock, cob cannon) and the imitater.
 - **Zombies: all 33 types**: normal, flag, cone, bucket, pole vaulter, newspaper, screen door, football, dancer, backup dancer, ducky tube, snorkel, Zamboni, bobsled, dolphin rider, balloon, bungee, ladder, catapult, gargantuar, imp, Dr. Zomboss, plus jack-in-the-box (runs, pops, explodes), digger (tunnels, rises, loses its axe to magnets), pogo (bounces, vaults, tall-nut breaks it), yeti (flees), red-eyed gargantuar (6000 HP), and the six Zombotany heads (pea/gatling shoot backwards, jalapeno burns its row, squash jumps, wall/tall-nuts are helmets).
 - Crazy Dave talks on 1-5, 2-1, 2-2, 2-3+ (seed slots), 2-5, 3-1, 3-5, 4-1, 5-1, 5-10.
-- **Zen Garden, main greenhouse** (`zen_garden`): plants from the profile at their greenhouse grid slots (two starter marigolds when empty), watering every two minutes, sprout→small→medium→full growth, sun coins from full plants, selling, coin bank, and saving back to `userdata` on exit. Not yet: the mushroom/aquarium gardens, other needs, Stinky, the wheelbarrow, the Zen shop and tutorial.
+- **Tree of Wisdom** (`tree_of_wisdom`): fed by tree food (the store grants five with the tree), grows through `anim_grow1..50`, babbles `[TREE_OF_WISDOM_N]` advice in its speech bubble, and is reachable from the store and the garden's Next button.
+- **Zen Garden** (`zen_garden`): all three gardens (main greenhouse, mushroom garden, aquarium) with their grids and backgrounds; potted plants from the profile, two starter marigolds when empty (or Dave's tutorial at level 45); watering→fertilizer growth (sprout→small→medium→full); water/fertilizer/bug-spray/phonograph needs with bubbles; chocolate's doubled production; coins and the coin bank; selling at the original prices; Stinky wandering to coins; the wheelbarrow for moving plants between gardens; the Zen shop page; the menu's "needs water" waterdrop; and saving back to `userdata`. Timers are scaled down (a need every 30 s, coins every 60 s).
 - **Menus pass**: the sunflower trophy with its sparkle on the main menu, the first-time adventure-complete message, the store's night background, live SFX volume changes (the sounds already playing follow the slider) and foley muting while the board is paused, the seed chooser's Almanac button, the almanac's animated pool water, a resource-error screen instead of an instant exit, and Ctrl+Z in the name box.
 - **Plant pass**: the chomper bites gargantuars and the boss for 40 instead of swallowing them (and misses bouncing pogos); the spikeweeds' height follows the row and stage; the magnet-shroom pulls ladders off plants and the gold magnets take turns; the loaded cob cannon's cob flashes; a plant being woken by a coffee bean squashes and bounces back; a plant flashes while an upgrade for it (or a cob cannon over its kernel-pult) is held over it; garlic has its 400 health; the left repeater fires its second pea; the gargantuars' ice trap is drawn larger and a hypnotised gargantuar smashes the zombie in front of it; and the missing planting advice keys (`LILYPAD_ON_WATER`, `TANGLEKELP_ON_WATER`, `SEASHROOM_ON_WATER`, `POTATO_MINE_ON_LILY`, `PLANTING_NEEDS_GROUND`, `PLANTING_NEED_SLEEPING`, `CANT_PLANT_THERE` on pool craters).
 - **Content pass**: the mode-unlocking presents (3-2's mini-games, 4-6's puzzle), the pool/roof/night crater art, 4-5 at night (stormy night is 4-10, not 4-5), ice-shrooms freezing the pool water, red-tinted explode-o-nut and mirrored left-repeater seed art, the award's starburst and pickup particles, the zombies' full shadow-offset table (a backward-facing football was 52 px off) with the pool's water shadow, tiny zombies' particle scaling, and the boss level skipping Dave when it's retried after a loss.
@@ -28,15 +29,14 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 | Area | Notes |
 |------|-------|
 | **Game modes** | `GameMode` has `Adventure`, `Intro`, `Survival`, `MiniGame` and `Puzzle`; adventure, all 20 mini-games, and the puzzle page (Vasebreaker + I, Zombie, 18 trophies) are playable. Left: survival's between-stage seed repick, saved runs, and the listed polish items. |
-| **Zen Garden** | garden screens, potted plants and their growth/watering, Stinky, tools, marigold sales, "needs water" bubble on the menu. `PlayerInfo` already stores Zen plants as raw 88-byte structs. |
-| **Tree of Wisdom** | growth, tree food, speech. The store records buying the tree but can't go there. |
+| **Zen Garden** | done: three gardens, needs/tools, chocolate, Stinky, wheelbarrow, sales, shop, menu bubble, Dave's tutorial and potted-plant/chocolate drops from zombies. |
+| **Tree of Wisdom** | done: growth, tree food, speech (shop and garden both lead there). |
 | **Achievements** | none. |
 | **Windows/Linux verification** | Windows: title/menu/board never run visually; compiled particles untested; audio untested; `.au` sounds silent (needs a decoder, `audio.rs:703`). Linux: nothing run. |
 
 ## Missing: features inside existing screens
 
 ### Board and levels
-- Potted plants and chocolate drops from zombies (Zen Garden loot; the mini-games and puzzle presents drop and unlock their modes already).
 
 ### Plants
 - Attached particles (`AddAttachedParticle`): the coffee bean's and grave buster's effects are pinned to the plant in the original; particles can't follow a reanimation track yet, so they're spawned in place (`board/plant.rs`).
@@ -57,9 +57,8 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 
 ## Suggested order
 
-1. Zen Garden and Tree of Wisdom, then the store's Zen items.
-2. Zen Garden and Tree of Wisdom, then the store's Zen items.
-3. Achievements; Windows visual pass and `.au` decoder; Linux.
+1. Achievements.
+2. Windows visual pass and `.au` decoder; Linux.
 
 ## Code TODO index
 

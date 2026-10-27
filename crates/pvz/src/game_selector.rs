@@ -819,6 +819,7 @@ fn selector_input(
                 next_state.set(AppState::Board);
             }
             Ok("zen") => next_state.set(AppState::ZenGarden),
+            Ok("tree") => next_state.set(AppState::TreeOfWisdom),
             Ok("puzzles") => {
                 commands.insert_resource(crate::challenge::ChallengePageRequest(crate::challenge::ChallengePage::Puzzle));
                 next_state.set(AppState::Challenges);
@@ -1034,6 +1035,13 @@ fn draw_selector(
     ] {
         button.draw(&mut g, &resources);
     }
+    if let Some(player) = profiles.player()
+        && b.zen_garden.visible
+        && crate::zen_garden::plants_need_water(player)
+        && let Some(image) = resources.image("IMAGE_WATERDROP")
+    {
+        g.draw_image(image, b.zen_garden.x as f32 + 123.0, b.zen_garden.y as f32 + 45.0);
+    }
 
     draw_overlay(gs, reanim, &effects, &resources, &mut g);
 }
@@ -1079,7 +1087,7 @@ fn draw_overlay(
         }
         g.pop_state();
     }
-    // TODO: zen garden "needs water" bubble once the zen garden exists.
+
 
     if let Some(hand) = gs.hand_reanim.and_then(|id| effects.get(id)) {
         // The hand goes down behind the lawn's edge; its rocks ignore the clip.

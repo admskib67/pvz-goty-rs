@@ -27,6 +27,7 @@ mod minigame;
 mod save;
 mod survival;
 mod world3;
+mod zen;
 mod zombies;
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -205,6 +206,9 @@ pub struct TestBoard {
     pub money: i32,
     /// A present the board has opened (what it hands the profile).
     pub unlocked: Option<crate::board::coin::PresentUnlock>,
+    /// Zen loot the board picked up (what it hands the profile).
+    pub potted_plant: Option<crate::plant::SeedType>,
+    pub chocolate: bool,
 }
 
 impl TestBoard {
@@ -304,6 +308,8 @@ impl TestBoard {
                 first_wave_count_down,
                 money: 0,
                 unlocked: None,
+                potted_plant: None,
+                chocolate: false,
             });
         }
         board.init_lawn_mowers();
@@ -335,6 +341,8 @@ impl TestBoard {
             first_wave_count_down,
             money: 0,
             unlocked: None,
+            potted_plant: None,
+            chocolate: false,
         };
         // Graves come up fully (from as far as 50 ticks underground) and
         // the mowers finish rolling in before the test starts.
@@ -377,8 +385,32 @@ impl TestBoard {
         if let Some(unlock) = outcome.unlocked {
             self.unlocked = Some(unlock);
         }
+        if outcome.potted_plant.is_some() {
+            self.potted_plant = outcome.potted_plant;
+        }
+        self.chocolate |= outcome.chocolate;
         self.sounds.apply(&mut self.world);
         self.world.resource_mut::<UpdateCount>().0 += 1;
+    }
+
+    /// Drops a Zen present/chocolate at the board's centre and clicks it.
+    pub fn collect_zen_loot(&mut self, ty: crate::board::coin::CoinType, seed: Option<crate::plant::SeedType>) {
+        let Shared { resources, images } = &mut *self.shared;
+        let mut sounds = self.sounds.get_mut(&mut self.world).expect("sounds without an audio device");
+        let mut coin = crate::board::coin::Coin::new(
+            400.0,
+            300.0,
+            ty,
+            crate::board::coin::CoinMotion::Coin,
+            &mut self.effects,
+            resources,
+            images,
+            sounds.rng(),
+        );
+        coin.award_seed = seed;
+        coin.collect();
+        self.board.coins.alloc(coin);
+        self.sounds.apply(&mut self.world);
     }
 
     pub fn ticks(&mut self, n: u32) {
