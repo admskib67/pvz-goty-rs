@@ -21,7 +21,7 @@ fn nothing_goes_on_the_roof_without_a_flower_pot() {
     t.plant(SeedType::Flowerpot, 2, 2);
     assert_eq!(t.board.can_plant_at(2, 2, SeedType::Flowerpot), PlantingReason::NotHere, "one pot a square");
     assert_eq!(t.board.can_plant_at(2, 2, SeedType::Peashooter), PlantingReason::Ok, "a pot takes a plant");
-    assert_eq!(t.board.can_plant_at(2, 2, SeedType::Spikeweed), PlantingReason::NotHere, "but never spikeweed");
+    assert_eq!(t.board.can_plant_at(2, 2, SeedType::Spikeweed), PlantingReason::NeedsGround, "but never spikeweed");
     t.plant(SeedType::Peashooter, 2, 2);
     assert_eq!(t.board.can_plant_at(2, 2, SeedType::Wallnut), PlantingReason::NotHere, "and one plant");
     assert_eq!(t.board.can_plant_at(2, 2, SeedType::Flowerpot), PlantingReason::NotHere, "the pot has a plant in it");

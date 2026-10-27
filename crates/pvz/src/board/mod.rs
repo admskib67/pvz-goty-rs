@@ -745,6 +745,11 @@ impl Board {
         self.background.has_pool()
     }
 
+    /// `Board::StageHas6Rows`: the pool and fog lawns have six.
+    pub fn stage_has_6_rows(&self) -> bool {
+        matches!(self.background, BackgroundType::Pool | BackgroundType::Fog)
+    }
+
     pub fn stage_has_roof(&self) -> bool {
         self.background.has_roof()
     }
@@ -1307,11 +1312,54 @@ impl Board {
             let last_wave = self.waves.current_wave == self.waves.num_waves;
             let bowling_pays = !self.first_time_adventure || self.level > 10;
             let coin_available = self.coins.iter().any(|(_, c)| c.is_gold_magnet_target());
-            for (_, plant) in self.plants.iter_mut() {
+            // `Plant::IsAGoldMagnetAboutToSuck`: the magnets take turns.
+            let ladders: Vec<(i32, i32)> = self
+                .grid_items
+                .iter()
+                .filter(|(_, g)| g.item_type == grid_item::GridItemType::Ladder && !g.dead)
+                .map(|(_, g)| (g.grid_x, g.grid_y))
+                .collect();
+            let magnet_about = self.plants.iter().any(|(_, p)| {
+                p.seed == SeedType::GoldMagnet
+                    && !p.not_on_ground()
+                    && p.state() == plant::PlantState::MagnetSucking
+                    && p.body_anim_time(effects).is_some_and(|t| t < 0.5)
+            });
+            // `UpdateReanimColor`: a base plant flashes while an upgrade for it
+            // is held over it (the cob cannon's kernel-pult too).
+            let held = self.cursor.seed;
+            let flashes: Vec<(sexy::data_array::Id<Plant>, bool)> = self
+                .plants
+                .iter()
+                .map(|(id, p)| {
+                    let flash = held.is_some_and(|s| {
+                        !p.dead
+                            && ((s.upgrade_base() == Some(p.seed) && s.upgrade_is_ported() && self.can_plant_at(p.col, p.row, s) == cursor::PlantingReason::Ok)
+                                || (s == SeedType::Cobcannon
+                                    && p.seed == SeedType::Kernelpult
+                                    && self.can_plant_at(p.col - 1, p.row, s) == cursor::PlantingReason::Ok))
+                    });
+                    (id, flash)
+                })
+                .collect();
+            for (id, plant) in self.plants.iter_mut() {
                 plant.last_wave = last_wave;
                 plant.bowling_pays = bowling_pays;
                 plant.coin_available = coin_available;
-                plant.update(&self.zombies, &mut self.plant_actions, effects, res, images, &row_y, &open_rows, self.main_counter, sounds.rng());
+                plant.another_magnet_about_to_suck = magnet_about;
+                plant.upgrade_flash = flashes.iter().find(|(plant_id, _)| *plant_id == id).is_some_and(|(_, flash)| *flash);
+                plant.update(
+                    &self.zombies,
+                    &mut self.plant_actions,
+                    effects,
+                    res,
+                    images,
+                    &row_y,
+                    &open_rows,
+                    &ladders,
+                    self.main_counter,
+                    sounds.rng(),
+                );
             }
         }
         if playing {
@@ -1874,6 +1922,13 @@ impl Board {
                 self.add_particle((x + 40) as f32, (y + 40) as f32, render_order, ParticleEffect::GraveBusterDie);
                 self.drop_loot_piece(x + 40, y, 12, effects, res, images, sounds);
             }
+            PlantAction::Bite { zombie, damage } => {
+                let env = self.zombie_env();
+                let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
+                if let Some(z) = self.zombies.get_mut(zombie) {
+                    z.take_damage(damage, 0, &env, &mut fx);
+                }
+            }
             PlantAction::EatZombie(id) => {
                 let mut fx = Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
                 if let Some(zombie) = self.zombies.get_mut(id) {
@@ -1929,6 +1984,35 @@ impl Board {
                     if let Some((_, plant)) = magnet {
                         plant.hold_magnet_item(plant::MagnetItem { image: loot.image, x, y, dest_x, dest_y, value: 0 });
                     }
+                }
+            }
+            PlantAction::MagnetPullLadder { plant_col, plant_row, col, row } => {
+                let ladder = self
+                    .grid_items
+                    .iter()
+                    .find(|(_, g)| g.item_type == grid_item::GridItemType::Ladder && g.grid_x == col && g.grid_y == row)
+                    .map(|(id, _)| id);
+                if let Some(ladder) = ladder
+                    && let Some(item) = self.grid_items.get_mut(ladder)
+                {
+                    item.dead = true;
+                }
+                let (x, y) = (self.grid_to_pixel_x(col) as f32 + 40.0, self.grid_to_pixel_y(col, row) as f32);
+                let rng = sounds.rng();
+                let (dest_x, dest_y) = (rng.range_f32(-10.0, 10.0) + 10.0, rng.range_f32(-10.0, 10.0));
+                let magnet = self
+                    .plants
+                    .iter_mut()
+                    .find(|(_, p)| p.col == plant_col && p.row == plant_row && p.seed == SeedType::Magnetshroom && !p.dead);
+                if let Some((_, plant)) = magnet {
+                    plant.hold_magnet_item(plant::MagnetItem {
+                        image: "IMAGE_REANIM_ZOMBIE_LADDER_5".to_owned(),
+                        x,
+                        y,
+                        dest_x,
+                        dest_y,
+                        value: 0,
+                    });
                 }
             }
             PlantAction::ShowCoinBank => self.show_coin_bank(),

@@ -59,6 +59,8 @@ pub enum PlantAction {
     Cob { x: i32, y: i32, render_order: i32, target_x: i32, target_y: i32 },
     /// A magnet-shroom reaches for a zombie's metal.
     MagnetTake { col: i32, row: i32, zombie: sexy::data_array::Id<Zombie> },
+    /// A magnet-shroom pulls a ladder off the plant it leans on.
+    MagnetPullLadder { plant_col: i32, plant_row: i32, col: i32, row: i32 },
     /// The coin bank slides out.
     ShowCoinBank,
     /// A gold magnet pulls in the money lying about.
@@ -79,6 +81,8 @@ pub enum PlantAction {
     PotatoMine { x: i32, y: i32, row: i32 },
     /// A chomper swallows this zombie whole (`DieWithLoot`).
     EatZombie(sexy::data_array::Id<Zombie>),
+    /// A chomper bites something too big to eat (`TakeDamage`).
+    Bite { zombie: sexy::data_array::Id<Zombie>, damage: i32 },
     /// A particle effect at a spot on the board.
     Particle { x: i32, y: i32, render_order: i32, effect: ParticleEffect },
     /// A sound.
@@ -301,6 +305,14 @@ pub struct Plant {
     light: Option<ParticleSystemId>,
     /// Lit up under the shovel's cursor (`mHighlighted`).
     pub highlighted: bool,
+    /// `PlantDrawHeightOffset`'s row and stage offset for the spikeweeds.
+    spike_offset: f32,
+    /// Another gold magnet is about to suck (`IsAGoldMagnetAboutToSuck`).
+    pub another_magnet_about_to_suck: bool,
+    /// An upgrade for this plant is held over it, so it flashes.
+    pub upgrade_flash: bool,
+    /// The flashing tint that goes with `upgrade_flash`.
+    upgrade_tint: Option<[u8; 4]>,
     /// The potato mine's glow as a zombie nears (`mLightReanimID`).
     glow: Option<ReanimationId>,
     /// The squash's square, where it jumps from (`mStartRow` and its column).
@@ -356,7 +368,8 @@ pub fn pool_bob_offset(main_counter: i32, col: i32, row: i32) -> f32 {
 /// `PlantDrawHeightOffset`, without the flower pots' offset.
 pub fn plant_draw_height_offset(seed: SeedType) -> f32 {
     use SeedType::*;
-    // TODO: spikeweed's height depends on its row and the stage.
+    // The spikeweeds' row/stage offset is worked out when they're planted;
+    // their entries here are for the cursor preview.
     match seed {
         Flowerpot => 26.0,
         Lilypad => 25.0,
@@ -411,6 +424,10 @@ impl Plant {
             bob: 0.0,
             light: None,
             highlighted: false,
+            spike_offset: 0.0,
+            another_magnet_about_to_suck: false,
+            upgrade_flash: false,
+            upgrade_tint: None,
             glow: None,
             blink_countdown: 0,
             launch_rate: def.launch_rate,
@@ -582,6 +599,7 @@ impl Plant {
                 plant.blink_countdown = 1000 + rng.next_range(1000) as i32;
             }
             Spikerock => plant.health = 450,
+            Garlic => plant.health = 400,
             Imitater => {
                 let rate = rng.range_f32(25.0, 30.0);
                 if let Some(body) = plant.body.and_then(|b| effects.get_mut(b)) {
@@ -627,7 +645,6 @@ impl Plant {
                 plant.x += rng.next_range(10) as i32 - 5;
                 plant.y += rng.next_range(6) as i32 - 3;
             }
-            // TODO: the rest of PlantInitialize's per-plant setup as plants are ported.
             _ => {}
         }
         plant.max_health = plant.health;
@@ -649,8 +666,24 @@ impl Plant {
     }
 
     /// `PlantDrawHeightOffset` for this plant: potted plants sit 5 px higher.
+    /// The body's animation time (`mAnimTime`), for the gold magnets' turn-taking.
+    pub(super) fn body_anim_time(&self, effects: &EffectSystem) -> Option<f32> {
+        self.body.and_then(|b| effects.get(b)).map(|r| r.anim_time)
+    }
+
     fn height_offset(&self) -> f32 {
-        plant_draw_height_offset(self.seed) + if self.in_pot { 5.0 } else { 0.0 } + self.bob
+        let base = if matches!(self.seed, SeedType::Spikeweed | SeedType::Spikerock) {
+            // Its offset is worked out where it's planted (`Board::AddPlant`).
+            self.spike_offset
+        } else {
+            plant_draw_height_offset(self.seed)
+        };
+        base + if self.in_pot { 5.0 } else { 0.0 } + self.bob
+    }
+
+    /// Sets the spikeweed's height offset, which depends on the row and stage.
+    pub(super) fn set_spike_offset(&mut self, offset: f32) {
+        self.spike_offset = offset;
     }
 
     /// `Plant::Update`, while playing.
@@ -664,11 +697,16 @@ impl Plant {
         images: &mut Assets<Image>,
         row_y: &[i32; super::MAX_GRID_SIZE_Y],
         open_rows: &[bool; super::MAX_GRID_SIZE_Y],
+        ladders: &[(i32, i32)],
         main_counter: i32,
         rng: &mut MtRand,
     ) {
         // Floating plants bob while the board runs (`PlantDrawHeightOffset`).
         self.bob = if self.on_water { pool_bob_offset(main_counter, self.col, self.row) } else { 0.0 };
+        self.upgrade_tint = self.upgrade_flash.then(|| {
+            let gray = super::seed_bank::flashing_gray(main_counter, 90) as u8;
+            [gray, gray, gray, 255]
+        });
         if self.squished {
             self.disappear_countdown -= 1;
             if self.disappear_countdown < 0 {
@@ -686,7 +724,7 @@ impl Plant {
                 self.set_sleeping(false, effects, res, images, rng);
             }
         }
-        self.update_abilities(zombies, actions, effects, res, images, row_y, open_rows, rng);
+        self.update_abilities(zombies, actions, effects, res, images, row_y, open_rows, ladders, main_counter, rng);
         self.animate(actions, effects, res, images, rng);
         if self.health < 0 {
             self.die(effects);
@@ -1007,10 +1045,26 @@ impl Plant {
             }
             PlantState::ChomperBiting if self.state_countdown == 0 => {
                 actions.push(PlantAction::Foley(FoleyType::BigChomp));
-                // TODO: gargantuars and bosses are only hurt.
                 match self.find_chomper_target(zombies) {
-                    // Pole vaulters running or jumping are missed.
-                    Some(id) if zombies.get(id).is_some_and(Zombie::is_vaulting) => self.state = PlantState::ChomperBitingMissed,
+                    // Pole vaulters and bouncing pogos are missed.
+                    Some(id) if zombies.get(id).is_some_and(|z| z.is_vaulting() || is_bouncing_pogo(z)) => {
+                        self.state = PlantState::ChomperBitingMissed;
+                    }
+                    // Gargantuars and the boss are too big to swallow: it bites.
+                    Some(id)
+                        if zombies.get(id).is_some_and(|z| {
+                            matches!(
+                                z.zombie_type,
+                                crate::zombie::ZombieType::Gargantuar
+                                    | crate::zombie::ZombieType::RedeyeGargantuar
+                                    | crate::zombie::ZombieType::Boss
+                            )
+                        }) =>
+                    {
+                        actions.push(PlantAction::Foley(FoleyType::Splat));
+                        actions.push(PlantAction::Bite { zombie: id, damage: 40 });
+                        self.state = PlantState::ChomperBitingMissed;
+                    }
                     Some(id) => {
                         actions.push(PlantAction::EatZombie(id));
                         self.state = PlantState::ChomperBitingGotOne;
@@ -1154,6 +1208,12 @@ impl Plant {
         self.body
     }
 
+    /// How high it's drawn above its square (tests).
+    #[cfg(test)]
+    pub(crate) fn draw_offset_y(&self) -> f32 {
+        self.height_offset()
+    }
+
     /// How many frames the potato mine's glow cycles through (tests).
     #[cfg(test)]
     pub(crate) fn glow_frames(&self, effects: &EffectSystem) -> Option<usize> {
@@ -1199,6 +1259,8 @@ impl Plant {
         images: &mut Assets<Image>,
         row_y: &[i32; super::MAX_GRID_SIZE_Y],
         open_rows: &[bool; super::MAX_GRID_SIZE_Y],
+        ladders: &[(i32, i32)],
+        main_counter: i32,
         rng: &mut MtRand,
     ) {
         if self.dead || self.squished || self.is_asleep || self.on_bungee != OnBungee::No {
@@ -1245,7 +1307,7 @@ impl Plant {
             self.update_umbrella(effects);
         }
         if self.seed == SeedType::Cobcannon {
-            self.update_cob_cannon(actions, effects);
+            self.update_cob_cannon(actions, effects, main_counter);
         }
         if self.seed == SeedType::Cactus {
             self.update_cactus(zombies, actions, effects);
@@ -1254,7 +1316,7 @@ impl Plant {
             self.update_imitater(actions, effects);
         }
         if self.seed == SeedType::Magnetshroom {
-            self.update_magnet_shroom(zombies, actions, effects, rng);
+            self.update_magnet_shroom(zombies, actions, effects, ladders, rng);
         }
         if self.seed == SeedType::GoldMagnet {
             self.update_gold_magnet(actions, effects, rng);
@@ -1294,7 +1356,6 @@ impl Plant {
                 self.do_special(actions, effects);
             }
         }
-        // TODO: the other plants' abilities.
     }
 
     /// `Plant::UpdateSpikeweed` and `SpikeweedAttack`: the spikes come up
@@ -1357,7 +1418,14 @@ impl Plant {
 
     /// `Plant::UpdateMagnetShroom`: the held item drifts in; an idle magnet
     /// goes for the nearest zombie with metal on it, then needs 15 s to recharge.
-    fn update_magnet_shroom(&mut self, zombies: &DataArray<Zombie>, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem, rng: &mut MtRand) {
+    fn update_magnet_shroom(
+        &mut self,
+        zombies: &DataArray<Zombie>,
+        actions: &mut Vec<PlantAction>,
+        effects: &mut EffectSystem,
+        ladders: &[(i32, i32)],
+        rng: &mut MtRand,
+    ) {
         for item in &mut self.magnet_items {
             let (dx, dy) = (self.x as f32 + item.dest_x - item.x, self.y as f32 + item.dest_y - item.y);
             if dx.hypot(dy) > 20.0 {
@@ -1396,13 +1464,29 @@ impl Plant {
                         }
                     }
                 }
-                // TODO: ladders propped against plants are pulled too.
                 if let Some((_, zombie)) = closest {
                     self.state = PlantState::MagnetSucking;
                     self.state_countdown = 1500;
                     self.play_body_reanim(effects, "anim_shooting", LoopType::PlayOnceAndHold, 20, 12.0);
                     actions.push(PlantAction::Foley(FoleyType::Magnetshroom));
                     actions.push(PlantAction::MagnetTake { col: self.col, row: self.row, zombie });
+                    return;
+                }
+                // Otherwise it reaches for a ladder propped on a nearby plant.
+                let ladder = ladders
+                    .iter()
+                    .map(|&(col, row)| {
+                        let (dx, dy) = ((col - self.col).abs(), (row - self.row).abs());
+                        (dx.max(dy), dx.max(dy) as f32 + dy as f32 * 0.05, col, row)
+                    })
+                    .filter(|(chebyshev, _, _, _)| *chebyshev <= 2)
+                    .min_by(|a, b| a.1.total_cmp(&b.1));
+                if let Some((_, _, col, row)) = ladder {
+                    self.state = PlantState::MagnetSucking;
+                    self.state_countdown = 1500;
+                    self.play_body_reanim(effects, "anim_shooting", LoopType::PlayOnceAndHold, 20, 12.0);
+                    actions.push(PlantAction::Foley(FoleyType::Magnetshroom));
+                    actions.push(PlantAction::MagnetPullLadder { plant_col: self.col, plant_row: self.row, col, row });
                 }
             }
         }
@@ -1446,8 +1530,7 @@ impl Plant {
                 }
             }
             _ => {
-                // TODO: it waits while another gold magnet is about to suck (`IsAGoldMagnetAboutToSuck`).
-                if rng.next_range(50) == 0 && self.coin_available {
+                if !self.another_magnet_about_to_suck && rng.next_range(50) == 0 && self.coin_available {
                     actions.push(PlantAction::ShowCoinBank);
                     self.state = PlantState::MagnetSucking;
                     self.play_body_reanim(effects, "anim_attract", LoopType::PlayOnceAndHold, 20, 12.0);
@@ -1501,7 +1584,7 @@ impl Plant {
     }
 
     /// `Plant::UpdateCobCannon`.
-    fn update_cob_cannon(&mut self, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem) {
+    fn update_cob_cannon(&mut self, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem, main_counter: i32) {
         match self.state {
             PlantState::CobcannonArming if self.state_countdown == 0 => {
                 self.state = PlantState::CobcannonLoading;
@@ -1518,7 +1601,14 @@ impl Plant {
                     self.play_body_reanim(effects, "anim_idle", LoopType::Loop, 20, 12.0);
                 }
             }
-            // TODO: the cob flashes while it waits (`GetFlashingColor` on its track).
+            PlantState::CobcannonReady => {
+                // `UpdateCobCannon`: the loaded cob flashes.
+                let gray = super::seed_bank::flashing_gray(main_counter, 75) as u8;
+                if let Some(body) = self.body.and_then(|b| effects.get_mut(b)) {
+                    let track = body.find_track("CobCannon_cob");
+                    body.tracks[track].track_color = [gray, gray, gray, 255];
+                }
+            }
             PlantState::CobcannonFiring if self.body.and_then(|b| effects.get(b)).is_some_and(|b| b.should_trigger_timed_event(0.48)) => {
                 actions.push(PlantAction::Foley(FoleyType::CobLaunch));
             }
@@ -1945,7 +2035,7 @@ impl Plant {
         if self.launch_counter == 50 && self.seed == SeedType::Cattail {
             self.find_target_and_fire_weapon(zombies, Weapon::Primary, effects);
         }
-        if self.launch_counter == 25 && self.seed == SeedType::Repeater {
+        if self.launch_counter == 25 && matches!(self.seed, SeedType::Repeater | SeedType::Leftpeater) {
             self.find_target_and_fire(zombies, actions, effects, rng);
         }
         if self.launch_counter == 25 && self.seed == SeedType::Splitpea {
@@ -2272,7 +2362,6 @@ impl Plant {
             // Mushrooms shoot with their whole body.
             let rate = if self.seed == SeedType::Gloomshroom { 14.0 } else { 35.0 };
             self.play_body_reanim(effects, "anim_shooting", LoopType::PlayOnceAndHold, 20, rate);
-            // TODO: the other body shooters' timings (cactus 35, ...).
             self.shooting_counter = match self.seed {
                 SeedType::Fumeshroom => 50,
                 SeedType::Gloomshroom => 200,
@@ -2621,6 +2710,12 @@ impl Plant {
         if self.state == PlantState::GravebusterEating {
             offset_y += animate_curve_float(400, 0, self.state_countdown, 0.0, 30.0, TodCurve::Linear);
         }
+        // A plant being woken by a coffee bean squashes down and bounces back.
+        if self.wake_up_counter > 0 {
+            let factor = animate_curve_float(70, 0, self.wake_up_counter, 1.0, 0.8, TodCurve::EaseSinWave);
+            scale_y *= factor;
+            offset_y += 80.0 - 80.0 * factor;
+        }
         effects.update_reanimation(body);
         if self.seed == SeedType::Leftpeater {
             offset_x += 80.0 * scale_x;
@@ -2629,6 +2724,10 @@ impl Plant {
         if let Some(body) = effects.get_mut(body) {
             body.set_position(offset_x, offset_y);
             body.override_scale(scale_x, scale_y);
+            // UpdateReanimColor: an upgrade held over it makes it flash.
+            if let Some(tint) = self.upgrade_tint {
+                body.color_override = tint;
+            }
             // UpdateReanimColor: highlighted under the shovel, or a bitten
             // plant flashing.
             body.extra_additive = if self.highlighted {
@@ -2863,4 +2962,14 @@ impl Plant {
             g.draw_image_cel_center_scaled(shadow, x + dx, y + dy, 0, scale, scale);
         }
     }
+}
+
+/// `Zombie::IsBouncingPogo`: mid-bounce, so a chomper can't catch it.
+fn is_bouncing_pogo(z: &Zombie) -> bool {
+    matches!(
+        z.phase,
+        super::zombie::ZombiePhase::PogoBouncing
+            | super::zombie::ZombiePhase::PogoHighBounce
+            | super::zombie::ZombiePhase::PogoForwardBounce
+    )
 }

@@ -93,6 +93,14 @@ pub enum PlantingReason {
     NotOnCrater,
     /// An upgrade goes on top of its base plant.
     NeedsUpgrade,
+    /// A water plant belongs in the pool (`PLANTING_ONLY_IN_POOL`).
+    OnlyInPool,
+    /// A spikeweed needs bare ground (`PLANTING_NEEDS_GROUND`).
+    NeedsGround,
+    /// A potato mine can't go on a lily pad (`PLANTING_ONLY_ON_GROUND`).
+    OnlyOnGround,
+    /// A coffee bean needs an asleep mushroom (`PLANTING_NEEDS_SLEEPING`).
+    NeedsSleeping,
 }
 
 /// Whether `rect` contains `p`.
@@ -267,13 +275,26 @@ impl Board {
         // Coffee beans only wake a mushroom that is asleep on the square.
         if seed == SeedType::InstantCoffee {
             let asleep = self.normal_plant_at(grid_x, grid_y).is_some_and(|p| p.is_asleep() && !p.is_waking());
-            return if asleep { PlantingReason::Ok } else { PlantingReason::NotHere };
+            return if asleep { PlantingReason::Ok } else { PlantingReason::NeedsSleeping };
         }
         // Behaviour per ruslan831 decomp, Board::CanPlantAt: water plants only
         // go on water, and everything else on water needs a lily pad under it.
         if seed == SeedType::Lilypad {
-            let free = on_water && !self.has_lily_pad_at(grid_x, grid_y) && self.normal_plant_at(grid_x, grid_y).is_none();
+            if !on_water {
+                return PlantingReason::OnlyInPool;
+            }
+            let free = !self.has_lily_pad_at(grid_x, grid_y) && self.normal_plant_at(grid_x, grid_y).is_none();
             return if free { PlantingReason::Ok } else { PlantingReason::NotHere };
+        }
+        // The spikeweeds need bare ground (not the pool, the roof or a lily pad).
+        if matches!(seed, SeedType::Spikeweed | SeedType::Spikerock)
+            && (on_water || self.stage_has_roof() || self.has_lily_pad_at(grid_x, grid_y))
+        {
+            return PlantingReason::NeedsGround;
+        }
+        // A potato mine sinks through a lily pad.
+        if seed == SeedType::Potatomine && on_water && self.has_lily_pad_at(grid_x, grid_y) {
+            return PlantingReason::OnlyOnGround;
         }
         // Behaviour per ruslan831 decomp, Board::CanPlantAt/Plant::IsUpgradableTo:
         // an upgrade can go on its base plant.
@@ -296,7 +317,7 @@ impl Board {
             return PlantingReason::Ok;
         }
         if seed.is_aquatic() {
-            return PlantingReason::NotHere;
+            return PlantingReason::OnlyInPool;
         }
         // Behaviour per ruslan831 decomp, Board::CanPlantAt: a flower pot needs a
         // bare square, and on the roof nothing else goes without one.
@@ -306,7 +327,7 @@ impl Board {
         }
         if self.stage_has_roof() {
             if matches!(seed, SeedType::Spikeweed | SeedType::Spikerock) {
-                return PlantingReason::NotHere;
+                return PlantingReason::NeedsGround;
             }
             if !self.has_flower_pot_at(grid_x, grid_y) {
                 return PlantingReason::NeedsPot;
@@ -328,8 +349,7 @@ impl Board {
     }
 
     /// `Board::PlantingRequirementsMet`: an upgrade's packet can only be
-    /// used while its base plant is on the lawn. TODO: the cob cannon's
-    /// two-square spot and the cattail's empty lily pad.
+    /// used while its base plant is on the lawn.
     pub fn planting_requirements_met(&self, seed: SeedType) -> bool {
         if seed == SeedType::Cobcannon {
             return self.has_valid_cob_cannon_spot();
@@ -590,7 +610,6 @@ impl Board {
                 coin.start_fade();
             }
             self.pending_fade_out = true;
-            // TODO: the starburst and pickup particles around the packet.
             return;
         }
         // PlayCollectSound.
@@ -706,8 +725,13 @@ impl Board {
             PlantingReason::Ok => {}
             // Keep holding the plant; some reasons explain themselves.
             PlantingReason::NotOnWater => {
-                let advice = Some(AdviceType::PlantNotOnWater);
-                self.display_advice(res, "[ADVICE_PLANT_NOT_ON_WATER]", MessageStyle::HintFast, advice);
+                if seed == SeedType::Potatomine {
+                    let advice = Some(AdviceType::PotatoMineOnLily);
+                    self.display_advice(res, "[ADVICE_POTATO_MINE_ON_LILY]", MessageStyle::HintFast, advice);
+                } else {
+                    let advice = Some(AdviceType::PlantNotOnWater);
+                    self.display_advice(res, "[ADVICE_PLANT_NOT_ON_WATER]", MessageStyle::HintFast, advice);
+                }
                 return;
             }
             PlantingReason::NeedsPot => {
@@ -731,8 +755,37 @@ impl Board {
                 return;
             }
             PlantingReason::NotOnCrater => {
-                let advice = Some(AdviceType::PlantNotOnCrater);
-                self.display_advice(res, "[ADVICE_PLANT_NOT_ON_CRATER]", MessageStyle::HintFast, advice);
+                if self.grid_square_type[grid_x as usize][grid_y as usize] == GridSquareType::Pool {
+                    let advice = Some(AdviceType::CantPlantThere);
+                    self.display_advice(res, "[ADVICE_CANT_PLANT_THERE]", MessageStyle::HintFast, advice);
+                } else {
+                    let advice = Some(AdviceType::PlantNotOnCrater);
+                    self.display_advice(res, "[ADVICE_PLANT_NOT_ON_CRATER]", MessageStyle::HintFast, advice);
+                }
+                return;
+            }
+            PlantingReason::OnlyInPool => {
+                let (key, advice) = match seed {
+                    SeedType::Lilypad => ("[ADVICE_LILYPAD_ON_WATER]", AdviceType::PlantLilypadOnWater),
+                    SeedType::Tanglekelp => ("[ADVICE_TANGLEKELP_ON_WATER]", AdviceType::PlantTanglekelpOnWater),
+                    _ => ("[ADVICE_SEASHROOM_ON_WATER]", AdviceType::PlantSeashroomOnWater),
+                };
+                self.display_advice(res, key, MessageStyle::HintFast, Some(advice));
+                return;
+            }
+            PlantingReason::OnlyOnGround => {
+                let advice = Some(AdviceType::PotatoMineOnLily);
+                self.display_advice(res, "[ADVICE_POTATO_MINE_ON_LILY]", MessageStyle::HintFast, advice);
+                return;
+            }
+            PlantingReason::NeedsGround => {
+                let advice = Some(AdviceType::PlantingNeedsGround);
+                self.display_advice(res, "[ADVICE_PLANTING_NEEDS_GROUND]", MessageStyle::HintFast, advice);
+                return;
+            }
+            PlantingReason::NeedsSleeping => {
+                let advice = Some(AdviceType::PlantingNeedSleeping);
+                self.display_advice(res, "[ADVICE_PLANTING_NEED_SLEEPING]", MessageStyle::HintFast, advice);
                 return;
             }
             PlantingReason::NeedsUpgrade => {
@@ -752,6 +805,12 @@ impl Board {
             AdviceType::PlantNeedPot,
             AdviceType::PlantNotPassedLine,
             AdviceType::PlantGravebustersOnGraves,
+            AdviceType::PlantLilypadOnWater,
+            AdviceType::PlantTanglekelpOnWater,
+            AdviceType::PlantSeashroomOnWater,
+            AdviceType::PotatoMineOnLily,
+            AdviceType::PlantingNeedsGround,
+            AdviceType::PlantingNeedSleeping,
             AdviceType::PlantOnlyOnBase(seed),
         ] {
             self.clear_advice(Some(advice));
@@ -885,6 +944,26 @@ impl Board {
         // (`Board::DoPlantingEffects`).
         let on_water = self.grid_square_type[grid_x as usize][grid_y as usize] == GridSquareType::Pool;
         plant.on_water = on_water;
+        // `PlantDrawHeightOffset`: the spikeweeds sit lower on the bottom row.
+        if matches!(seed, SeedType::Spikeweed | SeedType::Spikerock) {
+            let six_rows = self.stage_has_6_rows();
+            let bottom_row = if six_rows { 5 } else { 4 };
+            let mut offset = if seed == SeedType::Spikerock { 6.0 } else { 0.0 };
+            if plant.in_pot {
+                offset += 5.0;
+            } else if self.stage_has_roof() {
+                offset += 15.0;
+            } else if on_water {
+                // Nothing extra over the water.
+            } else if grid_y == bottom_row && grid_x >= 7 && six_rows {
+                offset += 1.0;
+            } else if grid_y == bottom_row && grid_x < 7 {
+                offset += 12.0;
+            } else {
+                offset += 15.0;
+            }
+            plant.set_spike_offset(offset);
+        }
         let id = self.plants.alloc(plant);
         if seed == SeedType::Cobcannon
             && let Some(plant) = self.plants.get_mut(id)

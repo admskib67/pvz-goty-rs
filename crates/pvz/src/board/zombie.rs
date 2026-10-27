@@ -690,6 +690,8 @@ pub struct Zombie {
     /// The zombie died and the board should see whether this was the one
     /// that ends the level (`DropLoot` → `TrySpawnLevelAward`).
     pub loot_pending: bool,
+    /// A mind-controlled gargantuar's smash lands on this zombie this tick.
+    pub smash_zombie: Option<(Id<Zombie>, i32)>,
     pub dead: bool,
     pub render_order: i32,
     /// Particles that ride along with the zombie, and where (`mAttachmentID`).
@@ -870,6 +872,7 @@ impl Zombie {
             mowered_reanim: None,
             dropped_loot: false,
             loot_pending: false,
+            smash_zombie: None,
             dead: false,
             render_order: 0,
             attached: Vec::new(),
@@ -3714,6 +3717,13 @@ impl Zombie {
         let (smash, throw, done) = (body.should_trigger_timed_event(0.64), body.should_trigger_timed_event(0.74), body.loop_count > 0);
         if self.phase == ZombiePhase::GargantuarSmashing {
             if smash {
+                // A hypnotised gargantuar brings the pole down on the zombies
+                // instead (`UpdateZombieGargantuar` with the fixed-bug branch).
+                if self.mind_controlled {
+                    let damage = if self.zombie_type == ZombieType::RedeyeGargantuar { 1000 } else { 500 };
+                    self.smash_zombie = self.zombie_target.map(|target| (target, damage));
+                    return;
+                }
                 if let Some(id) = self.find_plant_target(plants)
                     && let Some((col, row, seed)) = plants.get(id).map(|p| (p.col, p.row, p.seed))
                 {
@@ -3785,7 +3795,7 @@ impl Zombie {
             self.play_zombie_reanim(fx.effects, "anim_throw", LoopType::PlayOnceAndHold, 20, 24.0);
             return;
         }
-        if self.find_plant_target(plants).is_some() {
+        if self.zombie_target.is_some() || self.find_plant_target(plants).is_some() {
             self.phase = ZombiePhase::GargantuarSmashing;
             fx.sounds.play_foley(FoleyType::LowGroan);
             self.play_zombie_reanim(fx.effects, "anim_smash", LoopType::PlayOnceAndHold, 20, 16.0);
@@ -5606,16 +5616,21 @@ impl Zombie {
         // DrawIceTrap: the zombie stands in a block of ice.
         let ice_y = self.draw_pos().body_y + 92.0;
         // Behaviour per ruslan831 decomp, Zombie::DrawIceTrap: the block
-        // sits differently on a pogo stick or a digger.
-        let (ice_x, ice_y) = match self.zombie_type {
-            ZombieType::Pogo => (36.0, ice_y + 20.0),
-            ZombieType::Digger => (19.0, ice_y),
-            _ => (46.0, ice_y),
+        // sits differently on some zombies, and bigger on the gargantuars.
+        let (ice_x, ice_y, ice_scale) = match self.zombie_type {
+            ZombieType::Pogo => (36.0, ice_y + 20.0, 1.0),
+            ZombieType::Digger => (19.0, ice_y, 1.0),
+            ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => (26.0, ice_y - 7.0, 1.6),
+            ZombieType::Bungee => (1.0, ice_y - 23.0, 1.2),
+            ZombieType::Catapult => (78.0, ice_y, 1.0),
+            ZombieType::Balloon => (37.0, ice_y + 27.0, 1.0),
+            _ => (46.0, ice_y, 1.0),
         };
-        if self.ice_trap_counter > 0
+        let frozen = self.ice_trap_counter > 0 && !self.in_pool && !self.is_boss();
+        if frozen
             && let Some(back) = res.image("IMAGE_ICETRAP2")
         {
-            g.draw_image(back, ice_x, ice_y);
+            g.draw_image_scaled(back, ice_x, ice_y, ice_scale, ice_scale);
         }
         let spotlight = self.dancer_spotlight();
         if let Some(color) = spotlight
@@ -5672,10 +5687,10 @@ impl Zombie {
             g.translate(-recoil, 0.0);
             draw_render_group(g, body, RENDER_GROUP_OVER_SHIELD, res);
         }
-        if self.ice_trap_counter > 0
+        if frozen
             && let Some(front) = res.image("IMAGE_ICETRAP")
         {
-            g.draw_image(front, ice_x, ice_y);
+            g.draw_image_scaled(front, ice_x, ice_y, ice_scale, ice_scale);
         }
         if let Some((x, y, scale)) = self.butter_position(effects, res)
             && let Some(butter) = res.image("IMAGE_REANIM_CORNPULT_BUTTER_SPLAT")

@@ -579,7 +579,7 @@ fn water_plants_go_on_water_and_the_rest_need_a_lily_pad() {
     // On the grass it is the other way round.
     assert_eq!(t.board.can_plant_at(3, 1, SeedType::Peashooter), PlantingReason::Ok);
     for seed in [SeedType::Lilypad, SeedType::Tanglekelp, SeedType::Seashroom] {
-        assert_eq!(t.board.can_plant_at(3, 1, seed), PlantingReason::NotHere, "{seed:?} needs water");
+        assert_eq!(t.board.can_plant_at(3, 1, seed), PlantingReason::OnlyInPool, "{seed:?} needs water");
     }
 
     t.plant(SeedType::Lilypad, 3, 2);
@@ -634,17 +634,25 @@ fn a_coffee_bean_wakes_a_sleeping_mushroom() {
     let mut t = test_board!("1-6");
     let shroom = t.plant(SeedType::Puffshroom, 2, 2);
     assert!(t.plant_ref(shroom).unwrap().is_asleep());
-    assert_eq!(t.board.can_plant_at(1, 2, SeedType::InstantCoffee), PlantingReason::NotHere, "nothing to wake");
+    assert_eq!(t.board.can_plant_at(1, 2, SeedType::InstantCoffee), PlantingReason::NeedsSleeping, "nothing to wake");
     assert_eq!(t.board.can_plant_at(2, 2, SeedType::InstantCoffee), PlantingReason::Ok);
     t.with(|board, effects, res, images, sounds| board.add_plant(2, 2, SeedType::InstantCoffee, effects, res, images, sounds));
     t.ticks(101);
-    assert_eq!(t.board.can_plant_at(2, 2, SeedType::InstantCoffee), PlantingReason::NotHere, "no second bean while it's waking");
+    assert_eq!(
+        t.board.can_plant_at(2, 2, SeedType::InstantCoffee),
+        PlantingReason::NeedsSleeping,
+        "no second bean while it's waking"
+    );
     assert!(t.plant_ref(shroom).unwrap().is_asleep(), "the bean takes a moment to crumble");
     t.ticks(101);
     assert!(!t.plant_ref(shroom).unwrap().is_asleep(), "then it wakes up");
     t.ticks(60);
     assert_eq!(t.board.plants.iter().filter(|(_, p)| !p.dead && p.seed == SeedType::InstantCoffee).count(), 0, "and the bean's gone");
-    assert_eq!(t.board.can_plant_at(2, 2, SeedType::InstantCoffee), PlantingReason::NotHere, "needing no second bean");
+    assert_eq!(
+        t.board.can_plant_at(2, 2, SeedType::InstantCoffee),
+        PlantingReason::NeedsSleeping,
+        "needing no second bean"
+    );
     let zombie = t.zombie(ZombieType::Normal, 2, 450.0);
     assert!(t.run_until(500, |b| b.zombies.get(zombie).is_none_or(|z| z.body_health < 270)), "so it shoots in the day");
 }
@@ -1136,4 +1144,38 @@ fn a_giant_wall_nut_flattens_everything_in_its_lane_and_keeps_going() {
     if let Some(nut) = t.plant_ref(giant) {
         assert_eq!(nut.row, 2, "it never leaves its lane");
     }
+}
+
+#[test]
+fn a_chomper_bites_a_gargantuar_instead_of_eating_it() {
+    let mut t = test_board!("1-6");
+    let chomper = t.plant(SeedType::Chomper, 3, 2);
+    let gargantuar = t.zombie(ZombieType::Gargantuar, 2, 430.0);
+    let full = t.zombie_ref(gargantuar).unwrap().body_health;
+    assert!(t.run_until(200, |b| b.zombies.get(gargantuar).is_some_and(|z| z.body_health < full)), "it takes a bite");
+    assert!(t.zombie_ref(gargantuar).is_some_and(|z| !z.is_dead_or_dying()), "but stays standing");
+    assert!(t.plant_ref(chomper).is_some(), "the chomper wasn't used up");
+}
+
+#[test]
+fn a_magnet_shroom_pulls_a_ladder_off_the_plants() {
+    use super::super::grid_item::GridItemType;
+    let mut t = test_board!("2-1");
+    t.board.add_a_ladder(2, 2);
+    t.plant(SeedType::Magnetshroom, 1, 2);
+    assert!(
+        t.run_until(20, |b| !b.grid_items.iter().any(|(_, g)| g.item_type == GridItemType::Ladder)),
+        "the magnet pulls the ladder in"
+    );
+}
+
+#[test]
+fn a_spikeweed_sits_lower_on_the_bottom_row() {
+    let mut t = test_board!("1-1");
+    let top = t.plant(SeedType::Spikeweed, 3, 0);
+    let bottom = t.plant(SeedType::Spikeweed, 3, 4);
+    let top_offset = t.plant_ref(top).unwrap().draw_offset_y();
+    let bottom_offset = t.plant_ref(bottom).unwrap().draw_offset_y();
+    assert!(bottom_offset < top_offset, "the bottom row's sits lower ({bottom_offset} vs {top_offset})");
+    assert_eq!(top_offset - bottom_offset, 3.0, "12 px against 15 px");
 }

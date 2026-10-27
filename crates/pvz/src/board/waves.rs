@@ -562,6 +562,16 @@ impl Board {
     /// hypnotized zombies walking off the lawn (`CheckForBoardEdge`).
     pub(super) fn update_hypnotized_zombies(&mut self, fx: &mut Fx) {
         let env = self.zombie_env();
+        // A hypnotised gargantuar's smash lands on the zombie in front of it.
+        let smashed: Vec<_> = self.zombies.iter().filter_map(|(_, z)| z.smash_zombie).collect();
+        for (_, z) in self.zombies.iter_mut() {
+            z.smash_zombie = None;
+        }
+        for (id, damage) in smashed {
+            if let Some(z) = self.zombies.get_mut(id) {
+                z.take_damage(damage, 0, &env, fx);
+            }
+        }
         let ids: Vec<_> = self.zombies.iter().map(|(id, _)| id).collect();
         for id in ids {
             let Some(zombie) = self.zombies.get_mut(id) else { continue };
