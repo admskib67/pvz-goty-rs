@@ -41,11 +41,10 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 ### Plants
 
 ### Zombies
-- `anim_dance`: the original's typed cheat-code dance mode (`mDanceMode`), not a game mode; the cheat isn't ported.
 - Rising out of pool/roof graves: graves only stand on grass or high ground, so adventure content never grows one on water; the decomp's pool branch is unused here.
 
 ### Menus and screens
-- Store: bonus mower and chocolate pages.
+- Store: bonus mower and chocolate pages (not present in the decomp's page table).
 - Widgets: vertical sliders (no screen uses them), clipboard and password characters in `EditWidget` (no OS clipboard here; nothing asks for a password).
 
 ### Engine
@@ -53,7 +52,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 ## Suggested order
 
 1. Platform parity: Windows visual/audio pass, then Linux/Wayland.
-2. Optional cleanup: dance cheat, bonus mower/chocolate store pages, stale TODO/doc pruning.
+2. Optional/cleanup phases: `docs/superpowers/plans/2026-10-27-optional-cleanup-phases.md` (dance cheat, potted-plant icon, widgets, stale-TODO audit, no-action decisions).
 
 ## Code TODO index
 

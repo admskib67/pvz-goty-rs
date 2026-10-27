@@ -22,7 +22,7 @@
 //! `GetDancerPhase`, `ZombieNotWalking`, `IsMovingAtChilledSpeed`,
 //! `DrawDancerReanim`) and `SetupReanimForLostArm`.
 //!
-//! Not yet: the dance's `anim_dance` loop, the loot a zombie drops by value,
+//! Not yet: the loot a zombie drops by value,
 //! and rising from the pool's and roof's graves.
 
 use bevy::prelude::*;
@@ -365,6 +365,8 @@ pub struct ZombieEnv {
     pub ladders: LadderGrid,
     /// The level intro is playing (the boss stamps in while it does).
     pub scene_intro: bool,
+    /// `Board::mDanceMode`: normal/cone/pail zombies use `anim_dance`.
+    pub dance_mode: bool,
     /// Which rows zombies can walk down (`RowCanHaveZombieType`).
     pub open_rows: [bool; super::MAX_GRID_SIZE_Y],
     /// `BossAreBungeesDone`: the bungees the boss dropped have come and gone.
@@ -390,6 +392,7 @@ impl ZombieEnv {
             ice_min_x: [super::BOARD_ICE_START; super::MAX_GRID_SIZE_Y],
             ladders: [[false; super::MAX_GRID_SIZE_Y]; super::MAX_GRID_SIZE_X],
             scene_intro: false,
+            dance_mode: false,
             open_rows: [true; super::MAX_GRID_SIZE_Y],
             boss_bungees_done: false,
             final_boss: false,
@@ -1780,7 +1783,24 @@ impl Zombie {
     }
 
     /// `Zombie::StartWalkAnim`.
-    fn start_walk_anim(&mut self, blend: i32, _env: &ZombieEnv, fx: &mut Fx) {
+    /// `Zombie::EnableDance`: re-play the walk to pick up `anim_dance` when
+    /// the typed cheat toggles it.
+    pub(super) fn set_dance_mode(&mut self, env: &ZombieEnv, fx: &mut Fx) {
+        if self.zombie_not_walking() || self.is_dead_or_dying() {
+            return;
+        }
+        if matches!(self.zombie_type, ZombieType::Normal | ZombieType::TrafficCone | ZombieType::Pail) {
+            self.start_walk_anim(0, env, fx);
+        }
+    }
+
+    /// Test helper: whether the body is playing `track`.
+    #[cfg(test)]
+    pub fn body_playing(&self, effects: &EffectSystem, track: &str) -> bool {
+        self.body.and_then(|id| effects.get(id)).is_some_and(|r| r.is_anim_playing(track))
+    }
+
+    fn start_walk_anim(&mut self, blend: i32, env: &ZombieEnv, fx: &mut Fx) {
         let Some(body) = self.body.and_then(|b| fx.effects.get(b)) else { return };
         let has_walk2 = body.definition.find_track("anim_walk2").is_some();
         let has_walk = body.definition.find_track("anim_walk").is_some();
@@ -1798,7 +1818,10 @@ impl Zombie {
             self.play_zombie_reanim(fx.effects, "anim_swim", LoopType::Loop, blend, 0.0);
             return;
         }
-        // TODO: the dance mode's "anim_dance".
+        if matches!(self.zombie_type, ZombieType::Normal | ZombieType::TrafficCone | ZombieType::Pail) && env.dance_mode {
+            self.play_zombie_reanim(fx.effects, "anim_dance", LoopType::Loop, blend, 0.0);
+            return;
+        }
         let mut variant = fx.sounds.rng().next_range(2);
         if self.zombie_type == ZombieType::Flag || self.zombie_type == ZombieType::PeaHead {
             variant = 0;

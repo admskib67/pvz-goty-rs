@@ -560,3 +560,27 @@ fn the_pool_levels_run_their_waves_without_incident() {
         }
     }
 }
+
+
+#[test]
+fn typing_dance_toggles_the_dance_animation() {
+    let mut t = test_board!("2-1");
+    let normal = t.zombie(ZombieType::Normal, 2, 600.0);
+    let cone = t.zombie(ZombieType::TrafficCone, 3, 630.0);
+    t.ticks(5);
+    t.with(|board, effects, res, images, sounds| {
+        for letter in "dance".chars() {
+            board.type_cheat_letter(letter, effects, res, images, sounds);
+        }
+    });
+    assert!(t.board.dance_mode(), "the word toggles dance mode");
+    assert!(t.zombie_ref(normal).is_some_and(|z| z.body_playing(&t.effects, "anim_dance")));
+    assert!(t.zombie_ref(cone).is_some_and(|z| z.body_playing(&t.effects, "anim_dance")));
+    t.with(|board, effects, res, images, sounds| {
+        for letter in "dance".chars() {
+            board.type_cheat_letter(letter, effects, res, images, sounds);
+        }
+    });
+    assert!(!t.board.dance_mode(), "the same word turns it off");
+    assert!(t.zombie_ref(normal).is_some_and(|z| !z.body_playing(&t.effects, "anim_dance")));
+}

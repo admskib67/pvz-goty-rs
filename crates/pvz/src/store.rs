@@ -666,6 +666,13 @@ fn item_rect(spot: usize) -> Rect {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn preload_potted_plant(resources: &mut GameResources, images: &mut Assets<Image>) {
+    for seed in [SeedType::Flowerpot, SeedType::Marigold] {
+        let _ = resources.reanim_definition(seed.definition().reanim.file(), images);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn start_store(
     mut commands: Commands,
     mut resources: ResMut<GameResources>,
@@ -686,6 +693,7 @@ fn start_store(
     if let Err(e) = resources.load_group_now("DelayLoad_Store", &mut images) {
         error!("{e}");
     }
+    preload_potted_plant(&mut resources, &mut images);
     let mut store = StoreScreen::new(&resources, player);
     if let Some(return_to) = return_to.0 {
         store.page = if matches!(return_to, AppState::ZenGarden) { StorePage::Zen1 } else { store.page };
@@ -724,6 +732,7 @@ pub fn open_store_over_board(
     if let Err(e) = resources.load_group_now("DelayLoad_Store", images) {
         error!("{e}");
     }
+    preload_potted_plant(resources, images);
     let mut store = StoreScreen::new(resources, player);
     store.back.label = resources.translate("[STORE_BACK_TO_GAME]");
     store.dave.enter(effects, resources, images, sounds.rng());
@@ -974,9 +983,8 @@ fn draw_item_icon(g: &mut Graphics, res: &GameResources, player: &PlayerInfo, sp
         Phonograph => image(g, "IMAGE_PHONOGRAPH", -12, 3),
         GardeningGlove => image(g, "IMAGE_ZEN_GARDENGLOVE", -12, 3),
         WheelBarrow => image(g, "IMAGE_ZEN_WHEELBARROW", -12, 3),
-        // TODO: DrawPottedPlantIcon; a marigold packet stands in.
         PottedMarigold1 | PottedMarigold2 | PottedMarigold3 => {
-            draw_seed_packet_free(g, res, x as f32, y as f32, SeedType::Marigold)
+            crate::zen_garden::draw_potted_plant_icon(g, res, x as f32 - 6.0, y as f32 + 4.0)
         }
         _ => {
             if let Some(seed) = item.seed() {

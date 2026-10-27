@@ -519,6 +519,10 @@ pub struct Board {
     pub next_survival_stage_counter: i32,
     /// `LawnApp::CanShowStore`, for the seed chooser's Shop button.
     pub can_show_store: bool,
+    /// `mDanceMode`: the typed "dance" cheat.
+    dance_mode: bool,
+    /// Letters typed since the last cheat matched.
+    cheat_buffer: String,
     /// Between-stage seed repick (`CutScene::IsSurvivalRepick`): the chooser
     /// is open and the next stage's waves wait for it.
     pub survival_repick: bool,
@@ -787,6 +791,8 @@ impl Board {
             survival_stage: 0,
             next_survival_stage_counter: 0,
             can_show_store: player.is_some_and(PlayerInfo::can_show_store),
+            dance_mode: false,
+            cheat_buffer: String::new(),
             survival_repick: false,
             scary_mallet: None,
             puzzle_award_pending: false,
@@ -2780,6 +2786,55 @@ fn update_mouse_icon(
     }
 }
 
+/// Maps a letter key to the character `TypingCheck` sees.
+fn typed_letter(key: KeyCode) -> Option<char> {
+    use KeyCode::*;
+    Some(match key {
+        KeyA => 'a', KeyB => 'b', KeyC => 'c', KeyD => 'd', KeyE => 'e', KeyF => 'f',
+        KeyG => 'g', KeyH => 'h', KeyI => 'i', KeyJ => 'j', KeyK => 'k', KeyL => 'l',
+        KeyM => 'm', KeyN => 'n', KeyO => 'o', KeyP => 'p', KeyQ => 'q', KeyR => 'r',
+        KeyS => 's', KeyT => 't', KeyU => 'u', KeyV => 'v', KeyW => 'w', KeyX => 'x',
+        KeyY => 'y', KeyZ => 'z',
+        _ => return None,
+    })
+}
+
+impl Board {
+    /// Test helper for the typed dance cheat.
+    #[cfg(test)]
+    pub fn dance_mode(&self) -> bool {
+        self.dance_mode
+    }
+
+    /// `Board::KeyChar`'s typed cheat buffer. "dance" toggles
+    /// `Board::SetDanceMode`.
+    pub(super) fn type_cheat_letter(
+        &mut self,
+        letter: char,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        sounds: &mut Sounds,
+    ) {
+        self.cheat_buffer.push(letter);
+        if self.cheat_buffer.len() > 16 {
+            let excess = self.cheat_buffer.len() - 16;
+            self.cheat_buffer.drain(..excess);
+        }
+        if !self.cheat_buffer.ends_with("dance") {
+            return;
+        }
+        self.cheat_buffer.clear();
+        self.dance_mode = !self.dance_mode;
+        sounds.play_foley(FoleyType::Dancer);
+        let env = self.zombie_env();
+        let mut fx = Fx { effects, res, images, sounds };
+        for (_, zombie) in self.zombies.iter_mut() {
+            zombie.set_dance_mode(&env, &mut fx);
+        }
+    }
+}
+
 /// Mouse handling: `Board::MouseDown`/`MouseUp` and the menu button
 /// (`GameButton::Update`).
 #[allow(clippy::too_many_arguments)]
@@ -2806,6 +2861,16 @@ fn board_input(
     // closed a dialog).
     if keys.just_pressed(KeyCode::Escape) && !dialogs.took_input() && board.can_interact_with_board_buttons() {
         open_options(board, &mut dialogs, &resources, &settings);
+    }
+    // Typed cheats (`Board::KeyChar`): the dance word toggles the animation.
+    if !dialogs.is_modal()
+        && board.scene == GameScene::Playing
+    {
+        for key in keys.get_just_pressed().copied() {
+            if let Some(letter) = typed_letter(key) {
+                board.type_cheat_letter(letter, &mut effects, &mut resources, &mut images, &mut sounds);
+            }
+        }
     }
     // Space and Enter move Crazy Dave's talk along, like a click.
     if !dialogs.is_modal()

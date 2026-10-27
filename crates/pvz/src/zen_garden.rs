@@ -248,6 +248,25 @@ fn age_scale(age: i32) -> f32 {
     }
 }
 
+/// `ZenGarden::DrawPottedPlantIcon`: a pot with a full marigold, for the
+/// store's potted-plant item.
+pub(crate) fn draw_potted_plant_icon(
+    g: &mut Graphics,
+    res: &GameResources,
+    x: f32,
+    y: f32,
+) {
+    let draw = |g: &mut Graphics, reanim_type: crate::reanim::ReanimationType, x: f32, y: f32, track: &str| {
+        let Some(definition) = res.loaded_reanim_definition(reanim_type.file()) else { return };
+        let mut reanim = crate::reanim::Reanimation::new(x, y, definition);
+        reanim.override_scale(0.7, 0.7);
+        reanim.set_frames_for_layer(track);
+        crate::reanim::draw_reanimation(g, &reanim, res);
+    };
+    draw(g, SeedType::Flowerpot.definition().reanim, x, y, "anim_zengarden");
+    draw(g, SeedType::Marigold.definition().reanim, x, y + 20.0, "anim_idle");
+}
+
 fn make_plant(seed: SeedType, garden: GardenKind, col: i32, row: i32) -> [u8; 88] {
     let mut data = [0u8; 88];
     set_i32(&mut data, OFF_SEED, seed as i32);

@@ -749,6 +749,7 @@ impl Board {
             ice_min_x: self.ice_min_x,
             ladders: self.ladder_grid(),
             scene_intro: self.scene == GameScene::LevelIntro,
+            dance_mode: self.dance_mode,
             open_rows: std::array::from_fn(|row| self.row_can_have_zombie_type(row as i32, ZombieType::Normal)),
             boss_bungees_done: self.boss_bungees_done(),
             final_boss: self.is_final_boss_level(),
