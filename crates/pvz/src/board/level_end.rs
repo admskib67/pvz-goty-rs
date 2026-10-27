@@ -299,7 +299,7 @@ impl Board {
 
     /// A won survival run is over: the board says so, but the player's
     /// adventure level doesn't move.
-    pub(super) fn finish_survival(&mut self) {
+    pub(super) fn finish_challenge(&mut self) {
         self.level_complete = false;
     }
 

@@ -45,6 +45,8 @@ fn mode_index(mode: GameMode) -> i32 {
         // survival stages, the five hard ones, the endless ones.
         GameMode::Adventure => 0,
         GameMode::Survival { lawn, difficulty } => 1 + difficulty.index() * 5 + lawn.index(),
+        // `ConstEnums.h`: the challenge modes follow the 15 survival ones.
+        GameMode::MiniGame(game) => 16 + game.index() as i32,
         GameMode::Intro => 81,
     }
 }

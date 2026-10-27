@@ -163,18 +163,23 @@ impl Board {
             self.init_survival_waves(rng);
             return;
         }
+        if self.is_minigame() {
+            self.init_minigame_waves(rng);
+            return;
+        }
         self.waves = WaveState::default();
         for i in 0..NUM_ZOMBIE_TYPES {
             self.waves.zombie_allowed[i] = can_spawn_on_level(ZombieType::from_index(i), self.level);
         }
         if self.is_whack_a_zombie_level() {
-            // Challenge::InitZombieWaves: eight waves out of the graves.
+            // Challenge::InitZombieWaves: adventure's whack-a-zombie has
+            // eight waves out of the graves; the mini-game has twelve.
             self.waves.zombie_allowed = [false; NUM_ZOMBIE_TYPES];
             for ty in [ZombieType::Normal, ZombieType::TrafficCone, ZombieType::Pail] {
                 self.waves.zombie_allowed[ty as usize] = true;
             }
-            self.waves.num_waves = 8;
-            self.waves.zombies_in_wave = vec![Vec::new(); 8];
+            self.waves.num_waves = self.minigame().map_or(8, super::MiniGame::num_waves);
+            self.waves.zombies_in_wave = vec![Vec::new(); self.waves.num_waves as usize];
             return;
         }
         self.pick_zombie_waves(rng);
@@ -205,17 +210,19 @@ impl Board {
     /// `Board::PickZombieWaves`.
     pub(super) fn pick_zombie_waves(&mut self, rng: &mut MtRand) {
         let survival = self.survival();
-        let mut num_waves = if survival.is_some() { self.waves.num_waves } else { waves_for_level(self.level) };
+        let minigame = self.minigame();
+        let challenge = survival.is_some() || minigame.is_some();
+        let mut num_waves = if challenge { self.waves.num_waves } else { waves_for_level(self.level) };
         // Behaviour per ruslan831 decomp, Board::PickZombieWaves: a replayed
-        // mini-boss level keeps its own waves. Survival's stage length is
-        // set by its difficulty instead.
-        if !self.first_time_adventure && survival.is_none() && !self.is_mini_boss_level() {
+        // mini-boss level keeps its own waves. Challenge modes have their
+        // own stage length instead.
+        if !self.first_time_adventure && !challenge && !self.is_mini_boss_level() {
             num_waves = if num_waves < 10 { 20 } else { num_waves + 10 };
         }
         self.waves.num_waves = num_waves;
         self.waves.zombies_in_wave = vec![Vec::new(); num_waves as usize];
         // Challenge modes have no "new zombie" to introduce.
-        let intro = if survival.is_some() { None } else { self.introduced_zombie_type() };
+        let intro = if challenge { None } else { self.introduced_zombie_type() };
 
         for wave in 0..num_waves {
             let mut picker = ZombiePicker::default();
@@ -230,7 +237,7 @@ impl Board {
                 } else {
                     wave / 3 + 1
                 }
-            } else if !self.first_time_adventure && self.level != 5 {
+            } else if !self.first_time_adventure && !challenge && self.level != 5 {
                 wave * 2 / 5 + 1
             } else {
                 wave / 3 + 1
@@ -238,10 +245,13 @@ impl Board {
             if is_flag_wave {
                 let plain = picker.zombie_points.min(8);
                 picker.zombie_points = (picker.zombie_points as f32 * 2.5) as i32;
-                for _ in 0..plain {
-                    self.put_zombie_in_wave(ZombieType::Normal, wave, &mut picker);
+                // War and Peas has no ordinary zombies at all.
+                if minigame.is_none_or(|game| game.plain_flag_waves()) {
+                    for _ in 0..plain {
+                        self.put_zombie_in_wave(ZombieType::Normal, wave, &mut picker);
+                    }
+                    self.put_zombie_in_wave(ZombieType::Flag, wave, &mut picker);
                 }
-                self.put_zombie_in_wave(ZombieType::Flag, wave, &mut picker);
             }
             // Behaviour per ruslan831 decomp, Board::PickZombieWaves: Little
             // Trouble's and bowling's zombies are worth four times.
@@ -250,6 +260,9 @@ impl Board {
             } else if self.is_mini_boss_level() {
                 picker.zombie_points *= 3;
             }
+            // The mini-game's own multiplier (Column and Invisighoul among
+            // those still to come).
+            picker.zombie_points *= self.minigame_points_multiplier();
 
             if let Some(intro) = intro
                 && (wave == num_waves / 2 || is_final_wave)
@@ -257,17 +270,35 @@ impl Board {
                 self.put_zombie_in_wave(intro, wave, &mut picker);
             }
             if is_final_wave {
-                // PutInMissingZombies: every kind this level has, at least once.
+                // PutInMissingZombies: adventure's final wave has every kind
+                // the level allows at least once.
                 for i in 0..NUM_ZOMBIE_TYPES {
                     let ty = ZombieType::from_index(i);
-                    let allowed = if survival.is_some() {
-                        self.waves.zombie_allowed[i]
-                    } else {
-                        ty != ZombieType::Yeti && can_spawn_on_level(ty, self.level)
-                    };
-                    if allowed && !self.waves.zombies_in_wave[wave as usize].contains(&ty) {
+                    if !challenge && ty != ZombieType::Yeti && can_spawn_on_level(ty, self.level) && !self.waves.zombies_in_wave[wave as usize].contains(&ty) {
                         self.put_zombie_in_wave(ty, wave, &mut picker);
                     }
+                }
+            }
+            // Behaviour per ruslan831 decomp, Board::PickZombieWaves: Column
+            // Like You See 'Em's set-piece waves.
+            if minigame == Some(super::MiniGame::Column) {
+                if wave % 10 == 5 {
+                    for _ in 0..10 {
+                        self.put_zombie_in_wave(ZombieType::Ladder, wave, &mut picker);
+                    }
+                }
+                if wave % 10 == 8 {
+                    for _ in 0..10 {
+                        self.put_zombie_in_wave(ZombieType::JackInTheBox, wave, &mut picker);
+                    }
+                }
+                let gargantuars = match wave {
+                    19 => 3,
+                    29 => 5,
+                    _ => 0,
+                };
+                for _ in 0..gargantuars {
+                    self.put_zombie_in_wave(ZombieType::Gargantuar, wave, &mut picker);
                 }
             }
 
@@ -288,24 +319,38 @@ impl Board {
     /// `Board::PickZombieType`: a weighted pick among the zombies this wave
     /// can afford.
     fn pick_zombie_type(&self, points: i32, wave: i32, rng: &mut MtRand) -> ZombieType {
+        // Behaviour per ruslan831 decomp, Board::PickZombieType: Pogo Party,
+        // Bobsled Bonanza and Air Raid ignore both the first allowed wave
+        // and what the wave can afford.
+        let ignore_limits = self.minigame().is_some_and(|game| game.ignores_first_allowed_wave());
         let choices: Vec<(ZombieType, i32)> = (0..NUM_ZOMBIE_TYPES)
             .map(ZombieType::from_index)
             .filter(|ty| self.waves.zombie_allowed[*ty as usize])
             .filter(|ty| {
+                if ignore_limits {
+                    return true;
+                }
                 let d = ty.definition();
                 wave + 1 >= d.first_allowed_wave && points >= d.zombie_value
             })
             .map(|ty| (ty, ty.definition().pick_weight))
             .collect();
         let total: i32 = choices.iter().map(|(_, w)| w).sum();
-        let mut roll = rng.next_range(total.max(1) as u32) as i32;
+        if total <= 0 {
+            // Nothing affordable: the first allowed kind stands in.
+            return (0..NUM_ZOMBIE_TYPES)
+                .map(ZombieType::from_index)
+                .find(|ty| self.waves.zombie_allowed[*ty as usize])
+                .unwrap_or(ZombieType::Normal);
+        }
+        let mut roll = rng.next_range(total as u32) as i32;
         for (ty, weight) in &choices {
             roll -= weight;
             if roll < 0 {
                 return *ty;
             }
         }
-        ZombieType::Normal
+        choices.last().map_or(ZombieType::Normal, |(ty, _)| *ty)
     }
 
     /// `Board::RowCanHaveZombies`.
@@ -339,7 +384,10 @@ impl Board {
     /// `Board::PickRowForNewZombie`.
     fn pick_row_for_new_zombie(&mut self, ty: ZombieType, rng: &mut MtRand) -> i32 {
         for row in 0..MAX_GRID_SIZE_Y {
-            self.waves.row_picking[row].weight = if !self.row_can_have_zombie_type(row as i32, ty) {
+            // `Board::PickRowForNewZombie`: Invisighoul's first three waves
+            // leave the bottom row alone.
+            let hidden_row = self.minigame() == Some(super::MiniGame::Invisighoul) && self.waves.current_wave <= 3 && row == 5;
+            self.waves.row_picking[row].weight = if hidden_row || !self.row_can_have_zombie_type(row as i32, ty) {
                 0.0
             } else {
                 let mowered = self.waves.current_wave - self.waves.wave_row_got_lawn_mowered[row];

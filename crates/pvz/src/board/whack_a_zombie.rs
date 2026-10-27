@@ -41,7 +41,7 @@ pub struct WhackState {
 impl Board {
     /// `LawnApp::IsWhackAZombieLevel`.
     pub fn is_whack_a_zombie_level(&self) -> bool {
-        self.mode == GameMode::Adventure && self.level == 15
+        (self.mode == GameMode::Adventure && self.level == 15) || self.minigame() == Some(super::MiniGame::WhackAZombie)
     }
 
     /// The seed packets whack-a-zombie gives (`InitLevel`).

@@ -566,7 +566,15 @@ impl GameSelector {
             // menu's place and the main menu comes back when it closes.
             ButtonId::Store => next_state.set(AppState::Store),
             // KillGameSelector + ShowChallengeScreen(CHALLENGE_PAGE_SURVIVAL).
-            ButtonId::Survival => next_state.set(AppState::Challenges),
+            ButtonId::Survival => {
+                commands.insert_resource(crate::challenge::ChallengePageRequest(crate::challenge::ChallengePage::Survival));
+                next_state.set(AppState::Challenges);
+            }
+            // KillGameSelector + ShowChallengeScreen(CHALLENGE_PAGE_CHALLENGE).
+            ButtonId::Minigame => {
+                commands.insert_resource(crate::challenge::ChallengePageRequest(crate::challenge::ChallengePage::Challenge));
+                next_state.set(AppState::Challenges);
+            }
             ButtonId::Options => {
                 let finished_adventure = profiles.player().is_some_and(PlayerInfo::has_finished_adventure);
                 do_new_options(dialogs, resources, settings, OptionsFrom::GameSelector { finished_adventure });
@@ -768,7 +776,48 @@ fn selector_input(
             Ok("credits") => next_state.set(AppState::Credits),
             // `survival` opens the challenge screen's survival page; `survival-day`
             // starts a normal day survival run straight away (eye checks).
-            Ok("survival") => next_state.set(AppState::Challenges),
+            Ok("survival") => {
+                commands.insert_resource(crate::challenge::ChallengePageRequest(crate::challenge::ChallengePage::Survival));
+                next_state.set(AppState::Challenges);
+            }
+            Ok("minigames") => {
+                commands.insert_resource(crate::challenge::ChallengePageRequest(crate::challenge::ChallengePage::Challenge));
+                next_state.set(AppState::Challenges);
+            }
+            Ok("minigame-war") => {
+                commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(crate::board::MiniGame::WarAndPeas))));
+                next_state.set(AppState::Board);
+            }
+            Ok("minigame-bowling") => {
+                commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(
+                    crate::board::MiniGame::WallnutBowling,
+                ))));
+                next_state.set(AppState::Board);
+            }
+            Ok("minigame-pogo") => {
+                commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(crate::board::MiniGame::PogoParty))));
+                next_state.set(AppState::Board);
+            }
+            Ok("minigame-column") => {
+                commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(crate::board::MiniGame::Column))));
+                next_state.set(AppState::Board);
+            }
+            Ok("minigame-invisighoul") => {
+                commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(
+                    crate::board::MiniGame::Invisighoul,
+                ))));
+                next_state.set(AppState::Board);
+            }
+            Ok("minigame-boss") => {
+                commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(crate::board::MiniGame::FinalBoss))));
+                next_state.set(AppState::Board);
+            }
+            Ok("minigame-bobsled") => {
+                commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(
+                    crate::board::MiniGame::BobsledBonanza,
+                ))));
+                next_state.set(AppState::Board);
+            }
             Ok("survival-day") => {
                 commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::Survival {
                     lawn: crate::board::SurvivalLawn::Day,

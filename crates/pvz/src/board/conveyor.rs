@@ -22,6 +22,28 @@ const WALLNUT_BOWLING_SEEDS: &[(SeedType, i32)] = &[(SeedType::Wallnut, 85), (Se
 const LITTLE_TROUBLE_SEEDS: &[(SeedType, i32)] =
     &[(SeedType::Lilypad, 25), (SeedType::Wallnut, 15), (SeedType::Peashooter, 25), (SeedType::Cherrybomb, 35)];
 
+/// Column Like You See 'Em's belt: mostly pots for the roof, then the
+/// plants that make a column hurt.
+const COLUMN_SEEDS: &[(SeedType, i32)] = &[
+    (SeedType::Flowerpot, 155),
+    (SeedType::Melonpult, 5),
+    (SeedType::Chomper, 5),
+    (SeedType::Pumpkinshell, 15),
+    (SeedType::Jalapeno, 10),
+    (SeedType::Squash, 10),
+];
+
+/// Invisighoul's belt: the peashooter carries it; the rest stall the
+/// zombies you can't see.
+const INVISIGHOUL_SEEDS: &[(SeedType, i32)] = &[
+    (SeedType::Peashooter, 25),
+    (SeedType::Wallnut, 15),
+    (SeedType::Kernelpult, 5),
+    (SeedType::Squash, 15),
+    (SeedType::Lilypad, 30),
+    (SeedType::Iceshroom, 10),
+];
+
 /// The final boss's belt: pots to plant in, the lobbers that need them,
 /// and the two plants that fight his fireballs.
 const FINAL_BOSS_SEEDS: &[(SeedType, i32)] = &[
@@ -41,6 +63,10 @@ pub fn belt_seeds(board: &Board) -> &'static [(SeedType, i32)] {
         WALLNUT_BOWLING_SEEDS
     } else if board.is_little_trouble_level() {
         LITTLE_TROUBLE_SEEDS
+    } else if board.minigame() == Some(super::MiniGame::Column) {
+        COLUMN_SEEDS
+    } else if board.minigame() == Some(super::MiniGame::Invisighoul) {
+        INVISIGHOUL_SEEDS
     } else {
         mini_boss_seeds(board.level)
     }
@@ -181,8 +207,9 @@ impl Board {
         } else {
             400
         };
-        // The final boss's belt is a little quicker.
-        self.conveyor_belt_counter = if self.is_final_boss_level() { (base as f32 * 0.875) as i32 } else { base };
+        // The belt's own speed: the boss's is a little quicker, the
+        // challenges' a lot.
+        self.conveyor_belt_counter = (base as f32 * self.conveyor_speed_multiplier()) as i32;
 
         let graves = self.grid_items.iter().filter(|(_, g)| g.item_type == GridItemType::GraveStone && !g.dead).count() as i32;
         let boss = self.is_final_boss_level().then(|| BossBelt {

@@ -91,6 +91,7 @@ Safe wrapper over libopenmpt's C API (load from memory, render stereo, order/row
 | `board/` | a level (see below) |
 | `award` | `AwardScreen`: new plant/item, trophy, help note, credits note |
 | `store` | Crazy Dave's store (rules are pure functions of `PlayerInfo`) |
+| `challenge` | the challenge screen's survival and mini-games pages, and their trophy records (`userdata/challenge{id}.dat`) |
 | `almanac` | `AlmanacDialog` (lives in the dialog stack as `DialogKind::Almanac`) |
 | `credits`, `credits_timing` | the credits movie (three reanims with attacher sub-animations, singing brain, song, end names) |
 
@@ -106,6 +107,8 @@ Safe wrapper over libopenmpt's C API (load from memory, render stereo, order/row
 | File | Owns |
 |------|------|
 | `mod.rs` | `Board`, `GameMode`, `GameScene`, level init, background picking, grid helpers, render list, `BoardPlugin`, pause/options, game over |
+| `survival.rs` | survival's stages, stage tables and between-stage pause |
+| `minigame.rs` | `MiniGame` (the challenge page's entries), each game's lawn, wave table, delays and shared bowling/trouble/whack rules |
 | `plant.rs` | `Plant`: every plant's behaviour; acts through `PlantAction`s the board carries out |
 | `zombie.rs` | `Zombie`: walking, eating, damage, every ported zombie type, pool/roof/vehicle logic, drawing; `ZombieEnv` + `Fx` are what it gets from the board |
 | `zombie/boss.rs` | Dr. Zomboss (`update_boss`, `BossState`, `BossRequest`s) |
@@ -130,7 +133,7 @@ Safe wrapper over libopenmpt's C API (load from memory, render stereo, order/row
 
 ### Tests
 
-`crates/pvz/tests/*.rs` are compiled into the crate as `board::tests` (a `#[path]` module in `board/mod.rs`; `autotests = false`). `tests/mod.rs` has `TestBoard` / `test_board!`: a real level from the player's `main.pak`, intro skipped, with helpers to plant, dig, place zombies and run ticks. Without the game the tests print "skipped" and pass. Files: `plants`, `zombies`, `levels`, `world3`, `fog`, `roof`, `roof_zombies`, `boss`, `balloon`, `butter`, `almanac`, `options`, `credits`.
+`crates/pvz/tests/*.rs` are compiled into the crate as `board::tests` (a `#[path]` module in `board/mod.rs`; `autotests = false`). `tests/mod.rs` has `TestBoard` / `test_board!`: a real level from the player's `main.pak`, intro skipped, with helpers to plant, dig, place zombies and run ticks. Without the game the tests print "skipped" and pass. Files: `plants`, `zombies`, `levels`, `world3`, `fog`, `roof`, `roof_zombies`, `boss`, `balloon`, `butter`, `almanac`, `options`, `credits`, `save`, `survival`, `minigame`.
 
 Unit tests for the lower crates live next to their code (`#[cfg(test)]`).
 

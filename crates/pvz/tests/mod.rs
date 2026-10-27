@@ -23,6 +23,7 @@ mod new_zombies;
 mod plants;
 mod roof;
 mod roof_zombies;
+mod minigame;
 mod save;
 mod survival;
 mod world3;
@@ -46,7 +47,7 @@ use crate::zombie::ZombieType;
 
 use super::plant::Plant;
 use super::zombie::Zombie;
-use super::{Board, GameMode, SurvivalDifficulty, SurvivalLawn};
+use super::{Board, GameMode, MiniGame, SurvivalDifficulty, SurvivalLawn};
 
 #[test]
 fn render_order_sorts_rows_within_layers() {
@@ -238,6 +239,15 @@ impl TestBoard {
         Self::create(GameMode::Survival { lawn, difficulty }, super::FINAL_LEVEL, |p| {
             p.finished_adventure = 1;
             p.has_unlocked_survival_mode = true;
+        }, false)
+    }
+
+    /// A mini-game from the challenge screen, played from the start with
+    /// its own lawn and wave table.
+    pub fn minigame(game: MiniGame) -> Option<Self> {
+        Self::create(GameMode::MiniGame(game), 0, |p| {
+            p.finished_adventure = 1;
+            p.has_unlocked_minigames = true;
         }, false)
     }
 

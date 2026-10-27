@@ -28,12 +28,14 @@ mod grid_item;
 mod lawn_mower;
 mod level_end;
 mod message;
+mod minigame;
 mod plant;
 mod save;
 pub(crate) use save::{
     board_from_save, erase_save, has_save, load_save_data, need_save_game, save_dir, try_to_save_game,
 };
 pub(crate) mod pool;
+pub use minigame::MiniGame;
 mod projectile;
 mod seed_bank;
 mod seed_chooser;
@@ -138,6 +140,8 @@ pub enum GameMode {
     Intro,
     /// Survival (`GAMEMODE_SURVIVAL_*`): the chosen lawn and difficulty.
     Survival { lawn: SurvivalLawn, difficulty: SurvivalDifficulty },
+    /// A mini-game from the challenge screen (`GAMEMODE_CHALLENGE_*`).
+    MiniGame(MiniGame),
 }
 
 /// The five survival lawns (`GAMEMODE_SURVIVAL_*_STAGE_1` to `_STAGE_5`).
@@ -604,12 +608,16 @@ impl Board {
         let level = match mode {
             GameMode::Adventure => adventure_level(player),
             GameMode::Intro => 1,
-            // `Challenge::InitLevel` runs challenge modes on level 50 so
-            // that every zombie definition is on the table; the survival
-            // lawn then replaces the background and the zombie table.
+            // `Challenge::InitLevel` runs survival on level 50 so that
+            // every zombie definition is on the table; the survival lawn
+            // then replaces the background and the zombie table.
             GameMode::Survival { .. } => FINAL_LEVEL,
+            // Mini-games run on challenge level 0, as in `InitLevel`; their
+            // own tables replace everything the level would decide.
+            GameMode::MiniGame(_) => 0,
         };
-            let first_time_adventure = mode != GameMode::Intro && !player.is_some_and(PlayerInfo::has_finished_adventure);
+        let first_time_adventure =
+            mode == GameMode::Adventure && !player.is_some_and(PlayerInfo::has_finished_adventure);
         let mut board = Self {
             mode,
             scene: GameScene::LevelIntro,
@@ -758,6 +766,20 @@ impl Board {
                 board.seed_bank.add_seed(seed);
             }
             board.conveyor_belt_counter = 1000;
+        } else if board.minigame() == Some(MiniGame::Column) {
+            // Challenge::InitLevel: Column starts with these six on the belt.
+            use SeedType::{InstantCoffee, Magnetshroom, Melonpult, Potatomine, Tallnut};
+            for seed in [Potatomine, Tallnut, Melonpult, Magnetshroom, InstantCoffee, Melonpult] {
+                board.seed_bank.add_seed(seed);
+            }
+            board.conveyor_belt_counter = 1000;
+        } else if board.minigame() == Some(MiniGame::Invisighoul) {
+            // Challenge::InitLevel + StartLevel: two packets, and the belt
+            // runs at the challenge's speed.
+            for seed in [SeedType::Peashooter, SeedType::Iceshroom] {
+                board.seed_bank.add_seed(seed);
+            }
+            board.conveyor_belt_counter = 200;
         }
         board
     }
@@ -782,6 +804,9 @@ impl Board {
         } else if let GameMode::Survival { lawn, .. } = self.mode {
             // `Challenge::InitLevel`: the survival lawn picks the background.
             lawn.background()
+        } else if let Some(game) = self.minigame() {
+            // `PickBackground`: each mini-game has its own lawn.
+            game.background()
         } else {
             match level {
             l if l <= LEVELS_PER_AREA => BackgroundType::Day,
@@ -926,20 +951,26 @@ impl Board {
         self.dave.update(effects, res, images, sounds);
     }
 
-    /// `LawnApp::IsWallnutBowlingLevel`, for adventure mode.
+    /// `LawnApp::IsWallnutBowlingLevel`: adventure 1-5 and the two
+    /// Wall-nut Bowling mini-games.
     pub fn is_wallnut_bowling_level(&self) -> bool {
-        self.mode == GameMode::Adventure && self.level == 5
+        (self.mode == GameMode::Adventure && self.level == 5)
+            || matches!(self.minigame(), Some(MiniGame::WallnutBowling | MiniGame::WallnutBowling2))
     }
 
-    /// `LawnApp::IsLittleTroubleLevel`, for adventure mode: 3-5, Big Trouble
-    /// Little Zombie (adventure level 25).
+    /// `LawnApp::IsLittleTroubleLevel`: adventure 3-5 and the
+    /// Big Trouble Little Zombie mini-game.
     pub fn is_little_trouble_level(&self) -> bool {
-        self.mode == GameMode::Adventure && self.level == 25
+        (self.mode == GameMode::Adventure && self.level == 25) || self.minigame() == Some(MiniGame::LittleTrouble)
     }
 
     /// `Board::HasConveyorBeltSeedBank`.
     pub fn has_conveyor_belt_seed_bank(&self) -> bool {
-        self.is_wallnut_bowling_level() || self.is_mini_boss_level() || self.is_little_trouble_level() || self.is_final_boss_level()
+        self.is_wallnut_bowling_level()
+            || self.is_mini_boss_level()
+            || self.is_little_trouble_level()
+            || self.is_final_boss_level()
+            || matches!(self.minigame(), Some(MiniGame::Column | MiniGame::Invisighoul))
     }
 
     /// `LawnApp::IsMiniBossLevel`: the conveyor belt levels at the end of each area.
@@ -999,7 +1030,7 @@ impl Board {
             MusicTune::MinigameLoonboon
         } else if self.mode == GameMode::Adventure && matches!(self.level, 10 | 20 | 30) {
             MusicTune::Conveyer
-        } else if self.mode == GameMode::Adventure && self.level == FINAL_LEVEL {
+        } else if self.is_final_boss_level() {
             MusicTune::FinalBossBrainiacManiac
         } else if self.stage_has_fog() {
             MusicTune::FogRigormormist
@@ -1253,8 +1284,9 @@ fn update_board(
             erase_save(&dir, id, board.mode);
         }
         // An endless run's best flags are kept even when it ends.
-        if board.is_survival() {
-            crate::challenge::record_endless_run(&profiles, board);
+        if board.is_challenge() {
+            crate::challenge::record_challenge_end(&profiles, board);
+            commands.insert_resource(crate::challenge::request_page_for(board));
         }
         do_game_over_dialog(&mut dialogs, &resources, board);
     }
@@ -1275,11 +1307,12 @@ fn update_board(
         {
             erase_save(&dir, id, board.mode);
         }
-        // A won survival run earns its lawn's trophy and goes back to the
+        // A won challenge run earns its trophy and goes back to the
         // challenge screen (LawnApp::ShowChallengeScreen).
-        if board.is_survival() {
-            crate::challenge::record_survival_win(&profiles, board);
-            board.finish_survival();
+        if board.is_challenge() {
+            crate::challenge::record_challenge_win(&profiles, board);
+            commands.insert_resource(crate::challenge::request_page_for(board));
+            board.finish_challenge();
             next_state.set(AppState::Challenges);
             return;
         }
@@ -1723,7 +1756,7 @@ impl Board {
         let (Some(ice), Some(cap)) = (res.image("IMAGE_ICE"), res.image("IMAGE_ICE_CAP")) else { return };
         let y = self.grid_to_pixel_y(8, row as i32) as f32 + 20.0;
         let (w, h) = (ice.width as i32, ice.height as i32);
-        let alpha = (255 * self.ice_timer[row] / 10).clamp(0, 255) as u8;
+        let alpha = (self.ice_timer[row].saturating_mul(255) / 10).clamp(0, 255) as u8;
         g.push_state();
         if alpha < 255 {
             g.set_colorize_images(true);
@@ -2522,6 +2555,10 @@ fn draw_board(
         items.push((coin.render_order, RenderItem::Coin(id)));
     }
     for (id, zombie) in board.zombies.iter() {
+        // Invisighoul: their bites still land, but nothing of them shows.
+        if board.zombie_hidden(zombie) {
+            continue;
+        }
         if zombie.is_boss() {
             // The boss is drawn in parts, each among the lawn's objects.
             items.extend(zombie.boss_part_orders(&effects).into_iter().map(|(order, part)| (order, RenderItem::BossPart(id, part))));

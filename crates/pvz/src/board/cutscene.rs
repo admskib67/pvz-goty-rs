@@ -150,16 +150,16 @@ pub(super) fn crazy_dave_dialog_start(board: &Board) -> i32 {
         1501
     } else if upgrade_level(16) && board.can_get_packet_upgrade(1) {
         1551
-    } else if board.is_wallnut_bowling_level() {
+    } else if board.is_wallnut_bowling_level() && board.mode == GameMode::Adventure {
         if first_time { 2400 } else { 2411 }
     } else if first_time && level == 21 {
         // Behaviour per ruslan831 decomp, CutScene::StartLevelIntro: 3-1's talk
         // about the zombies attacking the backyard. Levels 22-24 and 26-30 have
         // no such talk (their seed-slot offers come from 1501/1551 above).
         501
-    } else if board.is_whack_a_zombie_level() {
+    } else if board.is_whack_a_zombie_level() && board.mode == GameMode::Adventure {
         401
-    } else if board.is_little_trouble_level() {
+    } else if board.is_little_trouble_level() && board.mode == GameMode::Adventure {
         // Behaviour per ruslan831 decomp, CutScene::StartLevelIntro: 3-5's talk
         // about the zombies' small numbers, on every visit.
         701
@@ -175,10 +175,10 @@ pub(super) fn crazy_dave_dialog_start(board: &Board) -> i32 {
     } else if !first_time && level == 1 {
         // Back at the start: he reminds the player how the game works.
         1601
-    } else if board.is_final_boss_level() {
+    } else if board.is_final_boss_level() && board.mode == GameMode::Adventure {
         // Behaviour per ruslan831 decomp, CutScene::StartLevelIntro: on the
         // last level he warns about the boss and is carried off; a replay
-        // after losing it skips him.
+        // after losing it skips him. The challenge version has no Dave.
         if board.prev_result_restart { -1 } else { 2300 }
     } else {
         -1
@@ -644,8 +644,9 @@ fn animate_board(
         add_flower_pots(board, effects, res, images, sounds);
     }
 
-    // Dr. Zomboss steps onto the lawn.
-    if cs.boss_time > 0 && time == TIME_READY_SET_PLANT_START + cs.lawn_mower_time + dave {
+    // Dr. Zomboss steps onto the lawn; the challenge version starts without
+    // his cinematic (`boss_time` is adventure-only).
+    if board.is_final_boss_level() && time == TIME_READY_SET_PLANT_START + cs.lawn_mower_time + dave {
         let mut fx = super::zombie::Fx { effects: &mut *effects, res: &mut *res, images: &mut *images, sounds: &mut *sounds };
         board.play_boss_enter(&mut fx);
     }

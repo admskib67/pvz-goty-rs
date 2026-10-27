@@ -44,6 +44,10 @@ impl Default for Fog {
 impl Board {
     /// `Board::StageHasFog`.
     pub fn stage_has_fog(&self) -> bool {
+        // `Board::StageHasFog`: Invisighoul's fog lawn hides the fog too.
+        if self.minigame() == Some(super::MiniGame::Invisighoul) {
+            return false;
+        }
         self.background == BackgroundType::Fog && self.level != STORMY_NIGHT_LEVEL
     }
 

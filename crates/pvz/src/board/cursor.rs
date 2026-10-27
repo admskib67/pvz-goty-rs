@@ -883,8 +883,37 @@ impl Board {
 
     /// `Board::AddPlant` for a copy made by an imitater (`theImitaterType`): the
     /// imitater goes down and turns into `seed` a moment later.
+    ///
+    /// Column Like You See 'Em mirrors the planting down every other row of
+    /// the square's column that can take it (`Board::AddPlant`'s column
+    /// loop).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn add_plant_as(
+        &mut self,
+        grid_x: i32,
+        grid_y: i32,
+        seed: SeedType,
+        imitater: bool,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        sounds: &mut Sounds,
+    ) {
+        self.add_plant_single(grid_x, grid_y, seed, imitater, effects, res, images, sounds);
+        if self.minigame() != Some(super::MiniGame::Column) {
+            return;
+        }
+        for row in 0..MAX_GRID_SIZE_Y as i32 {
+            if row == grid_y || self.can_plant_at(grid_x, row, seed) != PlantingReason::Ok {
+                continue;
+            }
+            self.add_plant_single(grid_x, row, seed, imitater, effects, res, images, sounds);
+        }
+    }
+
+    /// One plant on one square, without the column's copies.
+    #[allow(clippy::too_many_arguments)]
+    fn add_plant_single(
         &mut self,
         grid_x: i32,
         grid_y: i32,

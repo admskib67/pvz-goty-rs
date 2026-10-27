@@ -481,6 +481,13 @@ fn handle_dialog_events(
         next_state: &mut next_state,
         open_credits_note: false,
     };
+    // Whatever dialog closes back to the menu, a challenge returns to its
+    // own page of the challenge screen.
+    if let Some(board) = board.as_deref()
+        && board.is_challenge()
+    {
+        commands.insert_resource(crate::challenge::request_page_for(board));
+    }
     for event in events {
         match event {
             DialogEvent::Button(DialogId::NewOptions, _)

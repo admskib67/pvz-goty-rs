@@ -17,7 +17,7 @@ use super::{Board, GameMode};
 impl Board {
     /// `LawnApp::IsFinalBossLevel`.
     pub fn is_final_boss_level(&self) -> bool {
-        self.mode == GameMode::Adventure && self.level == super::FINAL_LEVEL
+        (self.mode == GameMode::Adventure && self.level == super::FINAL_LEVEL) || self.minigame() == Some(super::MiniGame::FinalBoss)
     }
 
     /// `Board::GetBossZombie`.

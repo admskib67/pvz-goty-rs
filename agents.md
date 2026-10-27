@@ -27,8 +27,8 @@ libopenmpt <-- openmpt::Module <-- pvz audio mixer (main/drums/hi-hats sample-lo
 - `crates/pak/src/`: pak reader (`lib.rs`: `Pak`, `normalize_path`). Example `examples/extract.rs`.
 - `crates/sexy/src/`: `files.rs`, `resources.rs`, `reanim.rs`, `particle.rs`, `font.rs`, `strings.rs`, `image.rs`, `data_array.rs`, `rand.rs`, `matrix.rs`, `tod.rs`, `definition.rs` (compiled-reader). Example `examples/check_resources.rs`.
 - `crates/openmpt/src/`: `lib.rs` (`Module`); `build.rs` links prebuilts.
-- `crates/pvz/src/`: `main.rs` (app/states), `board/` (simulation: `plant.rs`, `zombie/`, `projectile.rs`, `waves.rs`, `survival.rs`, `coin.rs`, `cursor.rs`, `seed_bank.rs`, `seed_chooser.rs`, `cutscene.rs`, `grid_item.rs`, `level_end.rs`, `lawn_mower.rs`, `pool.rs`, `fog.rs`, `boss.rs`, `conveyor.rs`, `crazy_dave.rs`, `bungee.rs`, `whack_a_zombie.rs`, `save.rs`), `challenge.rs`, `graphics.rs`, `resources.rs`, `audio.rs`, `reanim.rs`, `particle.rs`, `dialog.rs`, `widgets/`, `lawn_app.rs`, `player.rs`, `game_selector.rs`, `title.rs`, `setup.rs`, `install.rs`, `store.rs`, `almanac.rs`, `credits.rs`, `options.rs`, `pak_source.rs`, `input.rs`, `devshot.rs`.
-- `crates/pvz/tests/`: `TestBoard` suite compiled into the crate as `board::tests` (see Testing & QA; `survival.rs` covers survival's stages).
+- `crates/pvz/src/`: `main.rs` (app/states), `board/` (simulation: `plant.rs`, `zombie/`, `projectile.rs`, `waves.rs`, `survival.rs`, `minigame.rs`, `coin.rs`, `cursor.rs`, `seed_bank.rs`, `seed_chooser.rs`, `cutscene.rs`, `grid_item.rs`, `level_end.rs`, `lawn_mower.rs`, `pool.rs`, `fog.rs`, `boss.rs`, `conveyor.rs`, `crazy_dave.rs`, `bungee.rs`, `whack_a_zombie.rs`, `save.rs`), `challenge.rs`, `graphics.rs`, `resources.rs`, `audio.rs`, `reanim.rs`, `particle.rs`, `dialog.rs`, `widgets/`, `lawn_app.rs`, `player.rs`, `game_selector.rs`, `title.rs`, `setup.rs`, `install.rs`, `store.rs`, `almanac.rs`, `credits.rs`, `options.rs`, `pak_source.rs`, `input.rs`, `devshot.rs`.
+- `crates/pvz/tests/`: `TestBoard` suite compiled into the crate as `board::tests` (see Testing & QA; `survival.rs` and `minigame.rs` cover the challenge modes).
 - `docs/llms/`, `docs/architecture.md`, `docs/todo.md`, `docs/superpowers/`: specs/plans archive.
 - `dev/build-libopenmpt/`, `dev/libopenmpt-darwin|win|linux/<target>/`, `dev/README.md`: libopenmpt sources/prebuilts.
 - `github/main menu.png`: reference screenshot.
@@ -60,7 +60,7 @@ PVZ_SCREENSHOT=/tmp/shot{}.png PVZ_SCREENSHOT_FRAME=400,450,500 \
 cargo run -p pvz -- --lvl 3-1
 ```
 
-Variants: `PVZ_AUTO_START=1|adventure|options|help|store|almanac|almanac-plants|almanac-zombies|credits`, `PVZ_DEV_SCENE=butter|boss|boss-stomp|boss-rv|boss-bungee|pool`, `PVZ_CREDITS_JUMP=2:88`, `PVZ_SCREENSHOT_FRAME=<n>`. macOS black captures are a capture flake — retake, don't debug the game.
+Variants: `PVZ_AUTO_START=1|adventure|options|help|store|almanac|almanac-plants|almanac-zombies|credits|survival|minigames|survival-day|minigame-war|minigame-bowling|minigame-pogo|minigame-bobsled|minigame-column|minigame-invisighoul|minigame-boss`, `PVZ_DEV_SCENE=butter|boss|boss-stomp|boss-rv|boss-bungee|pool`, `PVZ_CREDITS_JUMP=2:88`, `PVZ_SCREENSHOT_FRAME=<n>`. macOS black captures are a capture flake — retake, don't debug the game.
 
 ## Code Conventions & Common Patterns
 
