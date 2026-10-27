@@ -45,7 +45,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 
 ### Menus and screens
 - Store: bonus mower and chocolate pages (not present in the decomp's page table).
-- Widgets: vertical sliders (no screen uses them), clipboard and password characters in `EditWidget` (no OS clipboard here; nothing asks for a password).
+- Widgets: vertical sliders and `EditWidget` password masks are implemented (unit-tested, no current screen uses them); clipboard operations stay unsupported.
 
 ### Engine
 

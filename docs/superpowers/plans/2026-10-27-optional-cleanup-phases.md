@@ -56,14 +56,14 @@ status claim in phase 17 rather than inventing UI.
 
 **Files:** `crates/pvz/src/widgets.rs` (+ its tests)
 
-- [ ] Vertical sliders: port the remaining `SliderWidget` orientation math
+- [x] Vertical sliders: port the remaining `SliderWidget` orientation math
       (track/thumb rects, drag mapping, keyboard step), unit-tested with
       synthetic rects. No screen uses them; do not wire one in.
-- [ ] `EditWidget` clipboard/password characters: decide with a repo search
+- [x] `EditWidget` clipboard/password characters: decide with a repo search
       whether any current screen needs them. If none does, implement only the
       password mask/character filtering and unit-test it; leave OS clipboard
       unsupported and document why.
-- [ ] If either item still has no consumer after the work, keep it as an
+- [x] If either item still has no consumer after the work, keep it as an
       engine-completeness API with tests rather than dead code.
 
 **Acceptance:** widget tests cover both orientations, drag bounds, and text

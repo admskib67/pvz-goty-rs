@@ -374,7 +374,8 @@ impl LabelButton {
 
 /// A horizontal `Slider`: a track image in three cels (left end, middle
 /// tiled, right end) and a thumb to drag. `value` runs from 0 to 1.
-/// Coordinates are relative to its parent. Not ported: vertical sliders and
+/// Coordinates are relative to its parent. The original only instantiates
+/// horizontal sliders; the vertical mode is kept for completeness. Not ported:
 /// the dragging cursor.
 #[derive(Debug, Clone)]
 pub struct Slider {
@@ -385,21 +386,44 @@ pub struct Slider {
     pub value: f32,
     /// `mDragging`: the thumb is held.
     pub dragging: bool,
-    /// Where on the thumb the mouse holds it (`mRelX`).
+    /// Where on the thumb the mouse holds it (`mRelX`/`mRelY`).
     rel_x: i32,
+    rel_y: i32,
+    /// `mHorizontal`.
+    horizontal: bool,
     track_image: &'static str,
     thumb_image: &'static str,
     thumb_width: i32,
+    thumb_height: i32,
 }
 
 impl Slider {
     pub fn new(track_image: &'static str, thumb_image: &'static str, resources: &GameResources) -> Self {
-        let thumb_width = resources.image(thumb_image).map_or(0, |i| i.width as i32);
-        Self::with_thumb_width(track_image, thumb_image, thumb_width)
+        let (thumb_width, thumb_height) = resources.image(thumb_image).map_or((0, 0), |i| (i.width as i32, i.height as i32));
+        Self::with_thumb_size(track_image, thumb_image, thumb_width, thumb_height)
     }
 
+    #[allow(dead_code, reason = "engine completeness; no screen uses vertical sliders")]
     fn with_thumb_width(track_image: &'static str, thumb_image: &'static str, thumb_width: i32) -> Self {
-        Self { x: 0, y: 0, width: 0, height: 0, value: 0.0, dragging: false, rel_x: 0, track_image, thumb_image, thumb_width }
+        Self::with_thumb_size(track_image, thumb_image, thumb_width, thumb_width)
+    }
+
+    fn with_thumb_size(track_image: &'static str, thumb_image: &'static str, thumb_width: i32, thumb_height: i32) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            value: 0.0,
+            dragging: false,
+            rel_x: 0,
+            rel_y: 0,
+            horizontal: true,
+            track_image,
+            thumb_image,
+            thumb_width,
+            thumb_height,
+        }
     }
 
     pub fn resize(&mut self, x: i32, y: i32, width: i32, height: i32) {
@@ -408,6 +432,12 @@ impl Slider {
 
     pub fn contains(&self, p: IVec2) -> bool {
         p.x >= self.x && p.y >= self.y && p.x < self.x + self.width && p.y < self.y + self.height
+    }
+
+    /// `mHorizontal = false`: the track runs top to bottom.
+    #[allow(dead_code, reason = "engine completeness; no screen uses vertical sliders")]
+    pub fn set_vertical(&mut self, vertical: bool) {
+        self.horizontal = !vertical;
     }
 
     /// `SetValue`, clamped to 0..1.
@@ -419,16 +449,30 @@ impl Slider {
         (self.value * (self.width - self.thumb_width) as f32) as i32
     }
 
+    fn thumb_y(&self) -> i32 {
+        (self.value * (self.height - self.thumb_height) as f32) as i32
+    }
+
     /// `MouseDown` at `local` (relative to the slider): grabs the thumb, or
     /// jumps to where the track was clicked. Neither tells the listener yet;
     /// the release does.
     pub fn mouse_down(&mut self, local: IVec2) {
-        let thumb_x = self.thumb_x();
-        if local.x >= thumb_x && local.x < thumb_x + self.thumb_width {
-            self.dragging = true;
-            self.rel_x = local.x - thumb_x;
+        if self.horizontal {
+            let thumb_x = self.thumb_x();
+            if local.x >= thumb_x && local.x < thumb_x + self.thumb_width {
+                self.dragging = true;
+                self.rel_x = local.x - thumb_x;
+            } else {
+                self.set_value(local.x as f32 / self.width as f32);
+            }
         } else {
-            self.set_value(local.x as f32 / self.width as f32);
+            let thumb_y = self.thumb_y();
+            if local.y >= thumb_y && local.y < thumb_y + self.thumb_height {
+                self.dragging = true;
+                self.rel_y = local.y - thumb_y;
+            } else {
+                self.set_value(local.y as f32 / self.height as f32);
+            }
         }
     }
 
@@ -438,7 +482,11 @@ impl Slider {
             return None;
         }
         let old = self.value;
-        self.set_value((local.x - self.rel_x) as f32 / (self.width - self.thumb_width) as f32);
+        if self.horizontal {
+            self.set_value((local.x - self.rel_x) as f32 / (self.width - self.thumb_width) as f32);
+        } else {
+            self.set_value((local.y - self.rel_y) as f32 / (self.height - self.thumb_height) as f32);
+        }
         (self.value != old).then_some(self.value)
     }
 
@@ -451,21 +499,39 @@ impl Slider {
     /// `Slider::Draw`.
     pub fn draw(&self, g: &mut Graphics, resources: &GameResources) {
         if let Some(track) = resources.image(self.track_image) {
-            let (cw, ch) = (track.width as i32 / 3, track.height as i32);
-            let ty = (self.height - ch) / 2;
-            let cel = |i: i32| SexyRect::new((cw * i) as f32, 0.0, cw as f32, ch as f32);
-            g.draw_image_src(track, self.x as f32, (self.y + ty) as f32, cel(0));
-            g.push_state();
-            g.clip_rect((self.x + cw) as f32, (self.y + ty) as f32, (self.width - cw * 2) as f32, ch as f32);
-            for i in 0..(self.width - cw * 2 + cw - 1) / cw.max(1) {
-                g.draw_image_src(track, (self.x + cw + i * cw) as f32, (self.y + ty) as f32, cel(1));
+            if self.horizontal {
+                let (cw, ch) = (track.width as i32 / 3, track.height as i32);
+                let ty = (self.height - ch) / 2;
+                let cel = |i: i32| SexyRect::new((cw * i) as f32, 0.0, cw as f32, ch as f32);
+                g.draw_image_src(track, self.x as f32, (self.y + ty) as f32, cel(0));
+                g.push_state();
+                g.clip_rect((self.x + cw) as f32, (self.y + ty) as f32, (self.width - cw * 2) as f32, ch as f32);
+                for i in 0..(self.width - cw * 2 + cw - 1) / cw.max(1) {
+                    g.draw_image_src(track, (self.x + cw + i * cw) as f32, (self.y + ty) as f32, cel(1));
+                }
+                g.pop_state();
+                g.draw_image_src(track, (self.x + self.width - cw) as f32, (self.y + ty) as f32, cel(2));
+            } else {
+                let (cw, ch) = (track.width as i32, track.height as i32 / 3);
+                let cel = |i: i32| SexyRect::new(0.0, (ch * i) as f32, cw as f32, ch as f32);
+                g.draw_image_src(track, self.x as f32, self.y as f32, cel(0));
+                g.push_state();
+                g.clip_rect(self.x as f32, (self.y + ch) as f32, cw as f32, (self.height - ch * 2) as f32);
+                for i in 0..(self.height - ch * 2 + ch - 1) / ch.max(1) {
+                    g.draw_image_src(track, self.x as f32, (self.y + ch + i * ch) as f32, cel(1));
+                }
+                g.pop_state();
+                g.draw_image_src(track, self.x as f32, (self.y + self.height - ch) as f32, cel(2));
             }
-            g.pop_state();
-            g.draw_image_src(track, (self.x + self.width - cw) as f32, (self.y + ty) as f32, cel(2));
         }
         if let Some(thumb) = resources.image(self.thumb_image) {
-            let y = self.y + (self.height - thumb.height as i32) / 2;
-            g.draw_image(thumb, (self.x + self.thumb_x()) as f32, y as f32);
+            if self.horizontal {
+                let y = self.y + (self.height - thumb.height as i32) / 2;
+                g.draw_image(thumb, (self.x + self.thumb_x()) as f32, y as f32);
+            } else {
+                let x = self.x + (self.width - thumb.width as i32) / 2;
+                g.draw_image(thumb, x as f32, (self.y + self.thumb_y()) as f32);
+            }
         }
     }
 }
@@ -578,8 +644,8 @@ pub enum EditKey {
 
 /// A one-line text box (`EditWidget`, with `LawnEditWidget`'s
 /// capitalized first letter). Coordinates are relative to its parent.
-/// Not ported: clipboard (no OS clipboard here) and password characters
-/// (nothing asks for a password).
+/// The password mask is supported; clipboard operations are not (no OS
+/// clipboard here, and no current screen asks for them).
 #[derive(Debug, Clone)]
 pub struct EditWidget {
     pub x: i32,
@@ -603,6 +669,8 @@ pub struct EditWidget {
     /// `mUndoText`/`mUndoCursor`: what the last edit replaced.
     undo_text: Vec<char>,
     undo_cursor: i32,
+    /// `mPasswordChar`: `\0` means normal text.
+    password_char: char,
 }
 
 /// `gLawnEditWidgetColors`: no background or outline.
@@ -632,6 +700,21 @@ impl EditWidget {
             had_double_click: false,
             undo_text: Vec::new(),
             undo_cursor: 0,
+            password_char: '\0',
+        }
+    }
+
+    /// `mPasswordChar`: draw every character as this instead.
+    #[allow(dead_code, reason = "engine completeness; no screen asks for a password")]
+    pub fn set_password_char(&mut self, c: char) {
+        self.password_char = c;
+    }
+
+    fn display_chars(&self) -> Vec<char> {
+        if self.password_char == '\0' {
+            self.text.clone()
+        } else {
+            vec![self.password_char; self.text.len()]
         }
     }
 
@@ -658,8 +741,9 @@ impl EditWidget {
     }
 
     fn width_to(&self, font: &Font, end: i32) -> i32 {
-        let end = (end.max(0) as usize).min(self.text.len());
-        font.string_width(&self.text[..end].iter().collect::<String>())
+        let display = self.display_chars();
+        let end = (end.max(0) as usize).min(display.len());
+        font.string_width(&display[..end].iter().collect::<String>())
     }
 
     pub fn got_focus(&mut self) {
@@ -855,10 +939,11 @@ impl EditWidget {
     /// `GetCharAt`: the cursor position nearest local x.
     fn char_at(&self, x: i32, font: &Font) -> i32 {
         let mut pos = 0;
+        let display = self.display_chars();
         let left = self.left_pos.max(0) as usize;
-        for i in left..self.text.len() {
-            let lo = font.string_width(&self.text[left..i].iter().collect::<String>());
-            let hi = font.string_width(&self.text[left..=i].iter().collect::<String>());
+        for i in left..display.len() {
+            let lo = font.string_width(&display[left..i].iter().collect::<String>());
+            let hi = font.string_width(&display[left..=i].iter().collect::<String>());
             if x >= (lo + hi) / 2 + 5 {
                 pos = i as i32 + 1;
             }
@@ -919,7 +1004,8 @@ impl EditWidget {
     /// 2-pixel selection) redrawn inverted on top.
     pub fn draw(&self, g: &mut Graphics, font: &FontRes) {
         let f = &font.font;
-        let shown: String = self.text[(self.left_pos.max(0) as usize).min(self.text.len())..].iter().collect();
+        let display = self.display_chars();
+        let shown: String = display[(self.left_pos.max(0) as usize).min(display.len())..].iter().collect();
         let text_y = (self.height - f.height) / 2 + f.ascent;
         g.push_state();
         g.translate(self.x as f32, self.y as f32);
@@ -1126,6 +1212,39 @@ mod tests {
         assert_eq!(s.mouse_up(), 1.0);
         assert!(!s.dragging);
         assert_eq!(s.mouse_drag(IVec2::new(0, 20)), None);
+    }
+
+    #[test]
+    fn vertical_slider_jumps_drags_and_clamps() {
+        let mut s = slider();
+        s.set_vertical(true);
+        s.resize(0, 0, 40, 135);
+        s.set_value(0.4);
+        // Vertical thumb at 0.4 * (135 - 20) = 46; grab it 5 px in.
+        s.mouse_down(IVec2::new(20, 51));
+        assert!(s.dragging);
+        assert_eq!(s.mouse_drag(IVec2::new(20, 51)), None);
+        let v = s.mouse_drag(IVec2::new(20, 28)).unwrap();
+        assert!((v - 23.0 / 115.0).abs() < 1e-6);
+        assert_eq!(s.mouse_drag(IVec2::new(20, -50)), Some(0.0));
+        assert_eq!(s.mouse_drag(IVec2::new(20, 500)), Some(1.0));
+        assert_eq!(s.mouse_up(), 1.0);
+        assert!(!s.dragging);
+
+        s.set_value(0.0);
+        s.mouse_down(IVec2::new(20, 108));
+        assert!(!s.dragging);
+        assert!((s.value - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn password_display_masks_the_text_without_changing_it() {
+        let mut e = EditWidget::new();
+        e.text = "secret".chars().collect();
+        e.set_password_char('*');
+        let display = e.display_chars().iter().collect::<String>();
+        assert_eq!(display, "******");
+        assert_eq!(e.text(), "secret");
     }
 
     #[test]
