@@ -160,6 +160,7 @@ impl MiniGame {
                 | Self::Speed
                 | Self::SeeingStars
                 | Self::RainingSeeds
+                | Self::PortalCombat
         )
     }
 
@@ -207,6 +208,7 @@ impl MiniGame {
             Self::WhackAZombie => &[Z::Normal, Z::TrafficCone, Z::Pail],
             Self::PogoParty => &[Z::Pogo],
             Self::Speed => &[Z::Normal, Z::TrafficCone, Z::DolphinRider, Z::Polevaulter],
+            Self::PortalCombat => &[Z::Normal, Z::Pail, Z::Football, Z::Balloon],
             Self::SeeingStars => &[Z::Normal, Z::TrafficCone, Z::Pail],
             Self::RainingSeeds => &[
                 Z::Normal,
@@ -233,7 +235,7 @@ impl MiniGame {
         match self {
             Self::LittleTrouble | Self::WallnutBowling | Self::WallnutBowling2 => 4,
             Self::Column => 6,
-            Self::Invisighoul => 2,
+            Self::Invisighoul | Self::PortalCombat => 2,
             _ => 1,
         }
     }
@@ -244,6 +246,7 @@ impl MiniGame {
             Self::FinalBoss => 0.875,
             Self::Invisighoul => 2.0,
             Self::Column => 3.0,
+            Self::PortalCombat => 1.5,
             _ => 1.0,
         }
     }
@@ -259,6 +262,7 @@ impl MiniGame {
         match self {
             Self::WallnutBowling | Self::WallnutBowling2 | Self::LittleTrouble | Self::WhackAZombie | Self::Invisighoul => 200,
             Self::Column => 2400,
+            Self::PortalCombat => 200,
             Self::BobsledBonanza => 4500,
             Self::PogoParty => 5500,
             _ => ZOMBIE_COUNTDOWN_FIRST_WAVE,
@@ -431,6 +435,222 @@ impl Board {
             return Lilypad;
         }
         seed
+    }
+
+    /// The paired portal's cell (`GetOtherPortal`).
+    fn other_portal_cell(&self, portal_type: super::grid_item::GridItemType, x: i32, y: i32) -> Option<(i32, i32)> {
+        self.grid_items
+            .iter()
+            .find(|(_, g)| g.is_open_portal() && g.item_type == portal_type && (g.grid_x, g.grid_y) != (x, y))
+            .map(|(_, g)| (g.grid_x, g.grid_y))
+    }
+
+    /// `Challenge::GetPortalToLeft`.
+    fn portal_to_left(&self, grid_x: i32, grid_y: i32) -> Option<(super::grid_item::GridItemType, i32, i32)> {
+        self.grid_items
+            .iter()
+            .filter(|(_, g)| g.is_open_portal() && g.grid_y == grid_y && g.grid_x < grid_x)
+            .max_by_key(|(_, g)| g.grid_x)
+            .map(|(_, g)| (g.item_type, g.grid_x, g.grid_y))
+    }
+
+    /// `Challenge::GetPortalDistanceToMower`.
+    fn portal_distance_to_mower(&self, row: i32) -> i32 {
+        let (mut grid_x, mut grid_y, mut distance) = (10, row, 0);
+        let mut steps = 0;
+        while distance < 40 && steps < 20 {
+            steps += 1;
+            let Some((ty, px, py)) = self.portal_to_left(grid_x, grid_y) else {
+                distance += grid_x;
+                break;
+            };
+            let Some((ox, oy)) = self.other_portal_cell(ty, px, py) else {
+                distance += grid_x;
+                break;
+            };
+            distance += grid_x - px;
+            grid_x = ox;
+            grid_y = oy;
+        }
+        distance
+    }
+
+    /// `Challenge::PortalCombatRowSpawnWeight`: the zombies favour the rows
+    /// the portals lead into.
+    pub(super) fn portal_row_weight(&self, row: i32) -> f32 {
+        if self.portal_distance_to_mower(row) < 5 {
+            return 0.01;
+        }
+        if self.grid_items.iter().any(|(_, g)| g.is_open_portal() && g.grid_y == row) { 1.0 } else { 0.2 }
+    }
+
+    /// `Challenge::PortalStart`: the two pairs of portals and the onslaught
+    /// timer.
+    pub(super) fn start_portal_combat(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut bevy::asset::Assets<bevy::image::Image>) {
+        if self.minigame() != Some(MiniGame::PortalCombat) {
+            return;
+        }
+        self.portal_relocate_counter = 9000;
+        self.conveyor_belt_counter = 200;
+        for (ty, x, y) in [
+            (super::grid_item::GridItemType::PortalSquare, 2, 0),
+            (super::grid_item::GridItemType::PortalSquare, 9, 1),
+            (super::grid_item::GridItemType::PortalCircle, 9, 3),
+            (super::grid_item::GridItemType::PortalCircle, 2, 4),
+        ] {
+            let item = super::grid_item::GridItem::portal(ty, x, y);
+            let id = self.grid_items.alloc(item);
+            self.open_portal(id, effects, res, images);
+        }
+    }
+
+    /// `Challenge::UpdatePortalCombat` + `Challenge::UpdatePortal`: portals
+    /// pulse, move their zombies, shots and running mowers to the paired
+    /// portal, and relocate every 6000 ticks.
+    pub(super) fn update_portal_combat(
+        &mut self,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut bevy::asset::Assets<bevy::image::Image>,
+        sounds: &mut Sounds,
+    ) {
+        use super::grid_item::{GridItemState, GridItemType};
+        if self.minigame() != Some(MiniGame::PortalCombat) {
+            return;
+        }
+        // Animation state: appear once, then pulse forever; disappear, then die.
+        let portal_ids: Vec<_> = self.grid_items.iter().filter(|(_, g)| g.is_portal()).map(|(id, _)| id).collect();
+        for id in portal_ids {
+            let Some(item) = self.grid_items.get(id) else { continue };
+            let (state, reanim) = (item.state, item.portal_reanim());
+            let Some(reanim_id) = reanim else { continue };
+            let Some(reanim) = effects.get_mut(reanim_id) else { continue };
+            if reanim.loop_count == 0 {
+                continue;
+            }
+            if state == GridItemState::PortalClosed {
+                if let Some(item) = self.grid_items.get_mut(id) {
+                    item.dead = true;
+                }
+            } else if reanim.loop_type == sexy::reanim::LoopType::PlayOnceAndHold {
+                reanim.play("anim_pulse", sexy::reanim::LoopType::Loop, 0, 12.0);
+            }
+        }
+        // The pairs, by type.
+        let pairs: Vec<((i32, i32), (i32, i32))> = [
+            GridItemType::PortalSquare,
+            GridItemType::PortalCircle,
+        ]
+        .into_iter()
+        .filter_map(|ty| {
+            let mut cells = self.grid_items.iter().filter(|(_, g)| g.item_type == ty && g.is_open_portal()).map(|(_, g)| (g.grid_x, g.grid_y));
+            let first = cells.next()?;
+            let second = cells.next()?;
+            Some((first, second))
+        })
+        .collect();
+        let env = self.zombie_env();
+        for (portal, other) in pairs {
+            // Zombies.
+            for (_, zombie) in self.zombies.iter_mut() {
+                if zombie.dead || !zombie.is_on_board() || zombie.row != portal.1 || zombie.last_portal_x == portal.0 {
+                    continue;
+                }
+                let rect = zombie.zombie_rect();
+                let center = rect.x + rect.w / 2;
+                let portal_x = portal.0 * 80 + 25;
+                if (center - portal_x).abs() <= 45 {
+                    let mut diff = (center - zombie.pos_x as i32) as f32;
+                    if zombie.is_walking_backwards() {
+                        diff -= 60.0;
+                    }
+                    zombie.portal_teleport(other.0 as f32 * 80.0 - diff, other.1, &env);
+                    zombie.last_portal_x = other.0;
+                }
+            }
+            // Straight shots.
+            for (_, projectile) in self.projectiles.iter_mut() {
+                if !projectile.is_straight_motion() || projectile.row != portal.1 {
+                    continue;
+                }
+                if projectile.last_portal_x == portal.0 {
+                    continue;
+                }
+                let rect = projectile.rect();
+                let center = rect.x + rect.w / 2;
+                let portal_x = portal.0 * 80 + 55;
+                if (center - portal_x).abs() <= 40 {
+                    let new_x = projectile.pos_x() + (other.0 * 80 - center + 60) as f32;
+                    let delta_y = ((other.1 - portal.1) * 100) as f32;
+                    projectile.portal_teleport(new_x, delta_y, other.1);
+                    projectile.last_portal_x = other.0;
+                }
+            }
+            // A running mower carries on through.
+            for mower in self.lawn_mowers.iter_mut() {
+                if mower.state != super::lawn_mower::LawnMowerState::Triggered || mower.row != portal.1 || mower.last_portal_x == portal.0 {
+                    continue;
+                }
+                let mower_x = mower.pos_x as i32 + 45;
+                let portal_x = portal.0 * 80 + 25;
+                if (mower_x - portal_x).abs() <= 20 {
+                    mower.pos_x = (other.0 * 80) as f32 + 25.0;
+                    mower.row = other.1;
+                    mower.pos_y = ((other.1 - portal.1) * 100) as f32;
+                    mower.last_portal_x = other.0;
+                    mower.render_order = super::make_render_order(super::render_layer::LAWN_MOWER, other.1, 0);
+                }
+            }
+        }
+        // Relocation.
+        if self.has_level_award_dropped() {
+            self.clear_advice(None);
+            return;
+        }
+        self.portal_relocate_counter -= 1;
+        if self.portal_relocate_counter == 500 {
+            self.display_advice(res, "[ADVICE_PORTAL_RELOCATING]", super::message::MessageStyle::HintFast, None);
+        } else if self.portal_relocate_counter <= 0 {
+            self.clear_advice(None);
+            self.portal_relocate_counter = 6000;
+            self.move_a_portal(effects, res, images);
+        }
+        let _ = sounds;
+    }
+
+    /// `Challenge::MoveAPortal`: one portal jumps somewhere new.
+    fn move_a_portal(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut bevy::asset::Assets<bevy::image::Image>) {
+        let open: Vec<_> = self.grid_items.iter().filter(|(_, g)| g.is_open_portal()).map(|(id, _)| id).collect();
+        if open.is_empty() {
+            return;
+        }
+        let Some(portal_id) = open.get(self.grid_items.iter().count() % open.len()).copied() else { return };
+        let Some(portal) = self.grid_items.get(portal_id) else { return };
+        let (item_type, px, py) = (portal.item_type, portal.grid_x, portal.grid_y);
+        let Some(other) = self
+            .grid_items
+            .iter()
+            .find(|(id, g)| *id != portal_id && g.item_type == item_type)
+            .map(|(_, g)| (g.grid_x, g.grid_y))
+        else {
+            return;
+        };
+        let candidates: Vec<(i32, i32)> = (0..10)
+            .flat_map(|x| (0..5).map(move |y| (x, y)))
+            .filter(|&(x, y)| {
+                self.grid_items.iter().all(|(_, g)| !g.is_open_portal() || (g.grid_x, g.grid_y) != (x, y))
+                    && other.0 != x
+                    && other.1 != y
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let pick = candidates[(px as usize + py as usize) % candidates.len()];
+        self.close_portal(portal_id, effects);
+        let item = super::grid_item::GridItem::portal(item_type, pick.0, pick.1);
+        let id = self.grid_items.alloc(item);
+        self.open_portal(id, effects, res, images);
     }
 
     /// `Challenge::CheckForCompleteArtChallenge` + `SpawnLevelAward`: the

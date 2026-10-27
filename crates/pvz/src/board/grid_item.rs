@@ -36,6 +36,10 @@ pub enum GridItemType {
     Ladder,
     /// The store's rake: swings at the first zombie to reach it.
     Rake,
+    /// Portal Combat's square portal (`GRIDITEM_PORTAL_SQUARE`).
+    PortalSquare,
+    /// Portal Combat's round portal (`GRIDITEM_PORTAL_CIRCLE`).
+    PortalCircle,
 }
 
 /// `GridItemState`, for what's ported so far.
@@ -48,6 +52,8 @@ pub enum GridItemState {
     RakeAttracting,
     /// The rake swinging; it goes once its countdown ends.
     RakeTriggered,
+    /// A portal playing its disappear animation (`GRIDITEM_STATE_PORTAL_CLOSED`).
+    PortalClosed,
 }
 
 #[derive(Debug, Clone)]
@@ -168,6 +174,36 @@ impl Board {
 }
 
 impl GridItem {
+    /// A Portal Combat portal (`GRIDITEM_PORTAL_SQUARE`/`_CIRCLE`).
+    pub(super) fn portal(item_type: GridItemType, grid_x: i32, grid_y: i32) -> Self {
+        let render_order = make_render_order(render_layer::PARTICLE, grid_y, 0);
+        Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter: 0, reanim: None, dead: false }
+    }
+
+    /// `GridItem::IsOpenPortal`.
+    pub fn is_open_portal(&self) -> bool {
+        matches!(self.item_type, GridItemType::PortalSquare | GridItemType::PortalCircle)
+            && self.state != GridItemState::PortalClosed
+            && !self.dead
+    }
+
+    pub fn is_portal(&self) -> bool {
+        matches!(self.item_type, GridItemType::PortalSquare | GridItemType::PortalCircle)
+    }
+
+    /// The portal's animation, for the state changes.
+    pub(super) fn portal_reanim(&self) -> Option<crate::reanim::ReanimationId> {
+        self.reanim
+    }
+
+    pub(super) fn set_portal_reanim(&mut self, id: crate::reanim::ReanimationId) {
+        self.reanim = Some(id);
+    }
+
+    pub(super) fn set_portal_state(&mut self, state: GridItemState) {
+        self.state = state;
+    }
+
     /// A grid item put back where the save left it: graves stand risen,
     /// craters and ladders as they were. Used by the save loader.
     pub fn new_restored(item_type: GridItemType, grid_x: i32, grid_y: i32) -> Self {
@@ -178,6 +214,9 @@ impl GridItem {
             GridItemType::Crater => (make_render_order(render_layer::GROUND, grid_y, 1), 18000),
             GridItemType::Ladder => (make_render_order(render_layer::PLANT, grid_y, 800), 0),
             GridItemType::Rake => (make_render_order(render_layer::GRAVE_STONE, grid_y, 9), 0),
+            GridItemType::PortalSquare | GridItemType::PortalCircle => {
+                (make_render_order(render_layer::PARTICLE, grid_y, 0), 0)
+            }
         };
         Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter, reanim: None, dead: false }
     }
@@ -264,6 +303,56 @@ impl Board {
         if let Some(grave) = self.grid_items.get_mut(id) {
             grave.dead = true;
         }
+    }
+
+    /// `GridItem::OpenPortal`: the portal appears (or reappears).
+    pub(super) fn open_portal(
+        &mut self,
+        id: Id<GridItem>,
+        effects: &mut crate::reanim::EffectSystem,
+        res: &mut crate::resources::GameResources,
+        images: &mut Assets<Image>,
+    ) {
+        let Some(item) = self.grid_items.get(id) else { return };
+        let (item_type, grid_x, grid_y, render_order) = (item.item_type, item.grid_x, item.grid_y, item.render_order);
+        let (mut x, mut y) = (grid_x as f32 * 80.0 - 6.0, self.grid_to_pixel_y(0, grid_y) as f32 - 65.0);
+        let portal_type = if item_type == GridItemType::PortalSquare {
+            x -= 4.0;
+            y += 25.0;
+            crate::reanim::ReanimationType::PortalSquare
+        } else {
+            crate::reanim::ReanimationType::PortalCircle
+        };
+        if let Some(existing) = item.portal_reanim()
+            && let Some(reanim) = effects.get_mut(existing)
+        {
+            reanim.set_position(x, y);
+            reanim.play("anim_appear", sexy::reanim::LoopType::PlayOnceAndHold, 0, 12.0);
+            if let Some(item) = self.grid_items.get_mut(id) {
+                item.set_portal_state(GridItemState::Normal);
+            }
+            return;
+        }
+        if let Ok((reanim_id, reanim)) = effects.add_reanimation(x, y, portal_type, res, images) {
+            reanim.render_order = render_order;
+            reanim.play("anim_appear", sexy::reanim::LoopType::PlayOnceAndHold, 0, 12.0);
+            if let Some(item) = self.grid_items.get_mut(id) {
+                item.set_portal_reanim(reanim_id);
+                item.set_portal_state(GridItemState::Normal);
+            }
+        }
+    }
+
+    /// `GridItem::ClosePortal`: it plays its disappear animation and then
+    /// goes.
+    pub(super) fn close_portal(&mut self, id: Id<GridItem>, effects: &mut crate::reanim::EffectSystem) {
+        let Some(item) = self.grid_items.get_mut(id) else { return };
+        if let Some(reanim_id) = item.portal_reanim()
+            && let Some(reanim) = effects.get_mut(reanim_id)
+        {
+            reanim.play("anim_disappear", sexy::reanim::LoopType::PlayOnceAndHold, 0, 12.0);
+        }
+        item.set_portal_state(GridItemState::PortalClosed);
     }
 
     /// `Board::UpdateGridItems`: graves rise once the intro lets them, and
@@ -470,6 +559,7 @@ impl Board {
             GridItemType::GraveStone => self.draw_grave_stone(item, res, g),
             GridItemType::Crater => self.draw_crater(item, res, g),
             GridItemType::Ladder => self.draw_ladder(item, res, g),
+            GridItemType::PortalSquare | GridItemType::PortalCircle => {}
             GridItemType::Rake => {
                 if let Some(reanim) = item.reanim.and_then(|id| effects.get(id)) {
                     crate::reanim::draw_reanimation(g, reanim, res);

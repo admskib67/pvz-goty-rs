@@ -409,6 +409,8 @@ pub struct Board {
     raining_seeds_counter: i32,
     /// It's Raining Seeds: ticks between rain splashes.
     rain_splash_counter: i32,
+    /// Portal Combat: ticks until a portal moves (`mChallengeStateCounter`).
+    portal_relocate_counter: i32,
     /// `LawnApp::IsFirstTimeAdventureMode`: the player hasn't finished adventure yet.
     pub first_time_adventure: bool,
     pub background: BackgroundType,
@@ -632,6 +634,7 @@ impl Board {
             next_survival_stage_counter: 0,
             raining_seeds_counter: if mode == GameMode::MiniGame(MiniGame::RainingSeeds) { 100 } else { 0 },
             rain_splash_counter: 0,
+            portal_relocate_counter: 0,
             first_time_adventure,
             background: BackgroundType::Day,
             plant_row: [PlantRowType::Normal; MAX_GRID_SIZE_Y],
@@ -980,7 +983,7 @@ impl Board {
             || self.is_mini_boss_level()
             || self.is_little_trouble_level()
             || self.is_final_boss_level()
-            || matches!(self.minigame(), Some(MiniGame::Column | MiniGame::Invisighoul))
+            || matches!(self.minigame(), Some(MiniGame::Column | MiniGame::Invisighoul | MiniGame::PortalCombat))
     }
 
     /// `LawnApp::IsMiniBossLevel`: the conveyor belt levels at the end of each area.
@@ -1139,6 +1142,7 @@ fn new_game(
         return;
     }
     let mut board = Board::new(mode, player, &mut resources, &mut images, sounds.rng());
+    board.start_portal_combat(&mut effects, &mut resources, &mut images);
     board.prev_result_restart = was_lost;
     board.level_overridden = level_override.0.is_some();
     // PreNewGame erases the mode's save before a fresh game (never for a
@@ -1398,6 +1402,7 @@ impl Board {
         if self.minigame() == Some(MiniGame::Speed) && self.scene == GameScene::Playing {
             self.update_game(effects, resources, images, music, sounds);
         }
+        self.update_portal_combat(effects, resources, images, sounds);
         // An art challenge's picture can be finished by anything that plants
         // (an imitater counts once it turns into the real thing).
         self.check_art_challenge_complete(effects, resources, images, sounds);

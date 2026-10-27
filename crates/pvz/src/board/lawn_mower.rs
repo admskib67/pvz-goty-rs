@@ -58,6 +58,8 @@ pub enum MowerHeight {
 #[derive(Debug, Clone)]
 pub struct LawnMower {
     pub row: i32,
+    /// The last portal column this mower came out of (`mLastPortalX`).
+    pub last_portal_x: i32,
     pub kind: LawnMowerType,
     /// Whether the row is a pool (`Board::plant_row`), which decides what
     /// happens to a lawn mower that drives into it.
@@ -92,6 +94,7 @@ impl LawnMower {
         let pos_x = -160.0;
         Self {
             row,
+            last_portal_x: -1,
             kind,
             pool_row,
             pos_x,

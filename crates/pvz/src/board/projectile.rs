@@ -87,6 +87,8 @@ pub struct Projectile {
     pos_z: f32,
     shadow_y: f32,
     pub row: i32,
+    /// The last portal column this projectile came out of (`mLastPortalX`).
+    pub last_portal_x: i32,
     pub render_order: i32,
     width: i32,
     height: i32,
@@ -133,6 +135,7 @@ impl Projectile {
             pos_z: 0.0,
             shadow_y,
             row,
+            last_portal_x: -1,
             render_order,
             width: 40,
             height: 40,
@@ -262,6 +265,26 @@ impl Projectile {
     }
 
     /// `Projectile::GetProjectileRect`.
+    pub(super) fn pos_x(&self) -> f32 {
+        self.pos_x
+    }
+
+    /// Whether it flies straight right (the only kind portals move).
+    pub fn is_straight_motion(&self) -> bool {
+        matches!(self.motion, ProjectileMotion::Straight)
+    }
+
+    /// `Challenge::UpdatePortal`: the shot comes out of the paired portal.
+    pub(super) fn portal_teleport(&mut self, pos_x: f32, delta_y: f32, row: i32) {
+        self.pos_x = pos_x;
+        self.x = pos_x as i32;
+        self.pos_y += delta_y;
+        self.y += delta_y as i32;
+        self.shadow_y += delta_y;
+        self.row = row;
+        self.render_order = super::make_render_order(super::render_layer::PROJECTILE, row, 0);
+    }
+
     pub(super) fn rect(&self) -> IRect {
         match self.ty {
             ProjectileType::Pea | ProjectileType::Snowpea | ProjectileType::ZombiePea => IRect::new(self.x - 15, self.y, self.width + 15, self.height),

@@ -389,6 +389,8 @@ impl Board {
             let hidden_row = self.minigame() == Some(super::MiniGame::Invisighoul) && self.waves.current_wave <= 3 && row == 5;
             self.waves.row_picking[row].weight = if hidden_row || !self.row_can_have_zombie_type(row as i32, ty) {
                 0.0
+            } else if self.minigame() == Some(super::MiniGame::PortalCombat) {
+                self.portal_row_weight(row as i32)
             } else {
                 let mowered = self.waves.current_wave - self.waves.wave_row_got_lawn_mowered[row];
                 match mowered {

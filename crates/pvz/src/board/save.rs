@@ -326,6 +326,8 @@ impl SaveData {
                         GridItemType::Ladder => 2,
                         // A rake is spent at the level's start; filtered out above.
                         GridItemType::Rake => 2,
+                        // Portals only exist in Portal Combat, which isn't saved.
+                        GridItemType::PortalSquare | GridItemType::PortalCircle => 3,
                     },
                     col: g.grid_x,
                     row: g.grid_y,

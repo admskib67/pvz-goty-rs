@@ -264,6 +264,10 @@ impl TestBoard {
         let Shared { resources, images } = &mut *shared;
         let mut rng = MtRand::new(1234);
         let mut board = Board::new(mode, Some(&player), resources, images, &mut rng);
+        {
+            let mut effects = EffectSystem::default();
+            board.start_portal_combat(&mut effects, resources, images);
+        }
         if intro {
             board.draw_count = 1;
             let mut music = Music::silent();

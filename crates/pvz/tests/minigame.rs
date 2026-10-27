@@ -310,3 +310,43 @@ fn its_raining_seeds_drops_usable_packets_with_no_seed_bank() {
     assert_eq!(t.board.sun_money, sun, "the packet didn't cost sun");
     assert!(!t.board.coins.iter().any(|(_, c)| c.ty == crate::board::coin::CoinType::UsableSeedPacket && !c.dead));
 }
+
+#[test]
+fn portal_combat_opens_two_pairs_of_portals() {
+    let Some(t) = board(MiniGame::PortalCombat) else { return };
+    assert_eq!(t.board.background, crate::board::BackgroundType::Night);
+    assert_eq!(t.board.waves.num_waves, 20);
+    assert_eq!(t.board.waves.zombie_count_down, 200);
+    assert!(t.board.has_conveyor_belt_seed_bank());
+    for ty in [ZombieType::Normal, ZombieType::Pail, ZombieType::Football, ZombieType::Balloon] {
+        assert!(t.board.waves.zombie_allowed[ty as usize], "{ty:?}");
+    }
+    let portals: Vec<_> = t
+        .board
+        .grid_items
+        .iter()
+        .filter(|(_, g)| g.is_open_portal())
+        .map(|(_, g)| (g.grid_x, g.grid_y))
+        .collect();
+    assert_eq!(portals, vec![(2, 0), (9, 1), (9, 3), (2, 4)]);
+    // Rows with a portal are favoured for spawning.
+    assert_eq!(t.board.portal_row_weight(0), 1.0);
+    assert_eq!(t.board.portal_row_weight(2), 0.2);
+}
+
+#[test]
+fn a_zombie_walking_into_a_portal_comes_out_of_its_pair() {
+    let Some(mut t) = board(MiniGame::PortalCombat) else { return };
+    let zombie = t.zombie(ZombieType::Normal, 0, 260.0);
+    // Line the zombie's centre up with the (2,0) portal at x = 185.
+    let rect = t.board.zombies.get(zombie).expect("zombie").zombie_rect();
+    let shift = (rect.x + rect.w / 2) - 185;
+    if let Some(z) = t.board.zombies.get_mut(zombie) {
+        z.place_x(z.pos_x - shift as f32);
+    }
+    t.tick();
+    let Some(z) = t.board.zombies.get(zombie) else { return };
+    assert_eq!(z.row, 1, "it comes out of the square portal at (9,1)");
+    assert!(z.pos_x > 500.0, "on the far side of the lawn: {}", z.pos_x);
+    assert_eq!(z.last_portal_x, 9);
+}

@@ -22,6 +22,16 @@ const WALLNUT_BOWLING_SEEDS: &[(SeedType, i32)] = &[(SeedType::Wallnut, 85), (Se
 const LITTLE_TROUBLE_SEEDS: &[(SeedType, i32)] =
     &[(SeedType::Lilypad, 25), (SeedType::Wallnut, 15), (SeedType::Peashooter, 25), (SeedType::Cherrybomb, 35)];
 
+/// Portal Combat's belt: straight shooters for the lanes the portals make.
+const PORTAL_COMBAT_SEEDS: &[(SeedType, i32)] = &[
+    (SeedType::Peashooter, 25),
+    (SeedType::Repeater, 20),
+    (SeedType::Torchwood, 10),
+    (SeedType::Cactus, 15),
+    (SeedType::Wallnut, 15),
+    (SeedType::Cherrybomb, 15),
+];
+
 /// Column Like You See 'Em's belt: mostly pots for the roof, then the
 /// plants that make a column hurt.
 const COLUMN_SEEDS: &[(SeedType, i32)] = &[
@@ -63,6 +73,8 @@ pub fn belt_seeds(board: &Board) -> &'static [(SeedType, i32)] {
         WALLNUT_BOWLING_SEEDS
     } else if board.is_little_trouble_level() {
         LITTLE_TROUBLE_SEEDS
+    } else if board.minigame() == Some(super::MiniGame::PortalCombat) {
+        PORTAL_COMBAT_SEEDS
     } else if board.minigame() == Some(super::MiniGame::Column) {
         COLUMN_SEEDS
     } else if board.minigame() == Some(super::MiniGame::Invisighoul) {

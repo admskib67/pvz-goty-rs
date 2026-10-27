@@ -554,6 +554,8 @@ const CLIP_HEIGHT_OFF: f32 = -200.0;
 pub struct Zombie {
     pub zombie_type: ZombieType,
     pub row: i32,
+    /// The last portal column this zombie came out of (`mLastPortalX`).
+    pub last_portal_x: i32,
     pub from_wave: i32,
     pub pos_x: f32,
     pub pos_y: f32,
@@ -793,6 +795,7 @@ impl Zombie {
         let mut z = Self {
             zombie_type,
             row,
+            last_portal_x: -1,
             from_wave,
             pos_x,
             pos_y: 0.0,
@@ -1501,6 +1504,17 @@ impl Zombie {
                 body.anim_time = time;
             }
         }
+    }
+
+    /// Puts the zombie down the other side of a portal (`Challenge::UpdatePortal`).
+    pub(super) fn portal_teleport(&mut self, x: f32, row: i32, env: &ZombieEnv) {
+        self.pos_x = x;
+        self.x = x as i32;
+        self.row = row;
+        self.pos_y = self.pos_y_based_on_row(row, env);
+        self.y = self.pos_y as i32;
+        self.render_order = make_render_order(render_layer::ZOMBIE, row, 4);
+        self.water_row = env.pool_rows.get(row as usize).copied().unwrap_or(false);
     }
 
     /// Moves the zombie to `x` along its row (the intro's lineup).
