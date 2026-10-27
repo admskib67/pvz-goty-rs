@@ -13,6 +13,7 @@
 use crate::files::Files;
 use crate::definition::{CompiledError, CompiledReader, decompress};
 use crate::matrix::Matrix3;
+use crate::rand::MtRand;
 use crate::tod::float_round_to_int;
 
 /// The original updates at 100 Hz.
@@ -353,6 +354,11 @@ pub struct TrackInstance {
     pub ignore_clip_rect: bool,
     /// Image id drawn instead of the keyframe's image.
     pub image_override: Option<String>,
+    /// `mShakeOverride`: how far, in pixels, this track jitters every tick.
+    pub shake_override: f32,
+    /// `mShakeX`/`mShakeY`: the jitter picked on the last update.
+    pub shake_x: f32,
+    pub shake_y: f32,
 }
 
 impl Default for TrackInstance {
@@ -367,6 +373,9 @@ impl Default for TrackInstance {
             ignore_color_override: false,
             ignore_clip_rect: false,
             image_override: None,
+            shake_override: 0.0,
+            shake_x: 0.0,
+            shake_y: 0.0,
         }
     }
 }
@@ -408,6 +417,10 @@ pub struct Reanimation<D = std::sync::Arc<ReanimDefinition>> {
     pub render_order: i32,
     /// Drawn by its owner rather than by the board (`mIsAttachment`).
     pub is_attachment: bool,
+    /// The shake jitter's stream. The original draws from the shared RNG;
+    /// shake is cosmetic, so each reanimation keeps its own seeded stream and
+    /// [`Reanimation::update`] needs no RNG argument.
+    shake_rng: MtRand,
 }
 
 impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
@@ -433,6 +446,7 @@ impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
             tracks,
             render_order: 0,
             is_attachment: false,
+            shake_rng: MtRand::new(0x5EED),
         }
     }
 
@@ -460,6 +474,13 @@ impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
     pub fn set_image_override(&mut self, track: &str, image: Option<&str>) {
         let i = self.find_track(track);
         self.tracks[i].image_override = image.map(str::to_owned);
+    }
+
+    /// `SetShakeOverride`: makes `track` jitter up to `amount` pixels each
+    /// tick, from now on (0 stops it).
+    pub fn set_shake_override(&mut self, track: &str, amount: f32) {
+        let i = self.find_track(track);
+        self.tracks[i].shake_override = amount;
     }
 
     /// `GetTrackBasePoseMatrix`.
@@ -526,8 +547,11 @@ impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
             if track.blend_counter > 0 {
                 track.blend_counter -= 1;
             }
+            if track.shake_override != 0.0 {
+                track.shake_x = self.shake_rng.range_f32(-track.shake_override, track.shake_override);
+                track.shake_y = self.shake_rng.range_f32(-track.shake_override, track.shake_override);
+            }
         }
-        // TODO: shake, attacher tracks and attachments once something uses them.
     }
 
     fn frame_time(&self) -> FrameTime {
@@ -647,9 +671,18 @@ impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
         self.definition.tracks[i].transforms[time.after].f >= 0.0
     }
 
-    /// `GetTrackMatrix`: where `track` is right now, with the overlay applied.
+    /// `GetTrackMatrix`: where `track` is right now, with the overlay applied
+    /// and the shake added to the translation (`SexyMatrix3Translation`).
     pub fn track_matrix(&self, track: usize) -> Matrix3 {
-        self.overlay * self.current_transform(track).matrix()
+        let mut matrix = self.overlay * self.current_transform(track).matrix();
+        matrix.m02 += self.tracks[track].shake_x;
+        matrix.m12 += self.tracks[track].shake_y;
+        matrix
+    }
+
+    /// `GetFrameTime`'s `mAnimFrameBeforeInt`: the keyframe being shown.
+    pub fn current_frame(&self) -> usize {
+        self.frame_time().before
     }
 
     /// `ShouldTriggerTimedEvent`: true on the tick that crosses `event_time` (0..=1).
@@ -751,5 +784,27 @@ mod tests {
     fn matrix_from_unskewed_transform_is_scale_and_translate() {
         let t = ReanimTransform { x: 5.0, y: 6.0, sx: 2.0, sy: 3.0, ..def().tracks[1].transforms[0].clone() };
         assert_eq!(t.matrix().transform_point(1.0, 1.0), (7.0, 9.0));
+    }
+
+    #[test]
+    fn a_shake_override_jitters_a_track_and_moves_its_matrix() {
+        let mut r = Reanimation::new(0.0, 0.0, def());
+        r.set_shake_override("body", 2.0);
+        let mut jittered = false;
+        for _ in 0..20 {
+            r.update();
+            let inst = &r.tracks[1];
+            assert!(inst.shake_x.abs() <= 2.0 && inst.shake_y.abs() <= 2.0, "{} {}", inst.shake_x, inst.shake_y);
+            jittered |= inst.shake_x != 0.0 || inst.shake_y != 0.0;
+        }
+        assert!(jittered, "the jitter moved");
+        let (shake_x, shake_y) = (r.tracks[1].shake_x, r.tracks[1].shake_y);
+        let matrix = r.track_matrix(1);
+        let still = r.overlay * r.current_transform(1).matrix();
+        assert!((matrix.m02 - (still.m02 + shake_x)).abs() < 1e-4);
+        assert!((matrix.m12 - (still.m12 + shake_y)).abs() < 1e-4);
+        // An unknown track name shakes track 0, like `FindTrackIndex` does.
+        r.set_shake_override("nope", 0.0);
+        assert_eq!(r.tracks[0].shake_override, 0.0);
     }
 }

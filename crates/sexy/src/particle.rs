@@ -781,6 +781,10 @@ pub struct ParticleDraw {
     pub fullscreen: bool,
 }
 
+/// `MAX_PARTICLES_SIZE`: past this many systems, emitters or particles, an
+/// emitter flagged `DieIfOverloaded` refuses to start.
+pub const MAX_PARTICLES_SIZE: usize = 900;
+
 /// `TodParticleSystem`: a running effect.
 pub struct ParticleSystem {
     pub definition: Arc<ParticleDefinition>,
@@ -793,8 +797,17 @@ pub struct ParticleSystem {
 }
 
 impl ParticleSystem {
-    /// `TodParticleInitializeFromDef`.
-    pub fn new(x: f32, y: f32, render_order: i32, definition: Arc<ParticleDefinition>, rng: &mut MtRand) -> Self {
+    /// `TodParticleInitializeFromDef`. `overloaded` is the holder's
+    /// `IsOverLoaded`: an emitter flagged `DieIfOverloaded` then kills the
+    /// whole effect instead of adding itself.
+    pub fn new(
+        x: f32,
+        y: f32,
+        render_order: i32,
+        definition: Arc<ParticleDefinition>,
+        rng: &mut MtRand,
+        overloaded: bool,
+    ) -> Self {
         let mut system = Self {
             definition,
             emitters: Vec::new(),
@@ -804,13 +817,22 @@ impl ParticleSystem {
             render_order,
             dont_update: false,
         };
-        // TODO: DieIfOverloaded emitters, once there's a global particle count.
-        for i in 0..system.definition.emitters.len() {
-            if !system.definition.emitters[i].cross_fade_duration.is_set() {
+        let definition = system.definition.clone();
+        for i in 0..definition.emitters.len() {
+            if !definition.emitters[i].cross_fade_duration.is_set() {
+                if overloaded && definition.emitters[i].has_flag(flags::DIE_IF_OVERLOADED) {
+                    system.dead = true;
+                    break;
+                }
                 system.add_emitter(x, y, i, rng);
             }
         }
         system
+    }
+
+    /// How many particles are alive right now (`TodParticleHolder`'s count).
+    pub fn particle_count(&self) -> usize {
+        self.particles.len()
     }
 
     /// `TodEmitterInitialize` for a new emitter.
@@ -1616,7 +1638,7 @@ mod tests {
         assert!(!e.particle_red.is_set());
 
         let mut rng = MtRand::new(1);
-        let mut system = ParticleSystem::new(100.0, 100.0, 0, Arc::new(def), &mut rng);
+        let mut system = ParticleSystem::new(100.0, 100.0, 0, Arc::new(def), &mut rng, false);
         assert_eq!(system.draw_list().len(), 8);
         let falling = system.draw_list()[0].y;
         for _ in 0..10 {
@@ -1627,5 +1649,23 @@ mod tests {
             system.update(&mut rng);
         }
         assert!(system.dead);
+    }
+
+    #[test]
+    fn an_overloaded_die_if_overloaded_emitter_kills_the_effect() {
+        let mut def = ParticleDefinition::parse(PLANTING).unwrap();
+        def.emitters[0].flags |= flags::DIE_IF_OVERLOADED;
+        def.emitters[0].cross_fade_duration = FloatTrack::default();
+        let def = Arc::new(def);
+
+        let mut rng = MtRand::new(1);
+        let system = ParticleSystem::new(0.0, 0.0, 0, def.clone(), &mut rng, true);
+        assert!(system.dead, "the effect dies instead of starting");
+        assert!(system.emitters.is_empty(), "and adds no emitter");
+
+        let mut rng = MtRand::new(1);
+        let system = ParticleSystem::new(0.0, 0.0, 0, def, &mut rng, false);
+        assert!(!system.dead);
+        assert_eq!(system.emitters.len(), 1);
     }
 }

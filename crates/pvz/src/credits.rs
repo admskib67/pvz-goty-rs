@@ -383,8 +383,8 @@ pub(crate) fn tick_movie(
                             reanim.tracks[track].track_color = [0, 0, 0, 255];
                         }
                     }
-                    // TODO: the shaky text (`mShakeOverride`) shakes once he's loud.
-                    let _ = late;
+                    // Its shaky text jitters once he's loud (SetShakeOverride).
+                    reanim.set_shake_override("ShakyText", if late { 2.0 } else { 0.0 });
                 }
             }
             if at(effects, 120.0) {

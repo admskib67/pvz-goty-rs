@@ -1093,6 +1093,12 @@ impl Plant {
         }
     }
 
+    /// The plant's body reanimation, for tests that check what it does.
+    #[cfg(test)]
+    pub(crate) fn body_reanim(&self) -> Option<ReanimationId> {
+        self.body
+    }
+
     /// `Plant::GetPlantAttackRect`, for the plants ported so far.
     pub(super) fn attack_rect(&self) -> IRect {
         self.attack_rect_for(Weapon::Primary)
@@ -1208,7 +1214,9 @@ impl Plant {
                 body.set_frames_for_layer("anim_explode");
                 body.anim_rate = 23.0;
                 body.loop_type = LoopType::PlayOnceAndHold;
-                // TODO: its heads shake (SetShakeOverride).
+                body.set_shake_override("DoomShroom_head1", 1.0);
+                body.set_shake_override("DoomShroom_head2", 2.0);
+                body.set_shake_override("DoomShroom_head3", 2.0);
             }
             actions.push(PlantAction::Foley(FoleyType::ReverseExplosion));
         }

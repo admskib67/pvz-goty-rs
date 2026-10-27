@@ -392,6 +392,51 @@ fn parse_leading_float(text: &str) -> Option<f32> {
     text[..end].parse().ok()
 }
 
+/// `AttacherSynchWalkSpeed`'s placeholder numbers: how far the attacher track
+/// travels (negative, since the attached walker faces left) and how many
+/// seconds it takes, measured between the first and last keyframe with the
+/// current one's text.
+fn placeholder_walk(parent: &Reanimation, track: usize) -> (f32, f32) {
+    if parent.anim_rate == 0.0 {
+        return (0.0, 0.0);
+    }
+    let transforms = &parent.definition.tracks[track].transforms;
+    let last = (parent.frame_start + parent.frame_count).saturating_sub(1).min(transforms.len().saturating_sub(1));
+    let before = parent.current_frame().min(last);
+    let mut start = before;
+    while start > parent.frame_start && transforms[start - 1].text == transforms[start].text {
+        start -= 1;
+    }
+    let mut end = before;
+    while end < last && transforms[end + 1].text == transforms[end].text {
+        end += 1;
+    }
+    (-(transforms[end].x - transforms[start].x), (end - start) as f32 / parent.anim_rate)
+}
+
+/// `AttacherSynchWalkSpeed`: plays the walker at the rate that covers the
+/// ground its attacher track covers, and nudges its offset so the two line up.
+fn attacher_synch_walk_speed(child: &mut Reanimation, placeholder_distance: f32, placeholder_seconds: f32) {
+    if placeholder_seconds.abs() < 1e-5 {
+        child.anim_rate = 0.0;
+        return;
+    }
+    let ground = child.find_track("_ground");
+    let transforms = &child.definition.tracks[ground].transforms;
+    let last = transforms.len().saturating_sub(1);
+    let start = child.frame_start.min(last);
+    let end = (child.frame_start + child.frame_count.saturating_sub(1)).min(last);
+    let guy_distance = transforms[end].x - transforms[start].x;
+    if guy_distance < 1e-5 || placeholder_distance < 1e-5 {
+        child.anim_rate = 0.0;
+        return;
+    }
+    let loops = placeholder_distance / guy_distance;
+    let current = child.current_transform(ground).x - transforms[start].x;
+    child.attach_offset.m02 = guy_distance * child.anim_time - current;
+    child.anim_rate = loops * child.frame_count as f32 / placeholder_seconds;
+}
+
 pub type ParticleSystemId = Id<ParticleSystem>;
 
 impl EffectSystem {
@@ -491,6 +536,13 @@ impl EffectSystem {
                 }
             }
         }
+        // `AttacherSynchWalkSpeed` reads the parent, so its numbers are taken
+        // before the child is borrowed.
+        let placeholder = if info.track.eq_ignore_ascii_case("anim_walk") {
+            self.reanimations.get(id).map(|parent| placeholder_walk(parent, track))
+        } else {
+            None
+        };
         let Some(child) = child.and_then(|c| self.reanimations.get_mut(c)) else { return };
         if !info.track.is_empty() {
             let range = child.definition.frames_for_layer(&info.track);
@@ -498,8 +550,16 @@ impl EffectSystem {
                 child.start_blend(20);
                 child.set_frames_for_layer(&info.track);
             }
-            child.anim_rate = info.anim_rate;
             child.loop_type = info.loop_type;
+            if child.anim_rate == 12.0
+                && info.track.eq_ignore_ascii_case("anim_walk")
+                && child.definition.find_track("_ground").is_some()
+                && let Some((distance, seconds)) = placeholder
+            {
+                attacher_synch_walk_speed(child, distance, seconds);
+            } else {
+                child.anim_rate = info.anim_rate;
+            }
         }
     }
 
@@ -613,12 +673,24 @@ impl EffectSystem {
         rng: &mut MtRand,
     ) -> Option<ParticleSystemId> {
         match resources.particle_definition(effect.file(), images) {
-            Ok(def) => Some(self.particles.alloc(ParticleSystem::new(x, y, render_order, def, rng))),
+            Ok(def) => {
+                let overloaded = self.particles_are_overloaded();
+                Some(self.particles.alloc(ParticleSystem::new(x, y, render_order, def, rng, overloaded)))
+            }
             Err(e) => {
                 error!("{e}");
                 None
             }
         }
+    }
+
+    /// `TodParticleHolder::IsOverLoaded`: whether there are more systems,
+    /// emitters or particles alive than `MAX_PARTICLES_SIZE`.
+    fn particles_are_overloaded(&self) -> bool {
+        use sexy::particle::MAX_PARTICLES_SIZE as MAX;
+        self.particles.len() > MAX
+            || self.particles.iter().map(|(_, s)| s.emitters.len()).sum::<usize>() > MAX
+            || self.particles.iter().map(|(_, s)| s.particle_count()).sum::<usize>() > MAX
     }
 
     pub fn particle(&self, id: ParticleSystemId) -> Option<&ParticleSystem> {
@@ -828,8 +900,10 @@ fn draw_track_colored(
         // A track of text: its center is its position, its top the baseline less the ascent.
         if let (Some(font), false) = (transform.font.as_deref().and_then(|id| resources.font(id)), transform.text.is_empty()) {
             let width = font.font.string_width(&transform.text) as f32;
-            let matrix = (reanim.overlay * transform.matrix() * Matrix3::translation(-width * 0.5, font.font.ascent as f32))
+            let mut matrix = (reanim.overlay * transform.matrix() * Matrix3::translation(-width * 0.5, font.font.ascent as f32))
                 .translated(-0.5, -0.5);
+            matrix.m02 += inst.shake_x;
+            matrix.m12 += inst.shake_y;
             g.push_state();
             g.set_color(color);
             g.draw_string_matrix(font, to_affine(matrix), &transform.text);
@@ -849,8 +923,10 @@ fn draw_track_colored(
 
     // The keyframe's image positions the track; an override only changes what's drawn.
     let (cel_w, cel_h) = (image.cel_width() as f32, image.cel_height() as f32);
-    let matrix = (reanim.overlay * transform.matrix() * Matrix3::translation(cel_w * 0.5, cel_h * 0.5))
+    let mut matrix = (reanim.overlay * transform.matrix() * Matrix3::translation(cel_w * 0.5, cel_h * 0.5))
         .translated(-0.5, -0.5);
+    matrix.m02 += inst.shake_x;
+    matrix.m12 += inst.shake_y;
     let image = inst.image_override.as_deref().and_then(|id| resources.image(id)).unwrap_or(image);
     while frame >= image.cols as i32 {
         frame -= image.cols as i32;
@@ -888,5 +964,38 @@ mod tests {
         assert_eq!((a.reanim.as_str(), a.track.as_str(), a.anim_rate), ("Sun", "Sun1", 8.0));
         assert_eq!(a.loop_type, LoopType::PlayOnceAndHold);
         assert!(parse_attacher("no underscores").is_none());
+    }
+
+    const ATTACHER_PARENT: &str = "<fps>10</fps>
+<track><name>attacher__Walker__anim_walk</name>
+<t><x>0</x><f>0</f><text>attacher__Walker__anim_walk</text></t>
+<t><x>-10</x></t><t><x>-20</x></t><t><x>-30</x></t><t><x>-40</x></t>
+</track>";
+
+    const ATTACHED_WALKER: &str = "<fps>10</fps>
+<track><name>_ground</name>
+<t><x>0</x><f>0</f></t><t><x>20</x></t><t><x>40</x></t><t><x>60</x></t><t><x>80</x></t>
+</track>
+<track><name>anim_walk</name>
+<t><f>0</f></t><t><f>0</f></t><t><f>0</f></t><t><f>0</f></t><t><f>0</f></t>
+</track>";
+
+    #[test]
+    fn an_attached_walker_plays_at_the_rate_its_placeholder_moves() {
+        let parent = Reanimation::new(0.0, 0.0, Arc::new(ReanimDefinition::parse(ATTACHER_PARENT).unwrap()));
+        let (distance, seconds) = placeholder_walk(&parent, 0);
+        assert!((distance - 40.0).abs() < 1e-4, "{distance}");
+        assert!((seconds - 0.4).abs() < 1e-4, "{seconds}");
+
+        let mut child = Reanimation::new(0.0, 0.0, Arc::new(ReanimDefinition::parse(ATTACHED_WALKER).unwrap()));
+        child.set_frames_for_layer("anim_walk");
+        attacher_synch_walk_speed(&mut child, distance, seconds);
+        // 40 px of placeholder over 80 px of walk: half a loop in 0.4 s.
+        assert!((child.anim_rate - 6.25).abs() < 1e-4, "{}", child.anim_rate);
+        assert_eq!(child.attach_offset.m02, 0.0, "it starts lined up");
+
+        // A placeholder that covers no ground leaves the walker standing.
+        attacher_synch_walk_speed(&mut child, 0.0, seconds);
+        assert_eq!(child.anim_rate, 0.0);
     }
 }

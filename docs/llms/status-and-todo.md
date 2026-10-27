@@ -56,13 +56,10 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 - Store: Zen items (potted marigolds, `store.rs:306`, `:862`), going to the tree (`:746`), "coming soon" rule (`:188`), bonus mower and chocolate pages, award-screen intro talks, night background, opening from the seed chooser.
 - Seed chooser: almanac and store buttons.
 - Almanac: pool water behind water plants (`almanac.rs:508`).
-- Credits: the shaky text (`credits.rs:386`).
 - Title: resource error dialog (`title.rs:118`); loading progress weights for reanims/particles (`resources.rs:364`).
 - Widgets: vertical sliders, clipboard/undo/password in `EditWidget`.
 
 ### Engine
-- Reanimation track shake (`mShakeOverride`) and the remaining attacher/attachment cases in `sexy::reanim` (`reanim.rs:530`).
-- Particle `DieIfOverloaded` (`sexy/src/particle.rs:807`).
 - Music drum/hi-hat bursts during levels; per-mode music (Zen Garden, mini-games).
 
 ## Suggested order

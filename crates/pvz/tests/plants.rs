@@ -281,7 +281,17 @@ fn doom_shroom_destroys_widely_and_leaves_a_crater() {
     let mut t = test_board!("2-1");
     let zombies: Vec<_> = (0..5).map(|row| t.zombie(ZombieType::Normal, row, 450.0)).collect();
     t.plant(SeedType::Doomshroom, 5, 2);
-    t.ticks(150);
+    // Swelling up, its heads jitter (`UpdateDoomShroom`'s SetShakeOverride).
+    t.ticks(2);
+    let body = t.plant_ref(t.plant_at(5, 2).unwrap()).unwrap().body_reanim().expect("the doom-shroom body");
+    let reanim = t.effects.get(body).unwrap();
+    let shakes: Vec<f32> = ["DoomShroom_head1", "DoomShroom_head2", "DoomShroom_head3"]
+        .into_iter()
+        .map(|name| reanim.tracks[reanim.find_track(name)].shake_override)
+        .collect();
+    assert_eq!(shakes, [1.0, 2.0, 2.0], "the heads shake as it swells");
+
+    t.ticks(148);
     for id in zombies {
         assert!(t.zombie_ref(id).is_none_or(|z| z.is_dead_or_dying()), "everything nearby is destroyed");
     }
