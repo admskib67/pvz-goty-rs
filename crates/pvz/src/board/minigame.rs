@@ -159,6 +159,7 @@ impl MiniGame {
                 | Self::FinalBoss
                 | Self::Speed
                 | Self::SeeingStars
+                | Self::RainingSeeds
         )
     }
 
@@ -207,6 +208,16 @@ impl MiniGame {
             Self::PogoParty => &[Z::Pogo],
             Self::Speed => &[Z::Normal, Z::TrafficCone, Z::DolphinRider, Z::Polevaulter],
             Self::SeeingStars => &[Z::Normal, Z::TrafficCone, Z::Pail],
+            Self::RainingSeeds => &[
+                Z::Normal,
+                Z::TrafficCone,
+                Z::Pail,
+                Z::Door,
+                Z::Football,
+                Z::Newspaper,
+                Z::JackInTheBox,
+                Z::Bungee,
+            ],
             Self::Column => &[Z::Normal, Z::TrafficCone, Z::Pail, Z::Football],
             Self::Invisighoul => &[Z::Normal, Z::TrafficCone, Z::Pail, Z::DolphinRider, Z::Zamboni, Z::JackInTheBox],
             // The boss level's own waves never run (`is_final_boss_level`);
@@ -347,6 +358,79 @@ impl Board {
             [N, N, N, N, N, N, N, N, N],
         ];
         SHAPE[row as usize][col as usize]
+    }
+
+    /// `LawnApp::IsChallengeWithoutSeedBank`: It's Raining Seeds plants
+    /// straight from the packets that fall.
+    pub fn is_challenge_without_seed_bank(&self) -> bool {
+        self.minigame() == Some(MiniGame::RainingSeeds)
+    }
+
+    /// `Challenge::UpdateRainingSeeds` + `Challenge::UpdateRain`.
+    pub(super) fn update_raining_seeds(
+        &mut self,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut bevy::asset::Assets<bevy::image::Image>,
+        sounds: &mut Sounds,
+    ) {
+        if self.minigame() != Some(MiniGame::RainingSeeds) || self.scene != super::GameScene::Playing || self.has_level_award_dropped() {
+            return;
+        }
+        // The rain itself: splashes at three heights, like UpdateRain.
+        self.rain_splash_counter -= 1;
+        if self.rain_splash_counter < 0 {
+            for (low, high, circle) in [(90.0, 240.0, false), (290.0, 410.0, true), (450.0, 580.0, false)] {
+                let x = sounds.rng().range_f32(40.0, 740.0);
+                let y = sounds.rng().range_f32(low, high);
+                let ty = if circle { crate::reanim::ReanimationType::RainCircle } else { crate::reanim::ReanimationType::RainSplash };
+                if let Ok((_, reanim)) = effects.add_reanimation(x, y, ty, res, images) {
+                    let alpha = sounds.rng().range_int(100, 200) as u8;
+                    reanim.color_override = [255, 255, 255, alpha];
+                    let scale = sounds.rng().range_f32(0.7, 1.2);
+                    reanim.override_scale(scale, scale);
+                }
+            }
+            self.rain_splash_counter = sounds.rng().range_int(10, 20);
+        }
+        if self.raining_seeds_counter > 0 {
+            self.raining_seeds_counter -= 1;
+            return;
+        }
+        self.raining_seeds_counter = sounds.rng().range_int(500, 999);
+        let seed = self.random_raining_seed(sounds.rng());
+        let x = sounds.rng().range_int(100, 649) as f32;
+        let id = self.add_coin(x, 60.0, super::coin::CoinType::UsableSeedPacket, super::coin::CoinMotion::FromSkySlow, effects, res, images, sounds);
+        if let Some(coin) = self.coins.get_mut(id) {
+            coin.usable_seed = Some(seed);
+        }
+    }
+
+    /// `UpdateRainingSeeds`' pick: a plant the player owns that isn't a sun
+    /// producer, an upgrade or one of the unusable kinds; lily pads get
+    /// likelier as more are planted.
+    fn random_raining_seed(&mut self, rng: &mut sexy::rand::MtRand) -> SeedType {
+        use SeedType::*;
+        let excluded = [Sunflower, Twinsunflower, Sunshroom, InstantCoffee, Umbrella, Imitater];
+        let mut seed = None;
+        for _ in 0..200 {
+            let index = rng.range_int(0, 53);
+            let Some(candidate) = SeedType::from_index(index) else { continue };
+            if !self.owned_seeds.get(index as usize).copied().unwrap_or(false)
+                || excluded.contains(&candidate)
+                || candidate.upgrade_base().is_some()
+            {
+                continue;
+            }
+            seed = Some(candidate);
+            break;
+        }
+        let seed = seed.unwrap_or(Peashooter);
+        let lilies = self.plants.iter().filter(|(_, p)| !p.dead && p.seed == Lilypad).count() as i32;
+        if rng.range_int(0, 100) < sexy::tod::animate_curve(0, 18, lilies, 30, 1, sexy::tod::TodCurve::Linear) {
+            return Lilypad;
+        }
+        seed
     }
 
     /// `Challenge::CheckForCompleteArtChallenge` + `SpawnLevelAward`: the

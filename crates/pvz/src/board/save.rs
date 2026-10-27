@@ -212,6 +212,8 @@ fn coin_type_to_int(ty: CoinType) -> i32 {
         // Presents are dropped each level, never saved.
         CoinType::PresentMinigames => 15,
         CoinType::PresentPuzzle => 16,
+        // Falling packets belong to It's Raining Seeds, which isn't saved.
+        CoinType::UsableSeedPacket => 17,
     }
 }
 

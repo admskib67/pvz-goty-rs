@@ -265,3 +265,48 @@ fn seeing_stars_has_a_starfruit_picture_and_ends_when_it_is_filled() {
     t.tick();
     assert!(t.board.has_level_award_dropped(), "the finished picture wins");
 }
+
+#[test]
+fn its_raining_seeds_drops_usable_packets_with_no_seed_bank() {
+    let Some(mut t) = board(MiniGame::RainingSeeds) else { return };
+    assert_eq!(t.board.background, crate::board::BackgroundType::Fog);
+    assert!(t.board.stage_has_fog(), "this fog lawn keeps its fog");
+    assert!(t.board.is_challenge_without_seed_bank());
+    assert_eq!(t.board.seed_bank.num_packets, 0);
+    assert_eq!(t.board.waves.num_waves, 40);
+    for ty in [ZombieType::Door, ZombieType::Football, ZombieType::Newspaper, ZombieType::JackInTheBox, ZombieType::Bungee] {
+        assert!(t.board.waves.zombie_allowed[ty as usize], "{ty:?}");
+    }
+    // The setup ticks already let the first packet fall.
+    let coin = t
+        .board
+        .coins
+        .iter()
+        .find(|(_, c)| c.ty == crate::board::coin::CoinType::UsableSeedPacket)
+        .map(|(_, c)| c.pos_x);
+    let Some(x) = coin else { panic!("a seed packet fell from the sky") };
+    let y = t
+        .board
+        .coins
+        .iter()
+        .find(|(_, c)| c.ty == crate::board::coin::CoinType::UsableSeedPacket)
+        .map_or(60.0, |(_, c)| c.pos_y);
+    let seed = t
+        .board
+        .coins
+        .iter()
+        .find(|(_, c)| c.ty == crate::board::coin::CoinType::UsableSeedPacket)
+        .and_then(|(_, c)| c.usable_seed);
+    assert!(seed.is_some(), "the packet knows its plant");
+    let seed = seed.unwrap();
+    // Pick it up and plant it; the packet is spent and no sun is charged.
+    t.click(x as i32 + 20, y as i32 + 20);
+    assert_eq!(t.board.cursor.cursor_type, crate::board::cursor::CursorType::PlantFromUsableCoin);
+    let sun = t.board.sun_money;
+    let (col, row) = (2, 0);
+    let (cx, cy) = t.square_center(col, row);
+    t.click(cx, cy);
+    assert!(t.board.plants.iter().any(|(_, p)| p.col == col && p.row == row && p.seed == seed));
+    assert_eq!(t.board.sun_money, sun, "the packet didn't cost sun");
+    assert!(!t.board.coins.iter().any(|(_, c)| c.ty == crate::board::coin::CoinType::UsableSeedPacket && !c.dead));
+}

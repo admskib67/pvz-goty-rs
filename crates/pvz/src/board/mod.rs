@@ -405,6 +405,10 @@ pub struct Board {
     /// `mNextSurvivalStageCounter`: ticks of the "more zombies" pause
     /// between two survival stages.
     pub next_survival_stage_counter: i32,
+    /// It's Raining Seeds: ticks until the next packet falls.
+    raining_seeds_counter: i32,
+    /// It's Raining Seeds: ticks between rain splashes.
+    rain_splash_counter: i32,
     /// `LawnApp::IsFirstTimeAdventureMode`: the player hasn't finished adventure yet.
     pub first_time_adventure: bool,
     pub background: BackgroundType,
@@ -626,6 +630,8 @@ impl Board {
             level,
             survival_stage: 0,
             next_survival_stage_counter: 0,
+            raining_seeds_counter: if mode == GameMode::MiniGame(MiniGame::RainingSeeds) { 100 } else { 0 },
+            rain_splash_counter: 0,
             first_time_adventure,
             background: BackgroundType::Day,
             plant_row: [PlantRowType::Normal; MAX_GRID_SIZE_Y],
@@ -891,11 +897,15 @@ impl Board {
     pub fn choose_seeds_on_current_level(&self) -> bool {
         !self.has_conveyor_belt_seed_bank()
             && !self.is_whack_a_zombie_level()
+            && !self.is_challenge_without_seed_bank()
             && (!self.first_time_adventure || self.level > 7)
     }
 
     /// `GetNumSeedsInBank`.
     fn num_seeds_in_bank(&self, player: Option<&PlayerInfo>) -> usize {
+        if self.is_challenge_without_seed_bank() {
+            return 0;
+        }
         if self.has_conveyor_belt_seed_bank() {
             return 10;
         }
@@ -1479,6 +1489,7 @@ impl Board {
             self.tutorial_timer = 500;
         }
         self.update_progress_meter();
+        self.update_raining_seeds(effects, resources, images, sounds);
     }
 
     /// `Board::UpdateGameObjects`.
@@ -2874,7 +2885,10 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
 
 /// `Board::DrawUIBottom`: the seed bank and the menu button.
 fn draw_ui_bottom(board: &Board, res: &GameResources, g: &mut Graphics) {
-    board.seed_bank.draw(board, res, g);
+    // `LawnApp::IsChallengeWithoutSeedBank`: It's Raining Seeds has no bank.
+    if !board.is_challenge_without_seed_bank() {
+        board.seed_bank.draw(board, res, g);
+    }
     // `Board::DrawShovel`.
     if board.show_shovel
         && let Some(bank) = res.image("IMAGE_SHOVELBANK")

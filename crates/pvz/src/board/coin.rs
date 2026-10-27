@@ -52,6 +52,9 @@ pub enum CoinType {
     PresentMinigames,
     /// The present that unlocks the puzzle modes (`COIN_PRESENT_PUZZLE_MODE`).
     PresentPuzzle,
+    /// A seed packet that falls from the sky and is planted straight from the
+    /// lawn (`COIN_USABLE_SEED_PACKET`): It's Raining Seeds.
+    UsableSeedPacket,
 }
 
 /// What a present unlocks when it's picked up.
@@ -118,6 +121,10 @@ pub struct Coin {
     reanim: Option<ReanimationId>,
     /// The plant a `FinalSeedPacket` shows.
     pub award_seed: Option<SeedType>,
+    /// The plant a `UsableSeedPacket` carries.
+    pub usable_seed: Option<SeedType>,
+    /// The packet is in the cursor (`mCoinID`), so it isn't drawn on the lawn.
+    pub usable_held: bool,
     collect_x: f32,
     collect_y: f32,
     /// The bouncing arrow over an award that's landed.
@@ -176,6 +183,8 @@ impl Coin {
             render_order: make_render_order(render_layer::COIN_BANK, 0, 1),
             reanim: None,
             award_seed: None,
+            usable_seed: None,
+            usable_held: false,
             collect_x: 0.0,
             collect_y: 0.0,
             arrow: None,
@@ -713,6 +722,15 @@ impl Coin {
                 g.draw_image_cel_center_scaled(image, self.pos_x, self.pos_y, 0, self.scale, self.scale);
             }
             g.pop_state();
+        }
+        if self.usable_held {
+            return;
+        }
+        if self.ty == CoinType::UsableSeedPacket
+            && let Some(seed) = self.usable_seed
+        {
+            let gray = if self.is_being_collected { 255 } else { super::seed_bank::flashing_gray(self.coin_age, 75) };
+            super::seed_bank::draw_seed_packet(g, res, self.pos_x, self.pos_y, seed, 0.0, gray, false);
         }
         if self.ty == CoinType::FinalSeedPacket
             && let Some(seed) = self.award_seed

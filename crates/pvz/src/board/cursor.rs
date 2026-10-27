@@ -40,6 +40,9 @@ pub enum CursorType {
     Hammer,
     /// Aiming a cob cannon (`CURSOR_TYPE_COBCANNON_TARGET`).
     CobCannonTarget,
+    /// Carrying a seed packet picked up off the lawn
+    /// (`CURSOR_TYPE_PLANT_FROM_USABLE_COIN`).
+    PlantFromUsableCoin,
 }
 
 /// What the mouse is carrying (`CursorObject`).
@@ -52,11 +55,13 @@ pub struct CursorObject {
     pub cob_cannon: Option<sexy::data_array::Id<Plant>>,
     /// The carried plant is an imitater's copy: it's planted as the imitater first.
     pub imitater: bool,
+    /// The falling packet coin this plant came from (`mCoinID`).
+    pub usable_coin: Option<sexy::data_array::Id<Coin>>,
 }
 
 impl Default for CursorObject {
     fn default() -> Self {
-        Self { cursor_type: CursorType::Normal, seed: None, seed_bank_index: None, cob_cannon: None, imitater: false }
+        Self { cursor_type: CursorType::Normal, seed: None, seed_bank_index: None, cob_cannon: None, imitater: false, usable_coin: None }
     }
 }
 
@@ -445,7 +450,7 @@ impl Board {
     }
 
     fn is_plant_in_cursor(&self) -> bool {
-        self.cursor.cursor_type == CursorType::PlantFromBank
+        matches!(self.cursor.cursor_type, CursorType::PlantFromBank | CursorType::PlantFromUsableCoin)
     }
 
     /// `Board::ClearCursor`.
@@ -462,6 +467,12 @@ impl Board {
     pub(super) fn refresh_seed_packet_from_cursor(&mut self, res: &GameResources) {
         if let Some(i) = self.cursor.seed_bank_index {
             self.seed_bank.packets[i].active = true;
+        }
+        // `Coin::DroppedUsableSeed`: the packet falls back onto the lawn.
+        if let Some(id) = self.cursor.usable_coin
+            && let Some(coin) = self.coins.get_mut(id)
+        {
+            coin.usable_held = false;
         }
         self.clear_cursor(res);
     }
@@ -621,6 +632,18 @@ impl Board {
                 coin.start_fade();
             }
             self.pending_fade_out = true;
+            return;
+        }
+        if coin.ty == super::coin::CoinType::UsableSeedPacket {
+            let Some(seed) = coin.usable_seed else { return };
+            coin.usable_held = true;
+            self.cursor = CursorObject {
+                cursor_type: CursorType::PlantFromUsableCoin,
+                seed: Some(seed),
+                usable_coin: Some(id),
+                ..Default::default()
+            };
+            sounds.play_sample("SOUND_SEEDLIFT");
             return;
         }
         // PlayCollectSound.
@@ -828,11 +851,18 @@ impl Board {
             self.clear_advice(Some(advice));
         }
         let conveyor = self.has_conveyor_belt_seed_bank();
-        if !conveyor && !self.take_sun_money(seed.cost(), sounds) {
+        let usable = self.cursor.usable_coin.is_some();
+        if !conveyor && !usable && !self.take_sun_money(seed.cost(), sounds) {
             return;
         }
         let imitater = self.cursor.imitater;
         self.add_plant_as(grid_x, grid_y, seed, imitater, effects, res, images, sounds);
+        if let Some(id) = self.cursor.usable_coin
+            && let Some(coin) = self.coins.get_mut(id)
+        {
+            coin.dead = true;
+            coin.usable_held = false;
+        }
         if let Some(i) = self.cursor.seed_bank_index {
             // SeedPacket::WasPlanted.
             if conveyor {
