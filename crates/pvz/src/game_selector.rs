@@ -565,6 +565,8 @@ impl GameSelector {
             // KillGameSelector + ShowStoreScreen: the store opens over the
             // menu's place and the main menu comes back when it closes.
             ButtonId::Store => next_state.set(AppState::Store),
+            // KillGameSelector + Zen Garden.
+            ButtonId::ZenGarden => next_state.set(AppState::ZenGarden),
             // KillGameSelector + ShowChallengeScreen(CHALLENGE_PAGE_SURVIVAL).
             ButtonId::Survival => {
                 commands.insert_resource(crate::challenge::ChallengePageRequest(crate::challenge::ChallengePage::Survival));
@@ -589,7 +591,6 @@ impl GameSelector {
                 commands.insert_resource(AwardScreen::help(profiles.player().map_or(1, |p| p.level)));
                 next_state.set(AppState::Award);
             }
-            other => info!("{other:?} isn't ported yet"),
         }
     }
 }
@@ -817,6 +818,7 @@ fn selector_input(
                 commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(crate::board::MiniGame::Speed))));
                 next_state.set(AppState::Board);
             }
+            Ok("zen") => next_state.set(AppState::ZenGarden),
             Ok("puzzles") => {
                 commands.insert_resource(crate::challenge::ChallengePageRequest(crate::challenge::ChallengePage::Puzzle));
                 next_state.set(AppState::Challenges);

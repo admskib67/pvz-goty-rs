@@ -23,6 +23,7 @@ mod setup;
 mod store;
 mod title;
 mod widgets;
+mod zen_garden;
 mod zombie;
 
 use std::path::PathBuf;
@@ -58,6 +59,8 @@ pub enum AppState {
     Store,
     /// The challenge screen: survival's five lawns.
     Challenges,
+    /// The Zen Garden greenhouse.
+    ZenGarden,
     /// The credits movie.
     Credits,
 }
@@ -157,7 +160,7 @@ fn main() {
             almanac::AlmanacPlugin,
             devshot::DevShotPlugin,
         ))
-        .add_plugins((credits::CreditsPlugin, challenge::ChallengePlugin))
+        .add_plugins((credits::CreditsPlugin, challenge::ChallengePlugin, zen_garden::ZenGardenPlugin))
         .add_systems(Startup, spawn_camera)
         .add_systems(OnEnter(AppState::Boot), boot)
         .run();
