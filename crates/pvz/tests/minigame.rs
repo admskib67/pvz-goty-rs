@@ -350,3 +350,43 @@ fn a_zombie_walking_into_a_portal_comes_out_of_its_pair() {
     assert!(z.pos_x > 500.0, "on the far side of the lawn: {}", z.pos_x);
     assert_eq!(z.last_portal_x, 9);
 }
+
+#[test]
+fn last_stand_waits_for_the_onslaught_and_budgets_5000_sun() {
+    let Some(mut t) = board(MiniGame::LastStand) else { return };
+    assert_eq!(t.board.background, crate::board::BackgroundType::Pool);
+    assert_eq!(t.board.sun_money, 5000);
+    assert_eq!(t.board.waves.num_waves, 10);
+    assert!(!t.board.last_stand_onslaught);
+    let button = t.board.onslaught_button.as_ref().expect("the start button");
+    assert_eq!(button.label, "Start Onslaught");
+    // Waves don't come until the player starts them.
+    let zombies_before = t.board.zombies.iter().count();
+    t.ticks(400);
+    assert_eq!(t.board.zombies.iter().count(), zombies_before, "no onslaught, no zombies");
+    t.with(|board, _effects, _res, _images, sounds| board.start_onslaught(sounds));
+    assert!(t.board.last_stand_onslaught);
+    assert_eq!(t.board.waves.zombie_count_down, 10);
+    assert!(t.board.onslaught_button.as_ref().is_some_and(|b| b.no_draw));
+    // Natural sun is off: the budget is the budget.
+    t.ticks(300);
+    assert_eq!(t.board.sun_money, 5000);
+}
+
+#[test]
+fn last_stand_stage_clears_hand_the_next_onslaught_to_the_player() {
+    let Some(mut t) = board(MiniGame::LastStand) else { return };
+    t.with(|board, _effects, _res, _images, sounds| board.start_onslaught(sounds));
+    t.board.waves.current_wave = t.board.waves.num_waves;
+    t.zombie(ZombieType::Normal, 2, 0.0);
+    assert!(t.run_until(300, |b| b.next_survival_stage_counter > 0), "the stage is defended");
+    assert!(t.run_until(700, |b| b.survival_stage == 1), "the next stage is ready");
+    assert!(!t.board.last_stand_onslaught, "but waits for the button");
+    assert_eq!(t.board.waves.current_wave, 0);
+    let button = t.board.onslaught_button.as_ref().expect("button");
+    assert!(!button.no_draw);
+    assert_eq!(button.label, "Continue Onslaught");
+    assert!(!t.board.is_last_stand_final_stage());
+    t.board.survival_stage = 4;
+    assert!(t.board.is_last_stand_final_stage());
+}

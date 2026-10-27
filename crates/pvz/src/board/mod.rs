@@ -411,6 +411,11 @@ pub struct Board {
     rain_splash_counter: i32,
     /// Portal Combat: ticks until a portal moves (`mChallengeStateCounter`).
     portal_relocate_counter: i32,
+    /// Last Stand: whether the onslaught is running (waves wait for the
+    /// button's click otherwise).
+    pub last_stand_onslaught: bool,
+    /// Last Stand's Start/CONTINUE ONSLAUGHT button (`mStoreButton`).
+    onslaught_button: Option<MenuButton>,
     /// `LawnApp::IsFirstTimeAdventureMode`: the player hasn't finished adventure yet.
     pub first_time_adventure: bool,
     pub background: BackgroundType,
@@ -635,6 +640,15 @@ impl Board {
             raining_seeds_counter: if mode == GameMode::MiniGame(MiniGame::RainingSeeds) { 100 } else { 0 },
             rain_splash_counter: 0,
             portal_relocate_counter: 0,
+            last_stand_onslaught: false,
+            onslaught_button: (mode == GameMode::MiniGame(MiniGame::LastStand)).then(|| MenuButton {
+                rect: IRect::new(300, 559, 510, 605),
+                label: resources.translate("[START_ONSLAUGHT]"),
+                no_draw: false,
+                disabled: false,
+                is_over: false,
+                is_down: false,
+            }),
             first_time_adventure,
             background: BackgroundType::Day,
             plant_row: [PlantRowType::Normal; MAX_GRID_SIZE_Y],
@@ -739,7 +753,14 @@ impl Board {
         board.init_fog();
         let level_seed = board.level_rand_seed(player.map_or(0, |p| p.id), player.map_or(0, |p| p.finished_adventure));
         board.add_level_grave_stones(&mut sexy::rand::MtRand::new(level_seed), rng);
-        board.sun_money = if board.first_time_adventure && level == 1 { 150 } else { 50 };
+        board.sun_money = if board.minigame() == Some(MiniGame::LastStand) {
+            // `InitLevel`: Last Stand's budget.
+            5000
+        } else if board.first_time_adventure && level == 1 {
+            150
+        } else {
+            50
+        };
         if !board.stage_is_night() {
             board.sun_count_down = rng.range_int(425, 700);
         }
@@ -1403,6 +1424,17 @@ impl Board {
             self.update_game(effects, resources, images, music, sounds);
         }
         self.update_portal_combat(effects, resources, images, sounds);
+        // Last Stand's button is up while the lawn waits for the onslaught.
+        if self.onslaught_button.is_some() {
+            let waiting = !self.last_stand_onslaught
+                && self.next_survival_stage_counter == 0
+                && self.scene == GameScene::Playing
+                && !self.has_level_award_dropped();
+            if let Some(button) = &mut self.onslaught_button {
+                button.no_draw = !waiting;
+                button.disabled = !waiting;
+            }
+        }
         // An art challenge's picture can be finished by anything that plants
         // (an imitater counts once it turns into the real thing).
         self.check_art_challenge_complete(effects, resources, images, sounds);
@@ -1461,6 +1493,23 @@ impl Board {
 }
 
 impl Board {
+    /// `Board::MouseDown` on the Start/CONTINUE ONSLAUGHT button.
+    pub(super) fn start_onslaught(&mut self, sounds: &mut Sounds) {
+        if self.minigame() != Some(MiniGame::LastStand) || self.last_stand_onslaught {
+            return;
+        }
+        self.last_stand_onslaught = true;
+        self.waves.zombie_count_down = 10;
+        self.waves.zombie_count_down_start = 10;
+        if let Some(button) = &mut self.onslaught_button {
+            button.no_draw = true;
+            button.disabled = true;
+            button.is_over = false;
+            button.is_down = false;
+        }
+        sounds.play_sample("SOUND_GRAVEBUTTON");
+    }
+
     /// `Board::UpdateGame`: the objects, then the level's timers and waves.
     #[allow(clippy::too_many_arguments)]
     fn update_game(
@@ -2307,7 +2356,11 @@ impl Board {
         images: &mut Assets<Image>,
         sounds: &mut Sounds,
     ) {
-        if self.stage_is_night() || self.has_level_award_dropped() || self.has_conveyor_belt_seed_bank() {
+        if self.stage_is_night()
+            || self.has_level_award_dropped()
+            || self.has_conveyor_belt_seed_bank()
+            || self.minigame() == Some(MiniGame::LastStand)
+        {
             return;
         }
         let waiting = matches!(self.tutorial_state, TutorialState::Level1PickUpPeashooter | TutorialState::Level1PlantPeashooter);
@@ -2389,7 +2442,11 @@ impl Board {
             && p.x < (sx + sw) as f32
             && p.y >= sy as f32
             && p.y < (sy + sh) as f32;
-        let hand = over_packet || over_shovel || self.coin_at(p).is_some() || self.menu_button.is_mouse_over();
+        let hand = over_packet
+            || over_shovel
+            || self.coin_at(p).is_some()
+            || self.menu_button.is_mouse_over()
+            || self.onslaught_button.as_ref().is_some_and(|b| b.is_mouse_over());
         (hand, true)
     }
 }
@@ -2457,9 +2514,21 @@ fn board_input(
     let button = &mut board.menu_button;
     button.is_over = screen.is_some_and(|p| button.rect.contains(p.floor().as_ivec2()));
     button.is_down = mouse.pressed(MouseButton::Left) && button.is_over;
+    let onslaught_over = board
+        .onslaught_button
+        .as_ref()
+        .is_some_and(|b| !b.no_draw && screen.is_some_and(|p| b.rect.contains(p.floor().as_ivec2())));
+    if let Some(b) = &mut board.onslaught_button {
+        b.is_over = onslaught_over;
+        b.is_down = mouse.pressed(MouseButton::Left) && onslaught_over;
+    }
     let Some(p) = board.mouse.filter(|_| !modal) else { return };
 
     if mouse.just_pressed(MouseButton::Left) {
+        if onslaught_over {
+            board.start_onslaught(&mut sounds);
+            return;
+        }
         if board.menu_button.is_mouse_over() && board.can_interact_with_board_buttons() {
             sounds.play_sample("SOUND_GRAVEBUTTON");
         } else if board.scene == GameScene::LevelIntro && board.cut_scene.is_showing_crazy_dave() {
@@ -2893,6 +2962,13 @@ fn draw_ui_bottom(board: &Board, res: &GameResources, g: &mut Graphics) {
     // `LawnApp::IsChallengeWithoutSeedBank`: It's Raining Seeds has no bank.
     if !board.is_challenge_without_seed_bank() {
         board.seed_bank.draw(board, res, g);
+    }
+    // Last Stand's Start/CONTINUE ONSLAUGHT button (`Board::DrawStoreButton`).
+    if let Some(b) = &board.onslaught_button
+        && !b.no_draw
+    {
+        let (x, y) = (b.rect.x0, b.rect.y0);
+        draw_stone_button(g, res, x, y, b.rect.x1 - x, b.rect.y1 - y, b.is_down && b.is_over, b.is_mouse_over(), &b.label);
     }
     // `Board::DrawShovel`.
     if board.show_shovel

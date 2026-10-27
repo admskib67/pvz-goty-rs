@@ -111,6 +111,14 @@ impl Board {
         {
             return false;
         }
+        // Last Stand's stages end like survival's, but the next onslaught
+        // waits for the button.
+        if self.minigame() == Some(super::MiniGame::LastStand) && !self.is_last_stand_final_stage() {
+            if self.next_survival_stage_counter == 0 {
+                self.begin_last_stand_stage(center, effects, res, images, sounds);
+            }
+            return false;
+        }
         // An art challenge ends on its picture, not on the last wave.
         if self.is_continuous_challenge() && self.is_minigame() && self.minigame() != Some(super::MiniGame::FinalBoss) {
             return false;
@@ -299,6 +307,41 @@ impl Board {
         sounds.play_sample("SOUND_LOSEMUSIC");
         self.tutorial_arrow_remove();
         self.refresh_seed_packet_from_cursor(res);
+    }
+
+    /// `FadeOutLevel`'s Last Stand branch: the flags behind the player, ten
+    /// suns, and a pause before the next onslaught.
+    #[allow(clippy::too_many_arguments)]
+    fn begin_last_stand_stage(
+        &mut self,
+        center: (i32, i32),
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        sounds: &mut Sounds,
+    ) {
+        self.next_survival_stage_counter = 500;
+        let advice = self.last_stand_defended_advice(res);
+        self.display_advice(res, &advice, super::message::MessageStyle::BigMiddleFast, None);
+        sounds.play_sample("SOUND_HUGE_WAVE");
+        // Ten sun coins, like `FadeOutLevel`.
+        for i in 0..10 {
+            self.add_coin(
+                center.0 as f32 + i as f32 * 5.0,
+                center.1 as f32,
+                CoinType::Sun,
+                CoinMotion::Coin,
+                effects,
+                res,
+                images,
+                sounds,
+            );
+        }
+        for (_, zombie) in self.zombies.iter_mut() {
+            if !zombie.is_dead_or_dying() {
+                zombie.die_no_loot(effects);
+            }
+        }
     }
 
     /// A won survival run is over: the board says so, but the player's

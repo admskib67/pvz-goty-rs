@@ -161,6 +161,7 @@ impl MiniGame {
                 | Self::SeeingStars
                 | Self::RainingSeeds
                 | Self::PortalCombat
+                | Self::LastStand
         )
     }
 
@@ -182,6 +183,7 @@ impl MiniGame {
     pub fn num_waves(self) -> i32 {
         match self {
             Self::WhackAZombie => 12,
+            Self::LastStand => 10,
             Self::WallnutBowling
             | Self::WarAndPeas
             | Self::Invisighoul
@@ -210,6 +212,18 @@ impl MiniGame {
             Self::Speed => &[Z::Normal, Z::TrafficCone, Z::DolphinRider, Z::Polevaulter],
             Self::PortalCombat => &[Z::Normal, Z::Pail, Z::Football, Z::Balloon],
             Self::SeeingStars => &[Z::Normal, Z::TrafficCone, Z::Pail],
+            Self::LastStand => &[
+                Z::Normal,
+                Z::TrafficCone,
+                Z::Pail,
+                Z::Door,
+                Z::Football,
+                Z::Newspaper,
+                Z::JackInTheBox,
+                Z::Polevaulter,
+                Z::DolphinRider,
+                Z::Ladder,
+            ],
             Self::RainingSeeds => &[
                 Z::Normal,
                 Z::TrafficCone,
@@ -482,6 +496,31 @@ impl Board {
             return 0.01;
         }
         if self.grid_items.iter().any(|(_, g)| g.is_open_portal() && g.grid_y == row) { 1.0 } else { 0.2 }
+    }
+
+    /// `Board::IsLastStandFinalStage`: five onslaughts.
+    pub fn is_last_stand_final_stage(&self) -> bool {
+        self.minigame() == Some(MiniGame::LastStand) && self.survival_stage >= 4
+    }
+
+    /// `GetSurvivalFlagsCompleted` for Last Stand.
+    pub fn last_stand_flags(&self) -> i32 {
+        if self.minigame() != Some(MiniGame::LastStand) {
+            return 0;
+        }
+        let per_flag = self.num_waves_per_flag().max(1);
+        self.survival_stage + self.waves.current_wave.min(self.waves.num_waves) / per_flag
+    }
+
+    /// `LastStandCompletedStage`'s advice: how many flags are behind you.
+    pub fn last_stand_defended_advice(&self, res: &GameResources) -> String {
+        let flags = self.last_stand_flags();
+        let flag_str = if flags == 1 {
+            res.translate("[ONE_FLAG]")
+        } else {
+            res.translate("[COUNT_FLAGS]").replace("{COUNT}", &flags.to_string())
+        };
+        res.translate("[SUCCESSFULLY_DEFENDED]").replace("{FLAGS}", &flag_str)
     }
 
     /// `Challenge::PortalStart`: the two pairs of portals and the onslaught

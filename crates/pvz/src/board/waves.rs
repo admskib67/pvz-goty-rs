@@ -840,6 +840,10 @@ impl Board {
         if self.has_level_award_dropped() {
             return;
         }
+        // Last Stand's waves wait for the Start Onslaught button.
+        if self.minigame() == Some(super::MiniGame::LastStand) && !self.last_stand_onslaught {
+            return;
+        }
         // Challenge::UpdateSpawning: the boss level has no waves.
         if self.is_final_boss_level() {
             return;
@@ -917,7 +921,7 @@ impl Board {
                 self.waves.zombie_health_to_next_wave =
                     (rng.range_f32(0.5, 0.65) * self.waves.zombie_health_wave_start as f32) as i32;
                 // Board::UpdateZombieSpawning: Little Trouble's waves come every 750 ticks.
-                self.waves.zombie_count_down = if self.is_little_trouble_level() {
+                self.waves.zombie_count_down = if self.is_little_trouble_level() || self.minigame() == Some(super::MiniGame::LastStand) {
                     ZOMBIE_COUNTDOWN_LITTLE_TROUBLE
                 } else {
                     ZOMBIE_COUNTDOWN + rng.next_range(ZOMBIE_COUNTDOWN_RANGE as u32) as i32

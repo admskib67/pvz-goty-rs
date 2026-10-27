@@ -158,6 +158,29 @@ impl Board {
         if self.next_survival_stage_counter > 0 {
             return;
         }
+        // Last Stand completes a stage differently: it waits for the
+        // player's next onslaught instead of starting the waves at once.
+        if self.minigame() == Some(super::MiniGame::LastStand) {
+            let fx = Fx { effects, res, images, sounds };
+            self.survival_stage += 1;
+            self.waves = WaveState::default();
+            self.init_minigame_waves(fx.sounds.rng());
+            for i in 0..self.seed_bank.num_packets {
+                let packet = &mut self.seed_bank.packets[i];
+                packet.active = true;
+                packet.refreshing = false;
+                packet.refresh_counter = 0;
+                packet.refresh_time = 0;
+            }
+            self.last_stand_onslaught = false;
+            if let Some(button) = &mut self.onslaught_button {
+                button.label = fx.res.translate("[CONTINUE_ONSLAUGHT]");
+                button.rect = super::IRect::new(270, 559, 527, 605);
+                button.no_draw = false;
+                button.disabled = false;
+            }
+            return;
+        }
         let fx = Fx { effects, res, images, sounds };
         self.survival_stage += 1;
         self.clear_advice(None);
