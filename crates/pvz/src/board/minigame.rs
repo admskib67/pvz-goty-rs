@@ -162,6 +162,7 @@ impl MiniGame {
                 | Self::RainingSeeds
                 | Self::PortalCombat
                 | Self::LastStand
+                | Self::SlotMachine
         )
     }
 
@@ -210,6 +211,7 @@ impl MiniGame {
             Self::WhackAZombie => &[Z::Normal, Z::TrafficCone, Z::Pail],
             Self::PogoParty => &[Z::Pogo],
             Self::Speed => &[Z::Normal, Z::TrafficCone, Z::DolphinRider, Z::Polevaulter],
+            Self::SlotMachine => &[Z::Normal, Z::TrafficCone, Z::Pail],
             Self::PortalCombat => &[Z::Normal, Z::Pail, Z::Football, Z::Balloon],
             Self::SeeingStars => &[Z::Normal, Z::TrafficCone, Z::Pail],
             Self::LastStand => &[
@@ -355,7 +357,7 @@ impl Board {
     /// waves run out (an art challenge ends on its picture, the boss on the
     /// boss).
     pub fn is_continuous_challenge(&self) -> bool {
-        matches!(self.minigame(), Some(MiniGame::FinalBoss | MiniGame::SeeingStars))
+        matches!(self.minigame(), Some(MiniGame::FinalBoss | MiniGame::SeeingStars | MiniGame::SlotMachine))
     }
 
     /// `gArtChallengeStarFruit`: Seeing Stars' ghost picture. A row is a
@@ -521,6 +523,214 @@ impl Board {
             res.translate("[COUNT_FLAGS]").replace("{COUNT}", &flags.to_string())
         };
         res.translate("[SUCCESSFULLY_DEFENDED]").replace("{FLAGS}", &flag_str)
+    }
+
+    /// `Challenge::Challenge`'s Slot Machine setup: three reels and the
+    /// handle's reanimation.
+    pub(super) fn start_slot_machine(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut bevy::asset::Assets<bevy::image::Image>) {
+        if self.minigame() != Some(MiniGame::SlotMachine) {
+            return;
+        }
+        self.seed_bank.num_packets = 3;
+        for (i, seed) in [SeedType::Sunflower, SeedType::Peashooter, SeedType::Snowpea].into_iter().enumerate() {
+            let packet = &mut self.seed_bank.packets[i];
+            packet.x = i as i32 * 59 + 247;
+            packet.packet_type = Some(seed);
+            packet.slot_symbol = Some(super::seed_bank::SlotSymbol::Plant(seed));
+            packet.active = true;
+        }
+        self.seed_bank.width = res.image("IMAGE_SEEDBANK").map_or(0, |i| i.width as i32);
+        let (x, y) = (self.seed_bank.x as f32 + 96.0, self.seed_bank.y as f32 - 20.0);
+        if let Ok((id, reanim)) = effects.add_reanimation(x, y, crate::reanim::ReanimationType::SlotMachineHandle, res, images) {
+            reanim.render_order = super::make_render_order(super::render_layer::UI_BOTTOM, 0, 3);
+            self.slot_handle = Some(id);
+        }
+        let message = res.translate("[ADVICE_SLOT_MACHINE_COLLECT_SUN]").replace("{SCORE}", "2000");
+        self.display_advice(res, &message, super::message::MessageStyle::SlotMachine, None);
+    }
+
+    /// The handle's pull: 25 sun buys three spins.
+    pub(super) fn pull_slot_machine(&mut self, effects: &mut EffectSystem, sounds: &mut Sounds) -> bool {
+        if self.minigame() != Some(MiniGame::SlotMachine)
+            || self.slot_rolling
+            || self.has_level_award_dropped()
+            || !self.take_sun_money(25, sounds)
+        {
+            return false;
+        }
+        self.slot_rolling = true;
+        self.slot_roll_count += 1;
+        for i in 0..3 {
+            let symbol = self.pick_slot_symbol(i, sounds.rng());
+            let packet = &mut self.seed_bank.packets[i];
+            packet.slot_countdown = 300;
+            packet.slot_position = 0.0;
+            packet.slot_next = Some(symbol);
+        }
+        if let Some(id) = self.slot_handle
+            && let Some(reanim) = effects.get_mut(id)
+        {
+            reanim.play("anim_pull", sexy::reanim::LoopType::PlayOnceAndHold, 0, 36.0);
+        }
+        sounds.play_sample("SOUND_SLOT_MACHINE");
+        true
+    }
+
+    /// `SeedPacket::PickNextSlotMachineSeed`: plants, then suns and
+    /// diamonds; the third reel likes matching the first two.
+    fn pick_slot_symbol(&mut self, reel: usize, rng: &mut sexy::rand::MtRand) -> super::seed_bank::SlotSymbol {
+        use super::seed_bank::SlotSymbol;
+        let peas = self.plants.iter().filter(|(_, p)| !p.dead && p.seed == SeedType::Peashooter).count() as i32;
+        let first = self.seed_bank.packets[0].slot_next;
+        let second = self.seed_bank.packets[1].slot_next;
+        let mut choices: Vec<(SlotSymbol, i32)> = vec![
+            (SlotSymbol::Plant(SeedType::Sunflower), 100),
+            (SlotSymbol::Plant(SeedType::Peashooter), sexy::tod::animate_curve(0, 5, peas, 200, 100, sexy::tod::TodCurve::Linear)),
+            (SlotSymbol::Plant(SeedType::Snowpea), 100),
+            (SlotSymbol::Plant(SeedType::Wallnut), 100),
+            (SlotSymbol::Sun, 100),
+            (SlotSymbol::Diamond, 30),
+        ];
+        if reel == 2 {
+            for (symbol, weight) in &mut choices {
+                if *symbol != SlotSymbol::Diamond && (Some(*symbol) == first || Some(*symbol) == second) {
+                    *weight += *weight / 2;
+                }
+            }
+        }
+        let total: i32 = choices.iter().map(|(_, w)| *w).sum();
+        let mut roll = rng.next_range(total.max(1) as u32) as i32;
+        for (symbol, weight) in choices {
+            roll -= weight;
+            if roll < 0 {
+                return symbol;
+            }
+        }
+        SlotSymbol::Sun
+    }
+
+    /// `Challenge::UpdateSlotMachine`: the reels spin, pay out and settle;
+    /// 2000 sun wins.
+    pub(super) fn update_slot_machine(
+        &mut self,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut bevy::asset::Assets<bevy::image::Image>,
+        sounds: &mut Sounds,
+    ) {
+        if self.minigame() != Some(MiniGame::SlotMachine) || self.has_level_award_dropped() {
+            return;
+        }
+        if self.slot_rolling {
+            for i in 0..3 {
+                if self.seed_bank.packets[i].slot_countdown <= 0 {
+                    continue;
+                }
+                let countdown = self.seed_bank.packets[i].slot_countdown - 1;
+                let flips = sexy::tod::animate_curve_float(300, 0, countdown, 6.0, 2.0, sexy::tod::TodCurve::Linear);
+                self.seed_bank.packets[i].slot_countdown = countdown;
+                self.seed_bank.packets[i].slot_position += flips * 0.01;
+                if self.seed_bank.packets[i].slot_position >= 1.0 {
+                    self.seed_bank.packets[i].slot_symbol = self.seed_bank.packets[i].slot_next;
+                    self.seed_bank.packets[i].slot_position -= 1.0;
+                    if countdown > 0 {
+                        let next = self.pick_slot_symbol(i, sounds.rng());
+                        self.seed_bank.packets[i].slot_next = Some(next);
+                    } else {
+                        self.seed_bank.packets[i].slot_position = 0.0;
+                    }
+                }
+            }
+            if self.seed_bank.packets[..3].iter().all(|p| p.slot_countdown == 0) {
+                self.slot_rolling = false;
+                if let Some(id) = self.slot_handle
+                    && let Some(reanim) = effects.get_mut(id)
+                {
+                    reanim.play("anim_return", sexy::reanim::LoopType::PlayOnceAndHold, 0, 24.0);
+                }
+                self.payout_slot_machine(effects, res, images, sounds);
+            }
+        }
+        // The winning score.
+        self.waves.progress_meter_width = sexy::tod::animate_curve(0, 2000, self.sun_money.clamp(0, 2000), 0, 500, sexy::tod::TodCurve::Linear);
+        if self.sun_money >= 2000 && !self.level_award_spawned {
+            self.level_award_spawned = true;
+            sounds.play_foley(crate::audio::FoleyType::SpawnSun);
+            let (x, y) = (self.grid_to_pixel_x(4) + 40, self.grid_to_pixel_y(4, 2) + 40);
+            self.add_coin(
+                x as f32,
+                y as f32,
+                super::coin::CoinType::SilverSunflower,
+                super::coin::CoinMotion::Coin,
+                effects,
+                res,
+                images,
+                sounds,
+            );
+        }
+    }
+
+    /// `UpdateSlotMachine`'s two-of-a-kind and jackpot payouts.
+    fn payout_slot_machine(
+        &mut self,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut bevy::asset::Assets<bevy::image::Image>,
+        sounds: &mut Sounds,
+    ) {
+        use super::seed_bank::SlotSymbol;
+        let symbols: Vec<SlotSymbol> = (0..3).filter_map(|i| self.seed_bank.packets[i].slot_symbol).collect();
+        if symbols.len() != 3 {
+            return;
+        }
+        let (a, b, c) = (symbols[0], symbols[1], symbols[2]);
+        let same_count = (a == b) as i32 + (b == c) as i32 + (a == c) as i32;
+        let prize = if same_count == 3 {
+            Some((a, 3))
+        } else if same_count == 1 {
+            let pair = if a == b || a == c { a } else { b };
+            Some((pair, 1))
+        } else {
+            None
+        };
+        let Some((symbol, sets)) = prize else { return };
+        let pair = same_count == 1;
+        sounds.play_foley(crate::audio::FoleyType::Chime);
+        match symbol {
+            SlotSymbol::Diamond => {
+                let count = if pair { 1 } else { 5 };
+                for i in 0..count {
+                    let (x, y) = if pair { (360.0, 85.0) } else { (320.0 + i as f32 * 12.0, 85.0) };
+                    self.add_coin(x, y, super::coin::CoinType::Diamond, super::coin::CoinMotion::Coin, effects, res, images, sounds);
+                }
+                let advice = if pair { "[ADVICE_SLOT_MACHINE_2_DIAMONDS]" } else { "[ADVICE_SLOT_MACHINE_DIAMOND_JACKPOT]" };
+                let text = res.translate(advice);
+                self.display_advice(res, &text, super::message::MessageStyle::SlotMachine, None);
+            }
+            SlotSymbol::Sun => {
+                let count = if pair { 4 } else { 20 };
+                for i in 0..count {
+                    let (x, y) = if pair { (320.0 + i as f32 * 15.0, 85.0) } else { (320.0 + i as f32 * 3.0, 85.0) };
+                    self.add_coin(x, y, super::coin::CoinType::Sun, super::coin::CoinMotion::Coin, effects, res, images, sounds);
+                }
+                let advice = if pair { "[ADVICE_SLOT_MACHINE_2_SUNS]" } else { "[ADVICE_SLOT_MACHINE_SUN_JACKPOT]" };
+                let text = res.translate(advice);
+                self.display_advice(res, &text, super::message::MessageStyle::SlotMachine, None);
+            }
+            SlotSymbol::Plant(seed) => {
+                for i in 0..sets {
+                    let (x, y) = (320.0 + i as f32 * 20.0, 85.0);
+                    let id = self.add_coin(x, y, super::coin::CoinType::UsableSeedPacket, super::coin::CoinMotion::Coin, effects, res, images, sounds);
+                    if let Some(coin) = self.coins.get_mut(id) {
+                        coin.usable_seed = Some(seed);
+                    }
+                }
+                let advice = if pair { "[ADVICE_SLOT_MACHINE_2_OF_A_KIND]" } else { "[ADVICE_SLOT_MACHINE_3_OF_A_KIND]" };
+                let text = res.translate(advice);
+                self.display_advice(res, &text, super::message::MessageStyle::SlotMachine, None);
+            }
+        }
+        let _ = res;
     }
 
     /// `Challenge::PortalStart`: the two pairs of portals and the onslaught

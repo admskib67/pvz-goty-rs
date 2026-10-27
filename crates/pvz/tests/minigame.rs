@@ -390,3 +390,44 @@ fn last_stand_stage_clears_hand_the_next_onslaught_to_the_player() {
     t.board.survival_stage = 4;
     assert!(t.board.is_last_stand_final_stage());
 }
+
+#[test]
+fn slot_machine_reels_start_as_plants_and_a_pull_costs_25_sun() {
+    let Some(mut t) = board(MiniGame::SlotMachine) else { return };
+    assert_eq!(t.board.background, crate::board::BackgroundType::Day);
+    assert!(t.board.is_continuous_challenge());
+    assert_eq!(t.board.seed_bank.num_packets, 3);
+    assert_eq!(t.board.seed_bank.packets[0].packet_type, Some(crate::plant::SeedType::Sunflower));
+    assert_eq!(t.board.seed_bank.packets[1].packet_type, Some(crate::plant::SeedType::Peashooter));
+    assert_eq!(t.board.seed_bank.packets[2].packet_type, Some(crate::plant::SeedType::Snowpea));
+    t.board.sun_money = 100;
+    t.click(500, 40);
+    assert!(t.board.slot_rolling, "the handle starts the reels");
+    assert_eq!(t.board.sun_money, 75);
+    for packet in &t.board.seed_bank.packets[..3] {
+        assert_eq!(packet.slot_countdown, 300);
+    }
+}
+
+#[test]
+fn three_diamonds_pay_the_jackpot_and_2000_sun_wins() {
+    use crate::board::coin::CoinType;
+    use crate::board::seed_bank::SlotSymbol;
+    let Some(mut t) = board(MiniGame::SlotMachine) else { return };
+    t.board.slot_rolling = true;
+    for packet in &mut t.board.seed_bank.packets[..3] {
+        packet.slot_symbol = Some(SlotSymbol::Diamond);
+        packet.slot_countdown = 0;
+    }
+    t.tick();
+    assert!(!t.board.slot_rolling, "the reels settled");
+    assert_eq!(
+        t.board.coins.iter().filter(|(_, c)| c.ty == CoinType::Diamond).count(),
+        5,
+        "three diamonds pay five"
+    );
+    t.board.sun_money = 2000;
+    t.tick();
+    assert!(t.board.level_award_spawned, "2000 sun ends the game");
+    assert!(t.board.coins.iter().any(|(_, c)| c.ty == CoinType::SilverSunflower));
+}

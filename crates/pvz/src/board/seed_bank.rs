@@ -16,6 +16,14 @@ use super::{Board, GameScene};
 pub const SEEDBANK_MAX: usize = 10;
 const SEED_PACKET_WIDTH: f32 = 50.0;
 
+/// What a Slot Machine reel shows (`SEED_SLOT_MACHINE_*` or a plant).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotSymbol {
+    Plant(SeedType),
+    Sun,
+    Diamond,
+}
+
 /// One seed packet. Coordinates are relative to the seed bank.
 #[derive(Debug, Clone)]
 pub struct SeedPacket {
@@ -29,6 +37,12 @@ pub struct SeedPacket {
     pub offset_x: i32,
     /// An imitater packet: `packet_type` is the plant it copies (`mImitaterType`).
     pub imitater: bool,
+    /// Slot Machine's rolling display (`mSlotMachiningPosition` and the seed
+    /// it is about to show).
+    pub slot_symbol: Option<SlotSymbol>,
+    pub slot_next: Option<SlotSymbol>,
+    pub slot_countdown: i32,
+    pub slot_position: f32,
 }
 
 impl Default for SeedPacket {
@@ -43,6 +57,10 @@ impl Default for SeedPacket {
             active: true,
             offset_x: 0,
             imitater: false,
+            slot_symbol: None,
+            slot_next: None,
+            slot_countdown: 0,
+            slot_position: 0.0,
         }
     }
 }
@@ -67,6 +85,25 @@ impl SeedPacket {
 
     /// `SeedPacket::Update`: recharging. Returns true when the packet should
     /// flash as ready (`FlashIfReady`): at the start and when recharged.
+    /// The slot machine's reels: a packet that jumps up by its spin
+    /// position, showing a plant, a sun or a diamond.
+    fn draw_slot(&self, board: &Board, res: &GameResources, g: &mut Graphics) {
+        let Some(seeds) = res.image("IMAGE_SEEDS") else { return };
+        let Some(symbol) = self.slot_symbol else {
+            if let Some(seed) = self.packet_type {
+                super::seed_bank::draw_seed_packet(g, res, 0.0, 0.0, seed, 0.0, 255, false);
+            }
+            return;
+        };
+        let (x, y) = (0.0, -70.0 * self.slot_position);
+        match symbol {
+            SlotSymbol::Sun => g.draw_image_cel(seeds, x, y, 5, 0),
+            SlotSymbol::Diamond => g.draw_image_cel(seeds, x, y, 6, 0),
+            SlotSymbol::Plant(seed) => super::seed_bank::draw_seed_packet(g, res, x, y, seed, 0.0, 255, false),
+        }
+        let _ = board;
+    }
+
     pub fn update(&mut self, scene: GameScene, main_counter: i32) -> bool {
         if scene != GameScene::Playing || self.packet_type.is_none() {
             return false;
@@ -86,6 +123,10 @@ impl SeedPacket {
 
     /// `SeedPacket::Draw`.
     fn draw(&self, board: &Board, res: &GameResources, g: &mut Graphics) {
+        if board.minigame() == Some(super::MiniGame::SlotMachine) {
+            self.draw_slot(board, res, g);
+            return;
+        }
         let Some(seed) = self.packet_type else { return };
         let mut percent_dark = 0.0;
         if !self.active {
@@ -211,6 +252,11 @@ impl SeedBank {
             g.pop_state();
         }
 
+        if board.minigame() == Some(super::MiniGame::SlotMachine)
+            && let Some(overlay) = res.image("IMAGE_SLOTMACHINE_OVERLAY")
+        {
+            g.draw_image(overlay, 189.0, -2.0);
+        }
         if !self.conveyor
             && let Some(font) = res.font("FONT_CONTINUUMBOLD14")
         {

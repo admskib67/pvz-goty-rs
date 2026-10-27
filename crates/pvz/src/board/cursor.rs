@@ -402,7 +402,7 @@ impl Board {
     }
 
     /// `Board::TakeSunMoney`.
-    fn take_sun_money(&mut self, amount: i32, sounds: &mut Sounds) -> bool {
+    pub(super) fn take_sun_money(&mut self, amount: i32, sounds: &mut Sounds) -> bool {
         if self.can_take_sun_money(amount) {
             self.sun_money -= amount;
             return true;
@@ -481,7 +481,9 @@ impl Board {
     pub(super) fn shovel_button_rect(&self, res: &GameResources) -> (i32, i32, i32, i32) {
         let width = res.image("IMAGE_SHOVELBANK").map_or(70, |i| i.width as i32);
         let height = res.image("IMAGE_SEEDBANK").map_or(87, |i| i.height as i32);
-        (self.seed_bank.extra_width() + 456, 0, width, height)
+        // `GetShovelButtonRect`: the slot machine's handle owns the usual spot.
+        let x = if self.minigame() == Some(super::MiniGame::SlotMachine) { 600 } else { self.seed_bank.extra_width() + 456 };
+        (x, 0, width, height)
     }
 
     /// `Board::MouseDownWithTool`, for the shovel.
@@ -547,11 +549,19 @@ impl Board {
             self.coin_mouse_down(id, effects, res, images, sounds);
             return;
         }
+        // Slot Machine: the handle is the only thing to click on the bank.
+        if self.minigame() == Some(super::MiniGame::SlotMachine) && !right && self.scene == GameScene::Playing {
+            let (x, y) = (self.seed_bank.x + 473, self.seed_bank.y);
+            if ip.x >= x && ip.x < x + 55 && ip.y >= y && ip.y < y + 80 {
+                self.pull_slot_machine(effects, sounds);
+                return;
+            }
+        }
         if self.cursor.cursor_type == CursorType::CobCannonTarget {
             self.mouse_down_cob_cannon_fire(ip, right, effects, res);
         } else if self.is_plant_in_cursor() {
             self.mouse_down_with_plant(ip, right, effects, res, images, sounds);
-        } else if !right && let Some(index) = self.seed_packet_at(ip) {
+        } else if !right && self.minigame() != Some(super::MiniGame::SlotMachine) && let Some(index) = self.seed_packet_at(ip) {
             self.packet_mouse_down(index, res, sounds);
         } else if !right
             && self.cursor.cursor_type == CursorType::Normal

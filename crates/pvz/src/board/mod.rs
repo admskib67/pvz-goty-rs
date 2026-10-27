@@ -416,6 +416,11 @@ pub struct Board {
     pub last_stand_onslaught: bool,
     /// Last Stand's Start/CONTINUE ONSLAUGHT button (`mStoreButton`).
     onslaught_button: Option<MenuButton>,
+    /// Slot Machine: the handle's reanimation, whether the reels are
+    /// spinning, and how many pulls have been made.
+    slot_handle: Option<crate::reanim::ReanimationId>,
+    pub slot_rolling: bool,
+    slot_roll_count: i32,
     /// `LawnApp::IsFirstTimeAdventureMode`: the player hasn't finished adventure yet.
     pub first_time_adventure: bool,
     pub background: BackgroundType,
@@ -641,6 +646,9 @@ impl Board {
             rain_splash_counter: 0,
             portal_relocate_counter: 0,
             last_stand_onslaught: false,
+            slot_handle: None,
+            slot_rolling: false,
+            slot_roll_count: 0,
             onslaught_button: (mode == GameMode::MiniGame(MiniGame::LastStand)).then(|| MenuButton {
                 rect: IRect::new(300, 559, 510, 605),
                 label: resources.translate("[START_ONSLAUGHT]"),
@@ -919,7 +927,8 @@ impl Board {
 
     /// `ChooseSeedsOnCurrentLevel`: early adventure levels hand out the plants.
     pub fn choose_seeds_on_current_level(&self) -> bool {
-        !self.has_conveyor_belt_seed_bank()
+        self.minigame() != Some(MiniGame::SlotMachine)
+            && !self.has_conveyor_belt_seed_bank()
             && !self.is_whack_a_zombie_level()
             && !self.is_challenge_without_seed_bank()
             && (!self.first_time_adventure || self.level > 7)
@@ -929,6 +938,9 @@ impl Board {
     fn num_seeds_in_bank(&self, player: Option<&PlayerInfo>) -> usize {
         if self.is_challenge_without_seed_bank() {
             return 0;
+        }
+        if self.minigame() == Some(MiniGame::SlotMachine) {
+            return 3;
         }
         if self.has_conveyor_belt_seed_bank() {
             return 10;
@@ -1164,6 +1176,7 @@ fn new_game(
     }
     let mut board = Board::new(mode, player, &mut resources, &mut images, sounds.rng());
     board.start_portal_combat(&mut effects, &mut resources, &mut images);
+    board.start_slot_machine(&mut effects, &mut resources, &mut images);
     board.prev_result_restart = was_lost;
     board.level_overridden = level_override.0.is_some();
     // PreNewGame erases the mode's save before a fresh game (never for a
@@ -1424,6 +1437,7 @@ impl Board {
             self.update_game(effects, resources, images, music, sounds);
         }
         self.update_portal_combat(effects, resources, images, sounds);
+        self.update_slot_machine(effects, resources, images, sounds);
         // Last Stand's button is up while the lawn waits for the onslaught.
         if self.onslaught_button.is_some() {
             let waiting = !self.last_stand_onslaught
