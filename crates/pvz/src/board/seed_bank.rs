@@ -45,6 +45,8 @@ pub struct SeedPacket {
     pub slot_position: f32,
     /// Beghouled's Shuffle/Crater button packet (`SEED_BEGHOULED_BUTTON_*`).
     pub button: Option<super::beghouled::BeghouledButton>,
+    /// Zombiquarium's Snorkel/Trophy packet (`SEED_ZOMBIQUARIUM_*`).
+    pub aquarium: Option<super::zombiquarium::AquariumPacket>,
 }
 
 impl Default for SeedPacket {
@@ -64,6 +66,7 @@ impl Default for SeedPacket {
             slot_countdown: 0,
             slot_position: 0.0,
             button: None,
+            aquarium: None,
         }
     }
 }
@@ -126,6 +129,12 @@ impl SeedPacket {
 
     /// `SeedPacket::Draw`.
     fn draw(&self, board: &Board, res: &GameResources, g: &mut Graphics) {
+        if let Some(packet) = self.aquarium {
+            let Some(seeds) = res.image("IMAGE_SEEDS") else { return };
+            let cel = if packet == super::zombiquarium::AquariumPacket::Snorkel { 7 } else { 8 };
+            g.draw_image_cel(seeds, 0.0, 0.0, cel, 0);
+            return;
+        }
         if let Some(button) = self.button {
             let Some(seeds) = res.image("IMAGE_SEEDS") else { return };
             let cel = if button == super::beghouled::BeghouledButton::Shuffle { 4 } else { 3 };

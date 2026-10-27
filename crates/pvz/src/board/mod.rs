@@ -45,6 +45,7 @@ mod survival;
 mod tooltip;
 mod tutorial;
 mod waves;
+mod zombiquarium;
 mod whack_a_zombie;
 mod zombie;
 
@@ -248,6 +249,8 @@ pub enum BackgroundType {
     Fog,
     Roof,
     Boss,
+    /// Zombiquarium's fish tank (`BACKGROUND_ZOMBIQUARIUM`).
+    Zombiquarium,
 }
 
 impl BackgroundType {
@@ -420,6 +423,10 @@ pub struct Board {
     onslaught_button: Option<MenuButton>,
     /// Beghouled's puzzle grid (`Challenge`'s Beghouled fields).
     pub beghouled: Option<Beghouled>,
+    /// Zombiquarium's dropped brains, in screen coordinates (three at most).
+    pub aquarium_brains: Vec<(f32, f32)>,
+    /// Zombiquarium: whether the tank has already lost.
+    aquarium_lost: bool,
     /// Slot Machine: the handle's reanimation, whether the reels are
     /// spinning, and how many pulls have been made.
     slot_handle: Option<crate::reanim::ReanimationId>,
@@ -651,6 +658,8 @@ impl Board {
             portal_relocate_counter: 0,
             last_stand_onslaught: false,
             beghouled: None,
+            aquarium_brains: Vec::new(),
+            aquarium_lost: false,
             slot_handle: None,
             slot_rolling: false,
             slot_roll_count: 0,
@@ -874,6 +883,7 @@ impl Board {
             BackgroundType::Fog => "DelayLoad_Background4",
             BackgroundType::Roof => "DelayLoad_Background5",
             BackgroundType::Boss => "DelayLoad_Background6",
+            BackgroundType::Zombiquarium => "DelayLoad_Background1",
         }];
         if self.background == BackgroundType::Day && level <= 4 {
             groups.push("DelayLoad_BackgroundUnsodded");
@@ -886,7 +896,7 @@ impl Board {
 
         use PlantRowType::*;
         self.plant_row = match self.background {
-            BackgroundType::Day | BackgroundType::Night | BackgroundType::Roof | BackgroundType::Boss => {
+            BackgroundType::Day | BackgroundType::Night | BackgroundType::Roof | BackgroundType::Boss | BackgroundType::Zombiquarium => {
                 [Normal, Normal, Normal, Normal, Normal, Dirt]
             }
             BackgroundType::Pool | BackgroundType::Fog => [Normal, Normal, Pool, Pool, Normal, Normal],
@@ -936,6 +946,7 @@ impl Board {
     /// `ChooseSeedsOnCurrentLevel`: early adventure levels hand out the plants.
     pub fn choose_seeds_on_current_level(&self) -> bool {
         self.minigame() != Some(MiniGame::SlotMachine)
+            && self.minigame() != Some(MiniGame::Zombiquarium)
             && !self.is_beghouled()
             && !self.has_conveyor_belt_seed_bank()
             && !self.is_whack_a_zombie_level()
@@ -953,6 +964,9 @@ impl Board {
         }
         if self.is_beghouled() {
             return 0;
+        }
+        if self.minigame() == Some(MiniGame::Zombiquarium) {
+            return 2;
         }
         if self.has_conveyor_belt_seed_bank() {
             return 10;
@@ -1049,6 +1063,10 @@ impl Board {
     /// `Board::InitLawnMowers`: one per row that zombies can walk down. Pool
     /// rows get the pool cleaner when it's been bought (see `LawnMower::new`).
     fn init_lawn_mowers(&mut self) {
+        // Zombiquarium has no lawn.
+        if self.is_aquarium() {
+            return;
+        }
         // The roof has mowers only once the player has bought the roof cleaner.
         if self.stage_has_roof() && !self.roof_cleaner {
             return;
@@ -1190,6 +1208,7 @@ fn new_game(
     board.start_portal_combat(&mut effects, &mut resources, &mut images);
     board.start_slot_machine(&mut effects, &mut resources, &mut images);
     board.start_beghouled(&mut effects, &mut resources, &mut images, sounds.rng());
+    board.start_zombiquarium(&mut effects, &mut resources, &mut images, &mut sounds);
     board.prev_result_restart = was_lost;
     board.level_overridden = level_override.0.is_some();
     // PreNewGame erases the mode's save before a fresh game (never for a
@@ -1451,6 +1470,7 @@ impl Board {
         }
         self.update_portal_combat(effects, resources, images, sounds);
         self.update_slot_machine(effects, resources, images, sounds);
+        self.update_zombiquarium();
         // Last Stand's button is up while the lawn waits for the onslaught.
         if self.onslaught_button.is_some() {
             let waiting = !self.last_stand_onslaught
@@ -1659,7 +1679,15 @@ impl Board {
             let mut imps = Vec::new();
             let mut shakes = Vec::new();
             let mut boss_requests = Vec::new();
+            let aquarium = self.is_aquarium();
+            let mut aquarium_events = Vec::new();
             for (id, zombie) in self.zombies.iter_mut() {
+                if aquarium {
+                    if playing {
+                        aquarium_events.push(zombie.update_zombiquarium(&self.aquarium_brains, &mut fx));
+                    }
+                    continue;
+                }
                 if playing || (intro && zombie.is_boss()) {
                     zombie.update(&mut self.plants, &env, &mut fx);
                     if zombie.is_boss() {
@@ -1707,6 +1735,7 @@ impl Board {
                     zombie.update_street(fx.effects);
                 }
             }
+            self.apply_aquarium_events(aquarium_events, fx.effects, fx.res, fx.images, fx.sounds);
             for (col, row) in placed_ladders {
                 self.add_a_ladder(col, row);
             }
@@ -2387,6 +2416,7 @@ impl Board {
             || self.has_level_award_dropped()
             || self.has_conveyor_belt_seed_bank()
             || self.minigame() == Some(MiniGame::LastStand)
+            || self.is_aquarium()
         {
             return;
         }
@@ -2714,7 +2744,9 @@ fn draw_board(
             continue;
         }
         items.push((zombie.render_order, RenderItem::Zombie(id)));
-        items.push((make_render_order(render_layer::GROUND, zombie.row, 3), RenderItem::ZombieShadow(id)));
+        if board.background != BackgroundType::Zombiquarium {
+            items.push((make_render_order(render_layer::GROUND, zombie.row, 3), RenderItem::ZombieShadow(id)));
+        }
         if zombie.zombie_type == crate::zombie::ZombieType::Bungee && !board.is_final_boss_level() {
             items.push((make_render_order(render_layer::PROJECTILE, zombie.row, 1), RenderItem::BungeeTarget(id)));
         }
@@ -2879,7 +2911,7 @@ fn draw_house_door_bottom(board: &Board, res: &GameResources, g: &mut Graphics) 
 /// `DrawHouseDoorTop`: the door frame over the lawn when the zombies won.
 fn draw_house_door_mask(board: &Board, res: &GameResources, g: &mut Graphics) {
     let (id, x, y) = match board.background {
-        BackgroundType::Day => ("IMAGE_BACKGROUND1_GAMEOVER_MASK", -130.0, 202.0),
+        BackgroundType::Day | BackgroundType::Zombiquarium => ("IMAGE_BACKGROUND1_GAMEOVER_MASK", -130.0, 202.0),
         BackgroundType::Night => ("IMAGE_BACKGROUND2_GAMEOVER_MASK", -128.0, 207.0),
         BackgroundType::Pool => ("IMAGE_BACKGROUND3_GAMEOVER_MASK", -172.0, 234.0),
         BackgroundType::Fog => ("IMAGE_BACKGROUND4_GAMEOVER_MASK", -173.0, 133.0),
@@ -2895,6 +2927,17 @@ fn draw_house_door_mask(board: &Board, res: &GameResources, g: &mut Graphics) {
 /// and rolling sod on the first levels.
 fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
     let image = |id| res.image(id);
+    if board.background == BackgroundType::Zombiquarium {
+        if let Some(aquarium) = image("IMAGE_AQUARIUM1") {
+            g.draw_image(aquarium, 0.0, 0.0);
+        }
+        if let Some(brain) = image("IMAGE_BRAIN") {
+            for &(x, y) in &board.aquarium_brains {
+                g.draw_image(brain, x - 15.0, y - 15.0);
+            }
+        }
+        return;
+    }
     let offset = -BOARD_OFFSET as f32;
     let sod_width = |w: u32| sexy::tod::animate_curve(0, 1000, board.sod_position, 0, w as i32, sexy::tod::TodCurve::Linear);
     let first_time = board.first_time_adventure;
@@ -2928,7 +2971,7 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
         }
         _ => {
             let id = match board.background {
-                BackgroundType::Day => "IMAGE_BACKGROUND1",
+                BackgroundType::Day | BackgroundType::Zombiquarium => "IMAGE_BACKGROUND1",
                 BackgroundType::Night => "IMAGE_BACKGROUND2",
                 BackgroundType::Pool => "IMAGE_BACKGROUND3",
                 BackgroundType::Fog => "IMAGE_BACKGROUND4",

@@ -165,6 +165,7 @@ impl MiniGame {
                 | Self::SlotMachine
                 | Self::Beghouled
                 | Self::BeghouledTwist
+                | Self::Zombiquarium
         )
     }
 
@@ -177,7 +178,7 @@ impl MiniGame {
             Self::LittleTrouble | Self::BobsledBonanza | Self::Speed | Self::LastStand | Self::WarAndPeas2 => BackgroundType::Pool,
             Self::RainingSeeds | Self::Invisighoul => BackgroundType::Fog,
             Self::Column | Self::PogoParty => BackgroundType::Roof,
-            Self::Zombiquarium => BackgroundType::Day,
+            Self::Zombiquarium => BackgroundType::Zombiquarium,
             Self::FinalBoss => BackgroundType::Boss,
         }
     }
@@ -186,6 +187,7 @@ impl MiniGame {
     pub fn num_waves(self) -> i32 {
         match self {
             Self::WhackAZombie => 12,
+            Self::Zombiquarium => 0,
             Self::LastStand => 10,
             Self::WallnutBowling
             | Self::WarAndPeas
@@ -215,6 +217,7 @@ impl MiniGame {
             Self::Speed => &[Z::Normal, Z::TrafficCone, Z::DolphinRider, Z::Polevaulter],
             Self::SlotMachine => &[Z::Normal, Z::TrafficCone, Z::Pail],
             Self::Beghouled | Self::BeghouledTwist => &[Z::Normal, Z::TrafficCone, Z::Pail, Z::Door, Z::Football, Z::Newspaper],
+            Self::Zombiquarium => &[],
             Self::PortalCombat => &[Z::Normal, Z::Pail, Z::Football, Z::Balloon],
             Self::SeeingStars => &[Z::Normal, Z::TrafficCone, Z::Pail],
             Self::LastStand => &[
@@ -244,8 +247,6 @@ impl MiniGame {
             // The boss level's own waves never run (`is_final_boss_level`);
             // the table is the reference's fallback.
             Self::FinalBoss => &[Z::Normal, Z::TrafficCone, Z::Pail],
-            // Not ported yet: their tables are ignored until they are.
-            _ => &[],
         }
     }
 
@@ -368,6 +369,7 @@ impl Board {
                     | MiniGame::SlotMachine
                     | MiniGame::Beghouled
                     | MiniGame::BeghouledTwist
+                    | MiniGame::Zombiquarium
             )
         )
     }

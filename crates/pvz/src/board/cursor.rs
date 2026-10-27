@@ -440,6 +440,18 @@ impl Board {
         })
     }
 
+    fn aquarium_packet_at(&self, p: IVec2) -> Option<usize> {
+        let bank = &self.seed_bank;
+        let local = p - IVec2::new(bank.x, bank.y);
+        bank.packets[..bank.num_packets].iter().position(|packet| {
+            packet.aquarium.is_some()
+                && local.x >= packet.x + packet.offset_x
+                && local.x < packet.x + packet.offset_x + 50
+                && local.y >= packet.y
+                && local.y < packet.y + 70
+        })
+    }
+
     pub(super) fn seed_packet_at(&self, p: IVec2) -> Option<usize> {
         let bank = &self.seed_bank;
         let local = p - IVec2::new(bank.x, bank.y);
@@ -561,12 +573,24 @@ impl Board {
             self.beghouled_packet_clicked(index, effects, res, images, sounds);
             return;
         }
+        // Zombiquarium's two packets buy a fish or the trophy.
+        if self.is_aquarium()
+            && !right
+            && let Some(index) = self.aquarium_packet_at(ip)
+        {
+            self.aquarium_packet_clicked(index, effects, res, images, sounds);
+            return;
+        }
         // MouseHitTest: the seed bank and sun only count with an empty hand.
         if !right
             && !self.is_plant_in_cursor()
             && let Some(id) = self.coin_at(p)
         {
             self.coin_mouse_down(id, effects, res, images, sounds);
+            return;
+        }
+        // Zombiquarium: five sun feeds a brain into the tank.
+        if self.is_aquarium() && !right && self.aquarium_mouse_down(p, sounds) {
             return;
         }
         // Beghouled: a press on the lawn starts a piece drag (a twist

@@ -543,3 +543,59 @@ fn beghouled_twist_rotates_a_square_only_when_it_matches() {
     assert!(t.board.beghouled().is_some_and(|b| b.score >= 1));
     assert_eq!(t.board.seed_bank.num_packets, 4, "the shop opens");
 }
+
+#[test]
+fn zombiquarium_starts_with_two_fish_and_feeding_costs_five_sun() {
+    let Some(mut t) = board(MiniGame::Zombiquarium) else { return };
+    assert_eq!(t.board.background, crate::board::BackgroundType::Zombiquarium);
+    assert_eq!(t.board.sun_money, 50);
+    assert_eq!(t.board.waves.num_waves, 0, "no wave zombies in the tank");
+    assert_eq!(t.board.seed_bank.num_packets, 2);
+    assert_eq!(t.board.seed_bank.packets[0].aquarium, Some(crate::board::zombiquarium::AquariumPacket::Snorkel));
+    assert_eq!(t.board.seed_bank.packets[1].aquarium, Some(crate::board::zombiquarium::AquariumPacket::Trophy));
+    let fish = t.board.zombies.iter().filter(|(_, z)| !z.is_dead_or_dying()).count();
+    assert_eq!(fish, 2, "two snorkels");
+    for i in 0..3 {
+        t.click(400 + i * 20, 200);
+        assert_eq!(t.board.aquarium_brains.len(), i as usize + 1);
+    }
+    assert_eq!(t.board.sun_money, 35, "three brains at five sun each");
+    t.click(500, 200);
+    assert_eq!(t.board.aquarium_brains.len(), 3, "three at most");
+    assert_eq!(t.board.sun_money, 35);
+}
+
+#[test]
+fn zombiquarium_buys_a_fish_and_the_trophy_wins() {
+    let Some(mut t) = board(MiniGame::Zombiquarium) else { return };
+    t.board.sun_money = 200;
+    let fish = t.board.zombies.iter().filter(|(_, z)| !z.is_dead_or_dying()).count();
+    t.click(100, 20);
+    assert_eq!(t.board.zombies.iter().filter(|(_, z)| !z.is_dead_or_dying()).count(), fish + 1);
+    assert_eq!(t.board.sun_money, 100);
+    t.board.sun_money = 1000;
+    t.click(164, 20);
+    assert_eq!(t.board.sun_money, 0);
+    assert!(t.board.level_award_spawned, "the trophy wins");
+}
+
+#[test]
+fn a_fish_eats_a_nearby_brain_and_the_empty_tank_loses() {
+    let Some(mut t) = board(MiniGame::Zombiquarium) else { return };
+    let fish = t.board.zombies.iter().find(|(_, z)| !z.is_dead_or_dying()).map(|(id, z)| (id, z.pos_x, z.pos_y));
+    let Some((id, x, y)) = fish else { return };
+    if let Some(z) = t.board.zombies.get_mut(id) {
+        z.body_health = 100;
+    }
+    t.board.aquarium_brains.push((x + 35.0, y + 55.0));
+    t.tick();
+    assert!(t.board.aquarium_brains.is_empty(), "the brain is eaten");
+    assert!(t.board.zombies.get(id).is_some_and(|z| z.body_health > 100));
+    t.with(|board, effects, _res, _images, _sounds| {
+        for (_, zombie) in board.zombies.iter_mut() {
+            zombie.die_no_loot(effects);
+        }
+    });
+    t.tick();
+    assert!(t.board.aquarium_lost, "an empty tank is a loss");
+}

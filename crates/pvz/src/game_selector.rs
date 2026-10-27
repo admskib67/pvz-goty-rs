@@ -812,6 +812,12 @@ fn selector_input(
                 commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(crate::board::MiniGame::Speed))));
                 next_state.set(AppState::Board);
             }
+            Ok("minigame-aquarium") => {
+                commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(
+                    crate::board::MiniGame::Zombiquarium,
+                ))));
+                next_state.set(AppState::Board);
+            }
             Ok("minigame-beghouled") => {
                 commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(
                     crate::board::MiniGame::Beghouled,

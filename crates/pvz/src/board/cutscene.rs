@@ -266,7 +266,7 @@ pub fn start_level_intro(
     }
 
     let house = match board.background {
-        BackgroundType::Day | BackgroundType::Night => "[PLAYERS_HOUSE]",
+        BackgroundType::Day | BackgroundType::Night | BackgroundType::Zombiquarium => "[PLAYERS_HOUSE]",
         BackgroundType::Pool | BackgroundType::Fog => "[PLAYERS_BACKYARD]",
         BackgroundType::Roof | BackgroundType::Boss => "[PLAYERS_ROOF]",
     };
@@ -393,7 +393,7 @@ pub fn update_zombies_won(
 
 /// `CutScene::ShowShovel`: not until the shovel is introduced in 1-5.
 fn show_shovel(board: &mut Board) {
-    if board.is_whack_a_zombie_level() || board.is_beghouled() {
+    if board.is_whack_a_zombie_level() || board.is_beghouled() || board.is_aquarium() {
         return;
     }
     if !board.first_time_adventure || board.level > 4 {

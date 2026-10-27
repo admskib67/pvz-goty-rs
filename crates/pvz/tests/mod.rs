@@ -269,6 +269,9 @@ impl TestBoard {
             board.start_portal_combat(&mut effects, resources, images);
             board.start_slot_machine(&mut effects, resources, images);
             board.start_beghouled(&mut effects, resources, images, &mut rng);
+            let mut live = sounds.get_mut(&mut world).expect("sounds");
+            board.start_zombiquarium(&mut effects, resources, images, &mut live);
+            sounds.apply(&mut world);
         }
         if intro {
             board.draw_count = 1;

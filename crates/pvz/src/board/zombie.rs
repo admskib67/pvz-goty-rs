@@ -241,6 +241,14 @@ pub enum ZombiePhase {
     DancerSnappingFingers,
     DancerSnappingFingersWithLight,
     DancerSnappingFingersHold,
+    /// Zombiquarium's fish drifting (`PHASE_ZOMBIQUARIUM_DRIFT`).
+    ZombiquariumDrift,
+    /// ...accelerating towards a brain...
+    ZombiquariumAccel,
+    /// ...swimming back and forth...
+    ZombiquariumBackAndForth,
+    /// ...or biting.
+    ZombiquariumBite,
     /// The dance steps every dancer takes in time (`GetDancerPhase`).
     DancerDancingLeft,
     DancerWalkToRaise,
@@ -418,6 +426,15 @@ pub struct MagnetLoot {
     /// `x`, `y` are the item's middle rather than its top-left.
     pub centre: bool,
     pub dest: (f32, f32),
+}
+
+/// What a Zombiquarium fish did this tick, for the board to carry out.
+#[derive(Debug, Default)]
+pub struct AquariumEvents {
+    /// Index into the board's brains of the one it ate.
+    pub ate_brain: Option<usize>,
+    /// A sun it spat out, at its position.
+    pub sun: Option<(f32, f32)>,
 }
 
 /// The things a zombie touches besides itself and the plants.
@@ -2499,6 +2516,123 @@ impl Zombie {
     }
 
     /// `Zombie::Update`, while playing.
+    /// `ZombieInitialize`'s aquarium block: a snorkel dropped into the tank.
+    pub(super) fn begin_zombiquarium(&mut self, x: f32, y: f32, rng: &mut sexy::rand::MtRand, effects: &mut EffectSystem) {
+        self.pos_x = x;
+        self.pos_y = y;
+        self.x = x as i32;
+        self.y = y as i32;
+        self.body_health = 200;
+        self.phase = ZombiePhase::ZombiquariumDrift;
+        self.phase_counter = 200;
+        self.summon_counter = rng.range_int(200, 400);
+        self.vel_z = rng.range_f32(0.0, std::f32::consts::TAU);
+        self.vel_x = 0.0;
+        self.render_order = make_render_order(render_layer::ZOMBIE, 0, 4);
+        let rate = rng.range_f32(8.0, 10.0);
+        self.play_zombie_reanim(effects, "anim_aquarium_swim", LoopType::Loop, 0, rate);
+    }
+
+    /// `Zombie::ZombiquariumFindClosestBrain` + `UpdateZombiquarium`.
+    pub(super) fn update_zombiquarium(&mut self, brains: &[(f32, f32)], fx: &mut Fx) -> AquariumEvents {
+        let mut events = AquariumEvents::default();
+        if self.is_dead_or_dying() {
+            return events;
+        }
+        self.age += 1;
+        if self.age % 100 == 0 {
+            self.body_health -= 10;
+            if self.body_health <= 0 {
+                fx.sounds.play_sample("SOUND_ZOMBAQUARIUM_DIE");
+                self.die_no_loot(fx.effects);
+                return events;
+            }
+        }
+        if self.phase == ZombiePhase::ZombiquariumBite {
+            if self.phase_counter == 0 {
+                self.phase = ZombiePhase::ZombiquariumDrift;
+                self.phase_counter = 100;
+                let rate = fx.sounds.rng().range_f32(8.0, 10.0);
+                self.play_zombie_reanim(fx.effects, "anim_aquarium_swim", LoopType::Loop, 20, rate);
+            }
+        } else if self.body_health <= 150 {
+            // The closest brain, if it's close enough to bite.
+            let mut closest: Option<(usize, f32, f32, f32)> = None;
+            for (i, &(bx, by)) in brains.iter().enumerate() {
+                let dx = bx + 15.0 - (self.pos_x + 50.0);
+                let dy = by + 15.0 - (self.pos_y + 40.0);
+                let distance = (dx * dx + dy * dy).sqrt();
+                if closest.is_none_or(|(_, _, _, d)| distance < d) {
+                    closest = Some((i, dx, dy, distance));
+                }
+            }
+            if let Some((index, dx, dy, distance)) = closest {
+                if distance < 50.0 {
+                    self.body_health = (self.body_health + 200).min(self.body_max_health);
+                    self.play_zombie_reanim(fx.effects, "anim_aquarium_bite", LoopType::PlayOnceAndHold, 10, 24.0);
+                    self.phase = ZombiePhase::ZombiquariumBite;
+                    self.phase_counter = 200;
+                    events.ate_brain = Some(index);
+                    fx.sounds.play_foley(FoleyType::Splat);
+                } else {
+                    self.vel_z = dy.atan2(dx);
+                    if self.vel_z < 0.0 {
+                        self.vel_z += std::f32::consts::TAU;
+                    }
+                    self.phase = ZombiePhase::ZombiquariumAccel;
+                }
+            }
+        } else if self.phase_counter == 0 {
+            let hit = fx.sounds.rng().next_range(7);
+            self.phase_counter = fx.sounds.rng().range_int(300, 1000);
+            if hit <= 4 {
+                self.phase = ZombiePhase::ZombiquariumAccel;
+                self.vel_z = fx.sounds.rng().range_f32(0.0, std::f32::consts::TAU);
+            } else if hit == 5 {
+                self.phase = ZombiePhase::ZombiquariumBackAndForth;
+                self.vel_z = 0.0;
+            } else {
+                self.phase = ZombiePhase::ZombiquariumBackAndForth;
+                self.vel_z = std::f32::consts::PI;
+            }
+        }
+
+        let (vel_x, vel_y) = (self.vel_z.cos(), self.vel_z.sin());
+        let out_of_bounds = (self.pos_x < 0.0 && vel_x < 0.0)
+            || (self.pos_x > 680.0 && vel_x > 0.0)
+            || (self.pos_y < 100.0 && vel_y < 0.0)
+            || (self.pos_y > 400.0 && vel_y > 0.0);
+        let mut max_speed = 0.5;
+        if out_of_bounds {
+            max_speed = (self.vel_x * 0.3).max(0.05);
+            self.phase_counter = self.phase_counter.min(100);
+        } else if self.phase == ZombiePhase::ZombiquariumBackAndForth {
+            if self.pos_x < 200.0 && vel_x < 0.0 {
+                self.vel_z = 0.0;
+            }
+            if self.pos_x > 550.0 || vel_x > 0.0 {
+                self.vel_z = std::f32::consts::PI;
+            }
+            max_speed = 0.3;
+        } else if self.phase == ZombiePhase::ZombiquariumDrift || self.phase == ZombiePhase::ZombiquariumBite {
+            max_speed = 0.05;
+        }
+        self.vel_x = max_speed.min(self.vel_x + 0.01);
+        self.pos_x += vel_x * self.vel_x;
+        self.pos_y += vel_y * self.vel_x;
+        self.x = self.pos_x as i32;
+        self.y = self.pos_y as i32;
+
+        if self.summon_counter > 0 {
+            self.summon_counter -= 1;
+            if self.summon_counter == 0 {
+                events.sun = Some((self.pos_x + 50.0, self.pos_y + 40.0));
+                self.summon_counter = fx.sounds.rng().range_int(1000, 1500);
+            }
+        }
+        events
+    }
+
     pub fn update(&mut self, plants: &mut DataArray<Plant>, env: &ZombieEnv, fx: &mut Fx) {
         self.age += 1;
         match self.phase {
@@ -2580,7 +2714,7 @@ impl Zombie {
             self.start_walk_anim(0, env, fx);
         }
         self.win_clip = match background {
-            BackgroundType::Day | BackgroundType::Night => (-123.0, 600.0),
+            BackgroundType::Day | BackgroundType::Night | BackgroundType::Zombiquarium => (-123.0, 600.0),
             BackgroundType::Pool | BackgroundType::Fog => (-172.0, 600.0),
             BackgroundType::Roof | BackgroundType::Boss => (-220.0, 187.0),
         };
