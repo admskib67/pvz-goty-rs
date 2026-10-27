@@ -629,6 +629,11 @@ fn breaking_a_seed_pot_drops_a_usable_packet_and_a_zombie_pot_spawns_its_zombie(
     let (x, y) = t.square_center(col, row);
     t.click(x, y);
     assert!(
+        t.board.grid_items.iter().any(|(_, g)| g.grid_x == col && g.grid_y == row && !g.dead),
+        "the mallet swings before the pot opens"
+    );
+    assert!(t.run_until(300, |b| !b.grid_items.iter().any(|(_, g)| g.grid_x == col && g.grid_y == row && !g.dead)), "the mallet opens the pot");
+    assert!(
         t.board
             .coins
             .iter()
@@ -645,7 +650,28 @@ fn breaking_a_seed_pot_drops_a_usable_packet_and_a_zombie_pot_spawns_its_zombie(
     let Some((col, row)) = zombie_pot else { panic!("a zombie pot") };
     let (x, y) = t.square_center(col, row);
     t.click(x, y);
-    assert!(t.board.zombies.iter().any(|(_, z)| z.row == row && !z.is_dead_or_dying()));
+    assert!(t.run_until(300, |b| b.zombies.iter().any(|(_, z)| z.row == row && !z.is_dead_or_dying())), "the mallet opens the zombie pot");
+}
+
+#[test]
+fn a_plantern_reveals_a_pot_and_the_reveal_fades_when_it_dies() {
+    let Some(mut t) = TestBoard::puzzle(crate::board::PuzzleLevel::Vasebreaker(9)) else { return };
+    let pot = t
+        .board
+        .grid_items
+        .iter()
+        .find(|(_, g)| g.item_type == crate::board::grid_item::GridItemType::ScaryPot)
+        .map(|(_, g)| (g.grid_x, g.grid_y));
+    let Some((col, row)) = pot else { panic!("a pot") };
+    let planter_col = if col > 0 { col - 1 } else { col + 1 };
+    t.plant(crate::plant::SeedType::Plantern, planter_col, row);
+    t.ticks(60);
+    let transparent = t.board.grid_items.iter().find(|(_, g)| g.grid_x == col && g.grid_y == row).map(|(_, g)| g.transparent).unwrap_or(0);
+    assert!(transparent > 0, "the plantern shows the pot's contents");
+    t.dig(planter_col, row);
+    t.ticks(60);
+    let transparent = t.board.grid_items.iter().find(|(_, g)| g.grid_x == col && g.grid_y == row).map(|(_, g)| g.transparent).unwrap_or(0);
+    assert_eq!(transparent, 0, "the lid closes again");
 }
 
 #[test]
@@ -660,7 +686,7 @@ fn clearing_vasebreaker_one_awards_and_endless_deals_another_round() {
         .collect();
     t.with(|board, effects, res, images, sounds| {
         for (col, row) in &cells {
-            board.break_scary_pot(*col, *row, effects, res, images, sounds);
+            board.open_scary_pot(*col, *row, effects, res, images, sounds);
         }
         for (_, zombie) in board.zombies.iter_mut() {
             zombie.die_no_loot(effects);
@@ -680,7 +706,7 @@ fn clearing_vasebreaker_one_awards_and_endless_deals_another_round() {
         .collect();
     t.with(|board, effects, res, images, sounds| {
         for (col, row) in &cells {
-            board.break_scary_pot(*col, *row, effects, res, images, sounds);
+            board.open_scary_pot(*col, *row, effects, res, images, sounds);
         }
         for (_, zombie) in board.zombies.iter_mut() {
             zombie.die_no_loot(effects);
@@ -689,6 +715,22 @@ fn clearing_vasebreaker_one_awards_and_endless_deals_another_round() {
     });
     assert_eq!(t.board.survival_stage, 1, "the endless streak moves on");
     assert!(t.board.grid_items.iter().any(|(_, g)| g.item_type == crate::board::grid_item::GridItemType::ScaryPot));
+}
+
+#[test]
+fn i_zombie_endless_rolls_formations_left_of_its_line() {
+    let Some(mut t) = TestBoard::puzzle(crate::board::PuzzleLevel::IZombieEndless) else { return };
+    assert!(!t.board.plants.is_empty(), "the first endless formation");
+    for (_, plant) in t.board.plants.iter() {
+        assert!(plant.col < 5, "endless plants stop at the five-column line");
+    }
+    // Later waves grow the puff-shroom count (stage 10 asks for 5 to 7).
+    t.board.survival_stage = 10;
+    t.with(|board, effects, res, images, _| {
+        board.izombie_setup(effects, res, images, &mut sexy::rand::MtRand::new(11));
+    });
+    let puffs = t.board.plants.iter().filter(|(_, p)| p.seed == crate::plant::SeedType::Puffshroom).count();
+    assert!((2..=7).contains(&puffs), "the formation scales with the streak ({puffs} puff-shrooms)");
 }
 
 #[test]

@@ -9,11 +9,13 @@
 //! A broken pot gives a usable seed packet (free to plant), a zombie at the
 //! pot's column, or 1–3 suns. Levels 1–9 end when the pots and zombies are
 //! gone; endless repopulates after every cleared board and remembers the
-//! streak (the stage count). The mallet animation and the plantern's
-//! "see inside" transparency aren't ported.
+//! streak (the stage count). Hitting a pot swings the hammer
+//! (`ScaryPotterMalletPot`) before it opens, and a plantern within one square
+//! reveals its contents (`GridItem::UpdateScaryPot`).
 
 use bevy::prelude::*;
 use sexy::rand::MtRand;
+use sexy::reanim::LoopType;
 
 use crate::audio::{FoleyType, Sounds};
 use crate::plant::SeedType;
@@ -26,7 +28,7 @@ use super::grid_item::{GridItem, GridItemState, GridItemType};
 use crate::particle::ParticleEffect;
 use super::message::MessageStyle;
 use super::zombie::Fx;
-use super::{Board, GameMode, MAX_GRID_SIZE_X, MAX_GRID_SIZE_Y, PuzzleLevel, render_layer};
+use super::{Board, GameMode, MAX_GRID_SIZE_X, MAX_GRID_SIZE_Y, PuzzleLevel, make_render_order, render_layer};
 
 /// What a pot holds (`ScaryPotType`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,12 +80,22 @@ impl Board {
             return;
         }
         self.sun_money = 0;
+        self.scary_mallet = None;
         self.seed_bank.num_packets = 0;
         self.seed_bank.update_width(res);
         self.waves = super::waves::WaveState::default();
         self.waves.num_waves = 0;
         self.survival_stage = 0;
         self.scary_potter_populate(effects, res, images, rng);
+        // A plantern can reveal a zombie before any of its kind has spawned:
+        // load the cached art the reveal draws.
+        for (_, item) in self.grid_items.iter() {
+            if let Some(zombie) = item.pot.and_then(|p| p.zombie)
+                && let Some(reanim) = zombie.reanim()
+            {
+                let _ = res.reanim_definition(reanim.file(), images);
+            }
+        }
         if let Some(level) = self.puzzle_level()
             && !level.is_endless()
         {
@@ -292,8 +304,59 @@ impl Board {
         let _ = gargantuars;
     }
 
-    /// `ScaryPotterMalletPot` + `ScaryPotterOpenPot` for a pot on `(col, row)`.
+    /// `ScaryPotterMalletPot`: the mallet swings first; the pot opens when
+    /// the animation ends (`update_scary_potter`).
     pub(super) fn break_scary_pot(
+        &mut self,
+        col: i32,
+        row: i32,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        sounds: &mut Sounds,
+    ) -> bool {
+        if !self.is_scary_potter_level() || self.has_level_award_dropped() || self.scary_mallet.is_some() {
+            return false;
+        }
+        let Some(pot) = self
+            .grid_items
+            .iter()
+            .find(|(_, g)| g.item_type == GridItemType::ScaryPot && g.grid_x == col && g.grid_y == row && !g.dead)
+            .and_then(|(_, g)| g.pot)
+        else {
+            return false;
+        };
+        let _ = pot;
+        let (x, y) = (self.grid_to_pixel_x(col), self.grid_to_pixel_y(col, row));
+        let Ok((id, reanim)) = effects.add_reanimation(x as f32, y as f32, crate::reanim::ReanimationType::Hammer, res, images) else {
+            return false;
+        };
+        reanim.render_order = make_render_order(render_layer::TOP, row, 0);
+        reanim.play("anim_pot_open", LoopType::PlayOnceAndHold, 0, 40.0);
+        self.scary_mallet = Some((col, row, id));
+        sounds.play_sample("SOUND_BONK");
+        true
+    }
+
+    /// `ScaryPotterUpdate`: once the mallet's swing is over, open the pot.
+    pub(super) fn update_scary_potter(
+        &mut self,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        sounds: &mut Sounds,
+    ) {
+        let Some((col, row, id)) = self.scary_mallet else { return };
+        if !effects.get(id).is_some_and(|reanim| reanim.loop_count > 0) {
+            return;
+        }
+        effects.kill(id);
+        self.scary_mallet = None;
+        self.open_scary_pot(col, row, effects, res, images, sounds);
+    }
+
+    /// `ScaryPotterOpenPot`: remove the pot and release what it held.
+    pub(super) fn open_scary_pot(
         &mut self,
         col: i32,
         row: i32,
@@ -317,7 +380,6 @@ impl Board {
         if let Some(item) = self.grid_items.get_mut(id) {
             item.dead = true;
         }
-        sounds.play_sample("SOUND_BONK");
         sounds.play_sample("SOUND_VASE_BREAKING");
         let effect = match pot.kind {
             ScaryPotKind::Seed => ParticleEffect::VaseShatterLeaf,

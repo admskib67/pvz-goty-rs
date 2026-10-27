@@ -10,8 +10,8 @@
 //! Zombie packets show the cached zombie art and cost sun; a zombie goes on
 //! its side of the line (bungees on the other). Brains sit at the left edge;
 //! eating all five wins. With no zombies, less than 50 sun and nothing
-//! mid-action, the puzzle is lost. Endless reuses the last level's layout and
-//! remembers the streak.
+//! mid-action, the puzzle is lost. Endless rolls a new formation each wave
+//! (harder with the streak) and remembers it.
 
 use bevy::prelude::*;
 use sexy::rand::MtRand;
@@ -86,7 +86,10 @@ impl Board {
         self.display_advice(res, &message, MessageStyle::HintFast, None);
     }
 
-    fn izombie_setup(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, rng: &mut MtRand) {
+    pub(super) fn izombie_setup(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, rng: &mut MtRand) {
+        // A new round: last formation's plants and its leftovers go away.
+        self.plants.clear();
+        self.zombies.clear();
         self.grid_items = sexy::data_array::DataArray::default();
         for row in 0..BRAIN_COUNT {
             self.grid_items.alloc(GridItem::izombie_brain(row));
@@ -105,16 +108,25 @@ impl Board {
         self.izombie_place_plants(level, effects, res, images, rng);
     }
 
+    /// `IZombiePlacePlants`'s `aColumns`: how far left of the line plants go.
+    fn izombie_columns(&self) -> i32 {
+        match self.izombie_level() {
+            Some(PuzzleLevel::IZombie(1..=5)) => 4,
+            Some(PuzzleLevel::IZombie(9)) => 6,
+            _ => 5,
+        }
+    }
+
     fn izombie_place_plants(&mut self, level: PuzzleLevel, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, rng: &mut MtRand) {
+        if level == PuzzleLevel::IZombieEndless {
+            self.izombie_place_endless(effects, res, images, rng);
+            return;
+        }
         let number = match level {
             PuzzleLevel::IZombie(n) => n,
             _ => 9,
         };
-        let limit = match number {
-            1..=5 => 4,
-            9 => 6,
-            _ => 5,
-        };
+        let limit = self.izombie_columns();
         let fixed: &[(SeedType, i32, i32)] = match number {
             1 => &[(SeedType::Sunflower, 3, 2), (SeedType::Sunflower, 3, 3)],
             2 => &[(SeedType::Spikeweed, 3, 0), (SeedType::Sunflower, 2, 0), (SeedType::Sunflower, 3, 3)],
@@ -235,6 +247,72 @@ impl Board {
         }
     }
 
+    /// `IZombieInitLevel`'s endless branch: random formations, harder as
+    /// the streak grows.
+    fn izombie_place_endless(
+        &mut self,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut MtRand,
+    ) {
+        use SeedType as S;
+        let stage = self.survival_stage;
+        let mut puffs = if stage == 0 {
+            0
+        } else if stage == 1 {
+            1
+        } else {
+            let low = (2 + stage / 3).clamp(2, 4);
+            let high = (3 + stage / 2).clamp(2, 6);
+            rng.range_int(low, high)
+        };
+        if stage >= 10 {
+            let low = (2 + stage / 3).clamp(2, 5);
+            let high = (3 + stage / 2).clamp(2, 7);
+            puffs = rng.range_int(low, high);
+        }
+        let sunflowers = 8 - puffs;
+        let limit = self.izombie_columns();
+        self.izombie_place_random(S::Sunflower, sunflowers, -1, limit, effects, res, images, rng);
+        self.izombie_place_random(S::Puffshroom, puffs, -1, limit, effects, res, images, rng);
+
+        let formation = rng.range_int(0, 4);
+        let first: i32;
+        let list: &[(S, i32)] = if formation == 0 && stage >= 1 {
+            first = rng.range_int(0, 4);
+            match first {
+                0 => &[(S::Snowpea, 9), (S::Splitpea, 4), (S::Repeater, 4)],
+                1 => &[(S::Potatomine, 9), (S::Chomper, 8)],
+                2 => &[(S::Spikeweed, 9), (S::Starfruit, 8)],
+                3 => &[(S::Fumeshroom, 9), (S::Magnetshroom, 8)],
+                _ => &[(S::Scaredyshroom, 12), (S::Sunflower, 5)],
+            }
+        } else {
+            first = rng.range_int(0, 5);
+            match first {
+                0..=2 => &[
+                    (S::Wallnut, 1), (S::Torchwood, 1), (S::Potatomine, 1), (S::Chomper, 2),
+                    (S::Peashooter, 1), (S::Splitpea, 1), (S::Kernelpult, 1), (S::Threepeater, 1),
+                    (S::Snowpea, 1), (S::Squash, 1), (S::Fumeshroom, 1), (S::Umbrella, 1),
+                    (S::Starfruit, 1), (S::Magnetshroom, 1), (S::Spikeweed, 2),
+                ],
+                3 | 4 => &[
+                    (S::Torchwood, 1), (S::Splitpea, 3), (S::Repeater, 1), (S::Kernelpult, 3),
+                    (S::Threepeater, 1), (S::Snowpea, 3), (S::Umbrella, 1), (S::Magnetshroom, 1),
+                    (S::Spikeweed, 3),
+                ],
+                _ => &[
+                    (S::Potatomine, 4), (S::Chomper, 3), (S::Squash, 3), (S::Fumeshroom, 4),
+                    (S::Spikeweed, 3),
+                ],
+            }
+        };
+        for &(seed, count) in list {
+            self.izombie_place_random(seed, count, -1, limit, effects, res, images, rng);
+        }
+    }
+
     /// `IZombiePlacePlants`: empty squares in the allowed columns.
     #[allow(clippy::too_many_arguments)]
     fn izombie_place_random(
@@ -273,11 +351,7 @@ impl Board {
         if !(0..MAX_GRID_SIZE_X as i32).contains(&col) || !(0..MAX_GRID_SIZE_Y as i32 - 1).contains(&row) {
             return false;
         }
-        let limit = match self.izombie_level() {
-            Some(PuzzleLevel::IZombie(1..=5)) => 4,
-            Some(PuzzleLevel::IZombie(9)) => 6,
-            _ => 5,
-        };
+        let limit = self.izombie_columns();
         if zombie == ZombieType::Bungee { col < limit } else { col >= limit }
     }
 

@@ -20,7 +20,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 - **Puzzle page** (`board/scary_potter.rs`, `board/izombie.rs`, `tests/minigame.rs`, `challenge.rs`): all 18 puzzle trophies plus both endless modes.
   - Vasebreaker (9 + endless): pots per the decomp tables, broken for usable seed packets, zombies or 1–3 suns; leaf hints, night lawn, no seed bank/mowers/waves, endless repopulates and keeps its best streak.
   - I, Zombie (9 + endless): 5 brains, pre-placed plants per level, zombie packets (cached zombie art and decomp costs) placed on the player's side of the line (bungees on the other), brain eating with the 50-sun loss rule, endless reuses level 9's layout with its streak.
-  - Not ported in this area: the Vasebreaker mallet animation and plantern "see inside" transparency; the endless I, Zombie random formations (level 9's layout is reused).
+  - Vasebreaker has the hammer's `anim_pot_open` swing, and planterns reveal nearby pots' contents through the lid; endless I, Zombie rolls its five formation families, scaling with the streak and using the five-column line.
 - **Saving a level in progress** (`board::save`, `tests/save.rs`): leaving through the menu, or quitting the app, saves an adventure or survival run (`TryToSaveGame`/`NeedSaveGame`, `userdata/game{id}_{mode}.dat` as TOML); survival also checkpoints one tick before each between-stage repick. Adventure offers the Continue dialog from its button, and each survival tile offers its own (resume, or erase and start over); winning, losing, restarting or starting fresh erases the run; `--lvl` copies never save; deleting a profile deletes its saves.
 - Windows: builds, setup screen and resource loading verified; everything else untested there.
 
@@ -31,7 +31,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 | **Game modes** | `GameMode` has `Adventure`, `Intro`, `Survival`, `MiniGame` and `Puzzle`; adventure, all 20 mini-games, and the puzzle page (Vasebreaker + I, Zombie, 18 trophies) are playable. Survival has its between-stage seed repick (music fades out and back in), per-mode saved runs, and the per-tile Continue dialog. |
 | **Zen Garden** | done: three gardens, needs/tools, chocolate, Stinky, wheelbarrow, sales, shop, menu bubble, Dave's tutorial and potted-plant/chocolate drops from zombies. |
 | **Tree of Wisdom** | done: growth, tree food, speech (shop and garden both lead there). |
-| **Achievements** | none. |
+| **Achievements** | Out of scope: GOTY's achievements are Steamworks platform features, not game content. The pak's strings/icons are unused by the port. |
 | **Windows/Linux verification** | Windows: title/menu/board never run visually; compiled particles untested; audio untested; `.au` sounds silent (needs a decoder, `audio.rs:703`). Linux: nothing run. |
 
 ## Missing: features inside existing screens
@@ -57,9 +57,8 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 
 ## Suggested order
 
-1. Achievements (needs GOTY-specific work; the decomp has no implementation).
-2. Presentation polish: attached particles, boss smoke, survival stage music fade.
-3. Windows visual pass and `.au` decoder; Linux.
+1. Presentation polish: attached particles (coffee bean, grave buster) and boss smoke trails.
+2. Windows visual pass and `.au` decoder; Linux.
 
 ## Code TODO index
 

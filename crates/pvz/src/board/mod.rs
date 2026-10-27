@@ -515,6 +515,8 @@ pub struct Board {
     /// Between-stage seed repick (`CutScene::IsSurvivalRepick`): the chooser
     /// is open and the next stage's waves wait for it.
     pub survival_repick: bool,
+    /// Vasebreaker's mallet animation before a pot opens (`mReanimChallenge`).
+    scary_mallet: Option<(i32, i32, crate::reanim::ReanimationId)>,
     /// The repick chooser just closed; start its stage on this tick.
     pending_survival_repick_start: bool,
     /// It's Raining Seeds: ticks until the next packet falls.
@@ -773,6 +775,7 @@ impl Board {
             survival_stage: 0,
             next_survival_stage_counter: 0,
             survival_repick: false,
+            scary_mallet: None,
             pending_survival_repick_start: false,
             raining_seeds_counter: if mode == GameMode::MiniGame(MiniGame::RainingSeeds) { 100 } else { 0 },
             rain_splash_counter: 0,
@@ -1646,6 +1649,7 @@ impl Board {
         if self.minigame() == Some(MiniGame::Speed) && self.scene == GameScene::Playing {
             self.update_game(effects, resources, images, music, sounds);
         }
+        self.update_scary_potter(effects, resources, images, sounds);
         self.update_portal_combat(effects, resources, images, sounds);
         self.update_slot_machine(effects, resources, images, sounds);
         self.update_zombiquarium();

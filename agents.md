@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Rust reconstruction of Plants vs. Zombies: Game of the Year Edition on Bevy 0.20. Ships no game data: the app reads the player's own `main.pak` at runtime. Start with `docs/llms/` (`README.md`, `project-structure.md`, `workflow.md`, `status-and-todo.md`); `docs/architecture.md` is the short human overview.
+Rust reconstruction of Plants vs. Zombies: Game of the Year Edition on Bevy 0.20. Ships no game data: the app reads the player's own `main.pak` at runtime. Steam/GOTY achievements are a Steamworks platform feature, not game content: they are out of scope and must not be ported. Start with `docs/llms/` (`README.md`, `project-structure.md`, `workflow.md`, `status-and-todo.md`); `docs/architecture.md` is the short human overview.
 
 Binding rules: never commit or push (leave changes uncommitted, no amend/reset/rebase); never edit `readme.md` (user-owned); LF line endings everywhere (`* text=auto eol=lf`); game assets (`*.pak`, `/extracted`) never go in the repo.
 

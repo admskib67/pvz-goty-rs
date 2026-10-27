@@ -77,6 +77,8 @@ pub struct GridItem {
     reanim: Option<crate::reanim::ReanimationId>,
     /// What a Vasebreaker pot holds (`mScaryPotType` and its payload).
     pub pot: Option<super::scary_potter::ScaryPot>,
+    /// `mTransparentCounter`: a nearby plantern shows the pot's contents.
+    pub transparent: i32,
     pub dead: bool,
 }
 
@@ -165,6 +167,7 @@ impl Board {
             counter,
             reanim: None,
             pot: None,
+            transparent: 0,
             dead: false,
         });
     }
@@ -180,6 +183,7 @@ impl Board {
             counter: 0,
             reanim: None,
             pot: None,
+            transparent: 0,
             dead: false,
         });
     }
@@ -197,6 +201,7 @@ impl GridItem {
             counter: 70,
             reanim: None,
             pot: None,
+            transparent: 0,
             dead: false,
         }
     }
@@ -212,6 +217,7 @@ impl GridItem {
             counter: 0,
             reanim: None,
             pot: Some(pot),
+            transparent: 0,
             dead: false,
         }
     }
@@ -219,7 +225,7 @@ impl GridItem {
     /// A Portal Combat portal (`GRIDITEM_PORTAL_SQUARE`/`_CIRCLE`).
     pub(super) fn portal(item_type: GridItemType, grid_x: i32, grid_y: i32) -> Self {
         let render_order = make_render_order(render_layer::PARTICLE, grid_y, 0);
-        Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter: 0, reanim: None, pot: None, dead: false }
+        Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter: 0, reanim: None, pot: None, transparent: 0, dead: false }
     }
 
     /// `GridItem::IsOpenPortal`.
@@ -262,21 +268,68 @@ impl GridItem {
             GridItemType::ScaryPot => (make_render_order(render_layer::PLANT, grid_y, 0), 0),
             GridItemType::IzombieBrain => (make_render_order(render_layer::PLANT, grid_y, 0), 70),
         };
-        Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter, reanim: None, pot: None, dead: false }
+        Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter, reanim: None, pot: None, transparent: 0, dead: false }
     }
 }
 
 impl Board {
-    /// `GridItem::DrawScaryPot`: the pot's cel (question, leaf or zombie).
+    /// `GridItem::DrawScaryPot`: the lid, and through it the contents when a
+    /// plantern is nearby.
     pub(super) fn draw_scary_pot(&self, item: &GridItem, res: &GameResources, g: &mut crate::graphics::Graphics) {
         let Some(image) = res.image("IMAGE_SCARY_POT") else { return };
-        let cel = match item.state {
+        let col = match item.state {
             GridItemState::ScaryPotLeaf => 1,
             _ => 0,
         };
         let x = self.grid_to_pixel_x(item.grid_x) as f32 - 5.0;
         let y = self.grid_to_pixel_y(item.grid_x, item.grid_y) as f32 - 15.0;
-        g.draw_image_cel(image, x, y, cel, 0);
+        if item.transparent > 0 {
+            g.draw_image_cel(image, x, y, col, 0);
+            if let Some(pot) = item.pot {
+                match pot.kind {
+                    crate::board::scary_potter::ScaryPotKind::Seed => {
+                        if let Some(seed) = pot.seed {
+                            g.push_state();
+                            g.set_scale(0.7, x + 23.0, y + 33.0);
+                            super::seed_bank::draw_seed_packet(g, res, x + 23.0, y + 33.0, seed, 0.0, 255, false);
+                            g.pop_state();
+                        }
+                    }
+                    crate::board::scary_potter::ScaryPotKind::Zombie => {
+                        if let Some(zombie) = pot.zombie {
+                            let (scale, ox, oy) = match zombie {
+                                crate::zombie::ZombieType::Football => (0.4, 1.0, 16.0),
+                                crate::zombie::ZombieType::Gargantuar => (0.3, 15.0, 26.0),
+                                _ => (0.4, 6.0, 19.0),
+                            };
+                            g.push_state();
+                            g.set_scale(scale, x + ox, y + oy);
+                            super::zombie::draw_cached_zombie(g, res, x + ox, y + oy, zombie, false);
+                            g.pop_state();
+                        }
+                    }
+                    crate::board::scary_potter::ScaryPotKind::Sun => {
+                        if let Some(sun) = res.image("IMAGE_SUN") {
+                            for i in 0..pot.sun {
+                                let (mut ox, mut oy) = (42.0, 62.0);
+                                match i {
+                                    1 => { ox += 3.0; oy -= 20.0; }
+                                    2 => { ox -= 6.0; oy -= 10.0; }
+                                    3 => { ox += 6.0; oy -= 5.0; }
+                                    _ => {}
+                                }
+                                g.draw_image_cel_center_scaled(sun, x + ox, y + oy, 0, 0.5, 0.5);
+                            }
+                        }
+                    }
+                }
+            }
+            let alpha = animate_curve(0, 50, item.transparent, 255, 58, TodCurve::Linear);
+            g.set_colorize_images(true);
+            g.set_color(crate::graphics::SexyColor::rgba(255, 255, 255, alpha as u8));
+        }
+        g.draw_image_cel(image, x, y, col, 1);
+        g.set_colorize_images(false);
     }
 
     /// `Board::GetLadderAt`.
@@ -325,6 +378,7 @@ impl Board {
             counter: -(rng.next_range(50) as i32),
             reanim: None,
             pot: None,
+            transparent: 0,
             dead: false,
         });
     }
@@ -417,7 +471,25 @@ impl Board {
     pub(super) fn update_grid_items(&mut self) {
         let enabled = self.enable_grave_stones;
         let playing = self.scene == super::GameScene::Playing;
+        // `GridItem::UpdateScaryPot`: a plantern within one square reveals it.
+        let planters: Vec<(i32, i32)> = if playing {
+            self.plants
+                .iter()
+                .filter(|(_, p)| !p.dead && p.seed == crate::plant::SeedType::Plantern && !p.not_on_ground())
+                .map(|(_, p)| (p.col, p.row))
+                .collect()
+        } else {
+            Vec::new()
+        };
         for (_, item) in self.grid_items.iter_mut() {
+            if item.item_type == GridItemType::ScaryPot && playing {
+                let near = planters.iter().any(|&(pc, pr)| (pc - item.grid_x).abs().max((pr - item.grid_y).abs()) <= 1);
+                if near {
+                    item.transparent = (item.transparent + 1).min(50);
+                } else {
+                    item.transparent = (item.transparent - 1).max(0);
+                }
+            }
             if enabled && item.item_type == GridItemType::GraveStone && item.counter < 100 {
                 item.counter += 1;
             }
@@ -530,6 +602,7 @@ impl Board {
             counter: 0,
             reanim,
             pot: None,
+            transparent: 0,
             dead: false,
         });
     }
