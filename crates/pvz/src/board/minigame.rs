@@ -164,6 +164,7 @@ impl MiniGame {
                 | Self::LastStand
                 | Self::SlotMachine
                 | Self::Beghouled
+                | Self::BeghouledTwist
         )
     }
 
@@ -213,7 +214,7 @@ impl MiniGame {
             Self::PogoParty => &[Z::Pogo],
             Self::Speed => &[Z::Normal, Z::TrafficCone, Z::DolphinRider, Z::Polevaulter],
             Self::SlotMachine => &[Z::Normal, Z::TrafficCone, Z::Pail],
-            Self::Beghouled => &[Z::Normal, Z::TrafficCone, Z::Pail, Z::Door, Z::Football, Z::Newspaper],
+            Self::Beghouled | Self::BeghouledTwist => &[Z::Normal, Z::TrafficCone, Z::Pail, Z::Door, Z::Football, Z::Newspaper],
             Self::PortalCombat => &[Z::Normal, Z::Pail, Z::Football, Z::Balloon],
             Self::SeeingStars => &[Z::Normal, Z::TrafficCone, Z::Pail],
             Self::LastStand => &[
@@ -361,7 +362,13 @@ impl Board {
     pub fn is_continuous_challenge(&self) -> bool {
         matches!(
             self.minigame(),
-            Some(MiniGame::FinalBoss | MiniGame::SeeingStars | MiniGame::SlotMachine | MiniGame::Beghouled)
+            Some(
+                MiniGame::FinalBoss
+                    | MiniGame::SeeingStars
+                    | MiniGame::SlotMachine
+                    | MiniGame::Beghouled
+                    | MiniGame::BeghouledTwist
+            )
         )
     }
 

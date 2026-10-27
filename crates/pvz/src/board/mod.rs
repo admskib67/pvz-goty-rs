@@ -2581,7 +2581,7 @@ fn board_input(
         board.mouse_down(p, true, &mut effects, &mut resources, &mut images, &mut sounds);
     }
     if mouse.just_released(MouseButton::Left)
-        && board.is_beghouled()
+        && board.minigame() == Some(MiniGame::Beghouled)
         && let Some(from) = board.beghouled.as_ref().and_then(|b| b.drag)
     {
         if let Some(state) = &mut board.beghouled {
@@ -2975,6 +2975,15 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
         && let Some(graveyard) = image("IMAGE_NIGHT_GRAVE_GRAPHIC")
     {
         g.draw_image(graveyard, 1092.0, 40.0);
+    }
+    // Beghouled Twist's rotating target overlay under the pointer.
+    if board.minigame() == Some(MiniGame::BeghouledTwist)
+        && let Some(mouse) = board.mouse
+        && let Some((col, row)) = board.beghouled_twist_square(mouse.floor().as_ivec2())
+        && board.beghouled_twist_causes_match(col, row)
+        && let Some(overlay) = image("IMAGE_BEGHOULED_TWIST_OVERLAY")
+    {
+        g.draw_image(overlay, board.grid_to_pixel_x(col) as f32, board.grid_to_pixel_y(col, row) as f32);
     }
     // Beghouled's eaten squares (`mBeghouledEated`): a crater blocks a refill.
     if let Some(state) = board.beghouled()

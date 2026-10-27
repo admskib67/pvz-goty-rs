@@ -569,8 +569,15 @@ impl Board {
             self.coin_mouse_down(id, effects, res, images, sounds);
             return;
         }
-        // Beghouled: a press on the lawn starts a piece drag.
+        // Beghouled: a press on the lawn starts a piece drag (a twist
+        // square rotates at once).
         if self.is_beghouled() && !right && !self.has_level_award_dropped() {
+            if self.minigame() == Some(super::MiniGame::BeghouledTwist) {
+                if let Some((col, row)) = self.beghouled_twist_square(ip) {
+                    self.beghouled_twist_move(col, row, effects, res, images, sounds);
+                }
+                return;
+            }
             let (col, row) = (self.pixel_to_grid_x(ip.x), self.pixel_to_grid_y(ip.x, ip.y));
             if (0..super::beghouled::COLS as i32).contains(&col) && (0..super::beghouled::ROWS as i32).contains(&row) {
                 if let Some(state) = &mut self.beghouled {

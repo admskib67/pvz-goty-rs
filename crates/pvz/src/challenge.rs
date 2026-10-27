@@ -571,6 +571,6 @@ mod tests {
         progress.record_minigame(games[0]);
         assert_eq!(progress.minigame_needed(games[3], true), 0);
         // A game outside the ported list can never be started.
-        assert_eq!(progress.minigame_needed(MiniGame::BeghouledTwist, true), i32::MAX);
+        assert_eq!(progress.minigame_needed(MiniGame::Zombiquarium, true), i32::MAX);
     }
 }

@@ -514,3 +514,32 @@ fn an_eaten_piece_leaves_a_crater_button() {
     assert_eq!(t.board.seed_bank.num_packets, 5);
     assert_eq!(t.board.seed_bank.packets[4].button, Some(crate::board::beghouled::BeghouledButton::Crater));
 }
+
+#[test]
+fn beghouled_twist_rotates_a_square_only_when_it_matches() {
+    let Some(mut t) = board(MiniGame::BeghouledTwist) else { return };
+    assert_eq!(t.board.background, crate::board::BackgroundType::Night);
+    assert!(t.board.is_continuous_challenge());
+    assert_eq!(t.board.plants.iter().count(), 40);
+    // The square under (2,2) is the one whose top-left is there.
+    let (px, py) = t.square_center(2, 2);
+    let square = t.board.beghouled_twist_square(bevy::math::IVec2::new(px + 40, py + 40));
+    assert_eq!(square, Some((2, 2)));
+    // Find a square whose rotation makes a match, then twist it.
+    let square = (0..4)
+        .flat_map(|row| (0..7).map(move |col| (col, row)))
+        .find(|&(col, row)| t.board.beghouled_twist_causes_match(col, row))
+        .expect("the start board has a twist");
+    let rejected = (0..4)
+        .flat_map(|row| (0..7).map(move |col| (col, row)))
+        .find(|&(col, row)| !t.board.beghouled_twist_causes_match(col, row));
+    t.with(|board, effects, res, images, sounds| {
+        if let Some((col, row)) = rejected {
+            board.beghouled_twist_move(col, row, effects, res, images, sounds);
+            assert_eq!(board.beghouled().map(|b| b.score), Some(0), "a non-match doesn't rotate");
+        }
+        board.beghouled_twist_move(square.0, square.1, effects, res, images, sounds);
+    });
+    assert!(t.board.beghouled().is_some_and(|b| b.score >= 1));
+    assert_eq!(t.board.seed_bank.num_packets, 4, "the shop opens");
+}

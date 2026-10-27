@@ -37,6 +37,9 @@ pub const WINNING_SCORE: i32 = 75;
 /// One match: its squares, its length, and whether it runs horizontally.
 type MatchRun = (Vec<(i32, i32)>, i32, bool);
 
+/// A rotated plant's from/to squares and the new pixel position (`x`, `y`).
+type TwistMove = ((i32, i32), (i32, i32), i32, i32);
+
 /// The six pieces, in `BeghouledPickSeed`'s order.
 pub const PIECES: [SeedType; 6] = [
     SeedType::Puffshroom,
@@ -101,7 +104,7 @@ impl Beghouled {
 impl Board {
     /// `Plant::GetCost` with the Beghouled prices.
     pub fn plant_cost(&self, seed: SeedType) -> i32 {
-        if self.minigame() == Some(MiniGame::Beghouled) {
+        if matches!(self.minigame(), Some(MiniGame::Beghouled | MiniGame::BeghouledTwist)) {
             match seed {
                 SeedType::Repeater => 1000,
                 SeedType::Fumeshroom => 500,
@@ -486,6 +489,9 @@ impl Board {
 
     fn beghouled_has_move(&self) -> bool {
         let Some(state) = &self.beghouled else { return false };
+        if self.minigame() == Some(MiniGame::BeghouledTwist) {
+            return (0..4).any(|row| (0..7).any(|col| self.beghouled_twist_causes_match(col, row)));
+        }
         for row in 0..ROWS as i32 {
             for col in 0..COLS as i32 {
                 if col + 1 < COLS as i32 && self.beghouled_valid_move((col, row), (col + 1, row)) {
@@ -645,6 +651,81 @@ impl Board {
         sounds.play_foley(FoleyType::Chime);
         true
     }
+
+    /// `BeghouledTwistSquareFromMouse`: the 2×2 square whose top-left is
+    /// 40 px up and left of the pointer.
+    pub fn beghouled_twist_square(&self, p: IVec2) -> Option<(i32, i32)> {
+        let col = self.pixel_to_grid_x(p.x - 40);
+        let row = self.pixel_to_grid_y(p.x - 40, p.y - 40);
+        (col <= 6 && row <= 3 && col >= 0 && row >= 0).then_some((col, row))
+    }
+
+    fn twist_valid(&self, col: i32, row: i32) -> bool {
+        let Some(state) = &self.beghouled else { return false };
+        (0..2).all(|dc| (0..2).all(|dr| state.seed_at(col + dc, row + dr).is_some()))
+    }
+
+    /// `BeghouledTwistMoveCausesMatch`: rotating this square makes a match.
+    pub fn beghouled_twist_causes_match(&self, col: i32, row: i32) -> bool {
+        if !self.twist_valid(col, row) {
+            return false;
+        }
+        let Some(state) = &self.beghouled else { return false };
+        let mut grid = state.grid;
+        rotate_twist(&mut grid, col, row);
+        beghouled_has_match(&grid)
+    }
+
+    /// `BeghouledTwistMouseDown`: rotates the square clockwise, if that
+    /// makes a match.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn beghouled_twist_move(
+        &mut self,
+        col: i32,
+        row: i32,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        sounds: &mut Sounds,
+    ) {
+        if self.has_level_award_dropped() || !self.beghouled_twist_causes_match(col, row) {
+            sounds.play_foley(FoleyType::Floop);
+            return;
+        }
+        let Some(state) = &mut self.beghouled else { return };
+        let a = state.seed_at(col, row);
+        let b = state.seed_at(col + 1, row);
+        let c = state.seed_at(col, row + 1);
+        let d = state.seed_at(col + 1, row + 1);
+        // TL→TR, TR→BR, BR→BL, BL→TL.
+        state.set(col + 1, row, a);
+        state.set(col + 1, row + 1, b);
+        state.set(col, row + 1, d);
+        state.set(col, row, c);
+        let targets = [
+            ((col, row), (col + 1, row)),
+            ((col + 1, row), (col + 1, row + 1)),
+            ((col + 1, row + 1), (col, row + 1)),
+            ((col, row + 1), (col, row)),
+        ];
+        let positions: Vec<TwistMove> = targets
+            .iter()
+            .map(|(from, to)| (*from, *to, self.grid_to_pixel_x(to.0), self.grid_to_pixel_y(to.0, to.1)))
+            .collect();
+        for (_, plant) in self.plants.iter_mut() {
+            if plant.dead {
+                continue;
+            }
+            if let Some((_, to, x, y)) = positions.iter().find(|(from, ..)| (plant.col, plant.row) == *from) {
+                (plant.col, plant.row) = *to;
+                plant.x = *x;
+                plant.y = *y;
+                plant.render_order = make_render_order(render_layer::PLANT, to.1, 0);
+            }
+        }
+        self.resolve_beghouled(effects, res, images, sounds);
+    }
+
 }
 
 /// `BeghouledBoardHasMatch`.
@@ -660,4 +741,15 @@ fn beghouled_has_match(grid: &[[Option<SeedType>; COLS]; ROWS]) -> bool {
         }
     }
     false
+}
+
+
+/// Rotates a 2×2 square clockwise (`BeghouledTwistMoveCausesMatch`).
+fn rotate_twist(grid: &mut [[Option<SeedType>; COLS]; ROWS], col: i32, row: i32) {
+    let (c, r) = (col as usize, row as usize);
+    let (a, b, c_seed, d) = (grid[r][c], grid[r][c + 1], grid[r + 1][c], grid[r + 1][c + 1]);
+    grid[r][c + 1] = a;
+    grid[r + 1][c + 1] = b;
+    grid[r + 1][c] = d;
+    grid[r][c] = c_seed;
 }
