@@ -197,7 +197,7 @@ impl super::Board {
     /// The counter the water moves by (`mPoolCounter++` in `Board::Update`),
     /// on any level with a pool, except once the zombies have won.
     pub(super) fn update_pool_water(&mut self, images: &mut Assets<Image>) {
-        if !self.stage_has_pool() || self.scene == super::GameScene::ZombiesWon {
+        if !self.stage_has_pool() || self.scene == super::GameScene::ZombiesWon || self.ice_trap_counter > 0 {
             return;
         }
         if let Some(water) = self.pool_water.as_mut() {

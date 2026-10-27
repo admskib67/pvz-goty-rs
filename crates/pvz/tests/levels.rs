@@ -281,3 +281,37 @@ fn a_first_time_level_still_ends_with_its_award() {
     assert!(t.run_until(600, |b| b.coins.iter().any(|(_, c)| c.ty == CoinType::FinalSeedPacket)));
     assert!(!t.board.coins.iter().any(|(_, c)| c.ty == CoinType::MoneyBag));
 }
+
+#[test]
+fn a_present_unlocks_the_minigames_on_3_2() {
+    use super::super::coin::{CoinType, PresentUnlock};
+    let mut t = test_board!("3-2");
+    t.board.waves.current_wave = 6;
+    let coin = t.with(|board, effects, res, images, sounds| {
+        board.drop_loot_piece(400, 300, 1, effects, res, images, sounds);
+        board.coins.iter().find(|(_, c)| c.ty == CoinType::PresentMinigames).map(|(id, _)| id)
+    });
+    let Some(coin) = coin else { panic!("the present drops after the fifth wave") };
+    t.with(|board, _effects, _res, _images, _sounds| board.coins.get_mut(coin).unwrap().collect());
+    for _ in 0..400 {
+        if t.unlocked.is_some() {
+            break;
+        }
+        t.tick();
+    }
+    assert!(t.unlocked.is_some(), "the present opens at the advice box");
+    assert_eq!(t.unlocked, Some(PresentUnlock::Minigames));
+}
+
+#[test]
+fn an_ice_shroom_freezes_the_pool_water() {
+    let mut t = test_board!("3-1");
+    let before = t.board.pool_water.as_ref().map(|w| w.counter());
+    t.board.ice_trap_counter = 300;
+    t.ticks(10);
+    assert_eq!(t.board.pool_water.as_ref().map(|w| w.counter()), before, "the water holds still");
+    t.ticks(300);
+    let thawed = t.board.pool_water.as_ref().map(|w| w.counter());
+    t.tick();
+    assert_ne!(t.board.pool_water.as_ref().map(|w| w.counter()), thawed, "and flows again after it thaws");
+}

@@ -533,6 +533,11 @@ fn handle_dialog_events(
                 commands.insert_resource(LoadSavedGame(false));
                 app.next_state.set(AppState::Board);
             }
+            // A restart counts as a loss for the boss level's intro.
+            DialogEvent::Button(DialogId::ConfirmRestart, DialogButton::Yes) => {
+                commands.insert_resource(crate::board::BoardResult::Restart);
+                app.button_depress(DialogId::ConfirmRestart, true, board.as_deref());
+            }
             // `GameOverDialog`: Try Again (the footer) starts the level over,
             // its top-right button goes back to the main menu.
             DialogEvent::Button(DialogId::GameOver, button) => {

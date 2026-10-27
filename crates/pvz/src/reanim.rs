@@ -809,6 +809,22 @@ pub fn draw_reanimator_frame(
     track: Option<&str>,
     scale: f32,
 ) {
+    draw_reanimator_frame_scaled(g, resources, x, y, ty, track, scale, scale);
+}
+
+/// [`draw_reanimator_frame`] with a separate scale per axis (a negative x
+/// mirrors the drawing, for the left repeater's seed art).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_reanimator_frame_scaled(
+    g: &mut Graphics,
+    resources: &GameResources,
+    x: f32,
+    y: f32,
+    ty: ReanimationType,
+    track: Option<&str>,
+    scale_x: f32,
+    scale_y: f32,
+) {
     let Some(definition) = resources.loaded_reanim_definition(ty.file()) else { return };
     let mut reanim = Reanimation::new(x, y, definition);
     if let Some(track) = track
@@ -822,7 +838,7 @@ pub fn draw_reanimator_frame(
         _ => {}
     }
     reanim.assign_render_group_to_track("anim_waterline", RENDER_GROUP_HIDDEN);
-    reanim.override_scale(scale, scale);
+    reanim.override_scale(scale_x, scale_y);
     draw_reanimation(g, &reanim, resources);
 }
 

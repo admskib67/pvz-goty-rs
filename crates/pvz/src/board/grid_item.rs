@@ -487,13 +487,45 @@ impl Board {
     }
 
     /// `GridItem::DrawCrater`: a scorched hole that fades as it fills in.
-    /// TODO: the pool's and roof's craters.
     fn draw_crater(&self, item: &GridItem, res: &GameResources, g: &mut Graphics) {
-        let x = self.grid_to_pixel_x(item.grid_x) as f32 - 8.0;
-        let y = self.grid_to_pixel_y(item.grid_x, item.grid_y) as f32 + 40.0;
+        let mut x = self.grid_to_pixel_x(item.grid_x) as f32 - 8.0;
+        let mut y = self.grid_to_pixel_y(item.grid_x, item.grid_y) as f32 + 40.0;
         let fading = item.counter < 9000;
-        let night = self.stage_is_night();
-        let id = if fading { "IMAGE_CRATER_FADING" } else { "IMAGE_CRATER" };
+        let mut cel_col = 0;
+        let mut id = "IMAGE_CRATER";
+        let pool = item.grid_x >= 0
+            && item.grid_y >= 0
+            && self.grid_square_type.get(item.grid_x as usize).and_then(|c| c.get(item.grid_y as usize)) == Some(&GridSquareType::Pool);
+        if pool {
+            // A hole in the water, bobbing with it.
+            id = if self.stage_is_night() { "IMAGE_CRATER_WATER_NIGHT" } else { "IMAGE_CRATER_WATER_DAY" };
+            if fading {
+                cel_col = 1;
+            }
+            let pos = item.grid_y as f32 * std::f32::consts::PI + item.grid_x as f32 * std::f32::consts::PI * 0.25;
+            let time = self.main_counter as f32 * std::f32::consts::PI * 2.0 / 200.0;
+            y += (pos + time).sin() * 2.0;
+        } else if self.stage_has_roof() {
+            if item.grid_x < 5 {
+                id = "IMAGE_CRATER_ROOF_LEFT";
+                x += 16.0;
+                y -= 16.0;
+            } else {
+                id = "IMAGE_CRATER_ROOF_CENTER";
+                x += 18.0;
+                y -= 9.0;
+            }
+            if fading {
+                cel_col = 1;
+            }
+        } else if self.stage_is_night() {
+            cel_col = 1;
+            if fading {
+                id = "IMAGE_CRATER_FADING";
+            }
+        } else if fading {
+            id = "IMAGE_CRATER_FADING";
+        }
         let Some(image) = res.image(id) else { return };
         g.push_state();
         if item.counter < 25 {
@@ -501,7 +533,7 @@ impl Board {
             g.set_colorize_images(true);
             g.set_color(crate::graphics::SexyColor::rgba(255, 255, 255, alpha));
         }
-        g.draw_image_cel(image, x, y, night as u32, 0);
+        g.draw_image_cel(image, x, y, cel_col, 0);
         g.pop_state();
     }
 

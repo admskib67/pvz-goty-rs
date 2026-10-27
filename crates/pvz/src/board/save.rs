@@ -206,6 +206,9 @@ fn coin_type_to_int(ty: CoinType) -> i32 {
         CoinType::Taco => 12,
         CoinType::WateringCan => 13,
         CoinType::SilverSunflower => 14,
+        // Presents are dropped each level, never saved.
+        CoinType::PresentMinigames => 15,
+        CoinType::PresentPuzzle => 16,
     }
 }
 

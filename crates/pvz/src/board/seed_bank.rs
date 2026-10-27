@@ -453,9 +453,23 @@ pub fn draw_seed_type(g: &mut Graphics, res: &GameResources, seed: SeedType, x: 
         // MakeCachedPlantFrame draws these smaller and nudged inwards.
         Potatomine => frame(g, "anim_armed", 0.85, 12.0),
         InstantCoffee => frame(g, "anim_idle", 0.8, 12.0),
+        // `MakeCachedPlantFrame`: the explode-o-nut's art is tinted red.
+        ExplodeONut => {
+            g.push_state();
+            g.set_colorize_images(true);
+            g.set_color(crate::graphics::SexyColor::rgba(255, 64, 64, 255));
+            frame(g, "anim_idle", 1.0, 0.0);
+            g.pop_state();
+        }
+        // `DrawSeedType`: the left repeater's art is mirrored.
+        Leftpeater => {
+            let mirrored = |g: &mut Graphics, track: &str| {
+                crate::reanim::draw_reanimator_frame_scaled(g, res, x + 80.0 * scale, y, reanim, Some(track), -scale, scale);
+            };
+            mirrored(g, "anim_idle");
+            mirrored(g, "anim_head_idle");
+        }
         _ => {
-            // TODO: the explode-o-nut's red tint, the left-facing repeater's
-            // mirroring and the imitater's washed-out look.
             frame(g, "anim_idle", 1.0, 0.0);
             match seed {
                 Peashooter | Snowpea | Repeater | Leftpeater | Gatlingpea => frame(g, "anim_head_idle", 1.0, 0.0),

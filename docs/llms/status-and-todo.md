@@ -9,6 +9,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 - **Plants: all 49 adventure/store plants** (every `SeedType` except Zen Garden's `Sprout`), including upgrades (gatling, twin sunflower, gloom, cattail, winter melon, gold magnet, spikerock, cob cannon) and the imitater.
 - **Zombies: all 33 types**: normal, flag, cone, bucket, pole vaulter, newspaper, screen door, football, dancer, backup dancer, ducky tube, snorkel, Zamboni, bobsled, dolphin rider, balloon, bungee, ladder, catapult, gargantuar, imp, Dr. Zomboss, plus jack-in-the-box (runs, pops, explodes), digger (tunnels, rises, loses its axe to magnets), pogo (bounces, vaults, tall-nut breaks it), yeti (flees), red-eyed gargantuar (6000 HP), and the six Zombotany heads (pea/gatling shoot backwards, jalapeno burns its row, squash jumps, wall/tall-nuts are helmets).
 - Crazy Dave talks on 1-5, 2-1, 2-2, 2-3+ (seed slots), 2-5, 3-1, 3-5, 4-1, 5-1, 5-10.
+- **Content pass**: the mode-unlocking presents (3-2's mini-games, 4-6's puzzle), the pool/roof/night crater art, 4-5 at night (stormy night is 4-10, not 4-5), ice-shrooms freezing the pool water, red-tinted explode-o-nut and mirrored left-repeater seed art, the award's starburst and pickup particles, the zombies' full shadow-offset table (a backward-facing football was 52 px off) with the pool's water shadow, tiny zombies' particle scaling, and the boss level skipping Dave when it's retried after a loss.
 - **Presentation pass**: the huge-wave banner's letter animations and the music's drum burst, the hand cursor (hidden for the hammer), the shovel's plant highlight, the cursor preview's water bob, the selector hand's clip, the rake (store item: swings at the first zombie), bonus mowers rolling back in, the Game Over dialog's top-right Main Menu button and the door overlay on a lost level, the level-1 sod-row flash, the whack-a-zombie packet tutorial, the fog roll-in and 3-5/4-5 talks, and the doom-shroom's shaking heads.
 - **Saving a level in progress** (`board::save`, `tests/save.rs`): leaving through the menu, or quitting the app, saves an adventure level in progress (`TryToSaveGame`/`NeedSaveGame`, `userdata/game{id}_{mode}.dat` as TOML); Adventure offers the Continue dialog (resume, or erase and restart); winning, losing, restarting or starting fresh erases it; `--lvl` copies never save; deleting a profile deletes its saves.
 - Windows: builds, setup screen and resource loading verified; everything else untested there.
@@ -26,13 +27,8 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 ## Missing: features inside existing screens
 
 ### Board and levels
-- Presents, potted plants and chocolate drops from zombies.
+- Potted plants and chocolate drops from zombies (Zen Garden loot; the mini-games and puzzle presents drop and unlock their modes already).
 - The water-planting advice variants (`ADVICE_LILYPAD_ON_WATER` etc.).
-- Pool and roof gravestone and crater variants (`grid_item.rs:303`, `grid_item.rs:341`); 4-5 at night (`board/mod.rs:619`).
-- Seed packet visuals: explode-o-nut tint, left repeater (`seed_bank.rs:456`); packet starburst on pick-up (`cursor.rs:573`); award coin extras (`coin.rs:538`).
-- Ice-shroom pausing the pool water's counter.
-- Hypnotised zombies' shadow offsets differ from `Zombie::DrawShadow` (football about 52 px off; table in `board/zombie.rs` `draw_shadow`).
-- Tiny zombies' particles not scaled (`OverrideParticleScale`).
 
 ### Plants
 - Remaining `PlantInitialize` per-plant setup (`:624`); other shooters' fire timings (cactus 35..., `:2197`); spikeweed height by row/stage (`:355`).
@@ -41,8 +37,9 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 - Lobbers' upgrades; gargantuar's ice-trap size and smashing mind-controlled targets.
 
 ### Zombies
-- Dance mode `anim_dance` (`board/zombie.rs:1519`); loot by zombie value in places (`:2327`); rising out of pool/roof graves (`:2897`).
-- Boss: a replayed boss level should skip Dave after a loss; pots' and fireballs' smoke trails should go when he dies.
+- `anim_dance`: the original's typed cheat-code dance mode (`mDanceMode`), not a game mode; the cheat isn't ported.
+- Boss: the pots' and fireballs' smoke trails (particles attached to reanimation tracks, `ApplyBossSmokeParticles`).
+- Rising out of pool/roof graves: graves only stand on grass or high ground, so adventure content never grows one on water; the decomp's pool branch is unused here.
 
 ### Menus and screens
 - Main menu: trophy and its sparkle (`game_selector.rs:374`, `:828`), adventure-complete message (`:625`), Zen "needs water" bubble (`:892`), the other mode buttons.
@@ -58,10 +55,9 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 
 ## Suggested order
 
-1. Presentation details left on the board (pool/roof graves and craters, tiny-zombie particles).
-2. Survival and mini-games (reuse `Board` with a `GameMode` per mode), then puzzle.
-3. Zen Garden and Tree of Wisdom, then the store's Zen items.
-4. Achievements; Windows visual pass and `.au` decoder; Linux.
+1. Survival and mini-games (reuse `Board` with a `GameMode` per mode), then puzzle.
+2. Zen Garden and Tree of Wisdom, then the store's Zen items.
+3. Achievements; Windows visual pass and `.au` decoder; Linux.
 
 ## Code TODO index
 

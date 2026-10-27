@@ -177,9 +177,9 @@ pub(super) fn crazy_dave_dialog_start(board: &Board) -> i32 {
         1601
     } else if board.is_final_boss_level() {
         // Behaviour per ruslan831 decomp, CutScene::StartLevelIntro: on the
-        // last level he warns about the boss and is carried off. (The
-        // original skips it when the level is replayed after losing it.)
-        2300
+        // last level he warns about the boss and is carried off; a replay
+        // after losing it skips him.
+        if board.prev_result_restart { -1 } else { 2300 }
     } else {
         -1
     }

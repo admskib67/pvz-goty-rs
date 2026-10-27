@@ -48,6 +48,17 @@ pub enum CoinType {
     Silver,
     Gold,
     Diamond,
+    /// The present that unlocks the mini-games (`COIN_PRESENT_MINIGAMES`).
+    PresentMinigames,
+    /// The present that unlocks the puzzle modes (`COIN_PRESENT_PUZZLE_MODE`).
+    PresentPuzzle,
+}
+
+/// What a present unlocks when it's picked up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentUnlock {
+    Minigames,
+    Puzzle,
 }
 
 impl CoinType {
@@ -128,6 +139,8 @@ pub enum CoinEvent {
     Money(i32),
     /// First touched the ground (`PlayGroundSound`).
     Landed(CoinType),
+    /// A present reached the advice box and unlocks a mode.
+    Unlocked(PresentUnlock),
 }
 
 impl Coin {
@@ -171,7 +184,12 @@ impl Coin {
             hit_ground: false,
             attach_offset: (0.0, 0.0),
         };
-        if coin.is_level_award() {
+        if coin.is_present() {
+            if let Some(image) = res.image("IMAGE_PRESENT") {
+                coin.width = image.cel_width() as f32;
+                coin.height = image.cel_height() as f32;
+            }
+        } else if coin.is_level_award() {
             let image = match ty {
                 CoinType::Shovel => "IMAGE_SHOVEL",
                 CoinType::FinalSeedPacket => "IMAGE_SEEDS",
@@ -308,6 +326,20 @@ impl Coin {
                 | CoinType::SilverSunflower
                 | CoinType::MoneyBag
         )
+    }
+
+    /// `IsPresentWithAdvice`: a present that flies to the advice box.
+    pub fn is_present(&self) -> bool {
+        matches!(self.ty, CoinType::PresentMinigames | CoinType::PresentPuzzle)
+    }
+
+    /// What this present unlocks.
+    pub fn present_unlock(&self) -> Option<PresentUnlock> {
+        match self.ty {
+            CoinType::PresentMinigames => Some(PresentUnlock::Minigames),
+            CoinType::PresentPuzzle => Some(PresentUnlock::Puzzle),
+            _ => None,
+        }
     }
 
     /// `Coin::IsMoney`.
@@ -553,6 +585,19 @@ impl Coin {
         if self.ty == CoinType::MoneyBag {
             return None;
         }
+        if self.is_present() {
+            // `IsPresentWithAdvice`: it flies to the advice box, then opens.
+            self.disappear_counter += 1;
+            let (dest_x, dest_y) = (35.0, 487.0);
+            let t = self.disappear_counter;
+            self.pos_x = sexy::tod::animate_curve_float(0, 350, t, self.collect_x, dest_x, TodCurve::EaseOut);
+            self.pos_y = sexy::tod::animate_curve_float(0, 350, t, self.collect_y, dest_y, TodCurve::EaseOut);
+            if (self.pos_x - dest_x).abs() < 8.0 && (self.pos_y - dest_y).abs() < 8.0 {
+                self.die(effects);
+                return self.present_unlock().map(CoinEvent::Unlocked);
+            }
+            return None;
+        }
         if self.is_level_award() {
             // The award glides to the middle of the screen. TODO: it also
             // grows to twice its size on the way.
@@ -600,6 +645,21 @@ impl Coin {
 
     /// `Coin::Draw`: the sun is just its animation.
     pub fn draw(&self, g: &mut crate::graphics::Graphics, effects: &EffectSystem, res: &GameResources) {
+        if self.is_present() {
+            // The present, open once it's been picked up (`DrawPresent`).
+            let id = if self.is_being_collected { "IMAGE_PRESENTOPEN" } else { "IMAGE_PRESENT" };
+            if let Some(image) = res.image(id) {
+                g.push_state();
+                if !self.is_being_collected {
+                    let v = super::seed_bank::flashing_gray(self.coin_age, 75) as u8;
+                    g.set_colorize_images(true);
+                    g.set_color(crate::graphics::SexyColor::rgba(v, v, v, 255));
+                }
+                g.draw_image(image, self.pos_x, self.pos_y);
+                g.pop_state();
+            }
+            return;
+        }
         if self.ty == CoinType::Diamond
             && let Some(glow) = res.image("IMAGE_AWARDPICKUPGLOW")
         {
@@ -688,6 +748,22 @@ impl super::Board {
         images: &mut Assets<Image>,
         sounds: &mut crate::audio::Sounds,
     ) {
+        // The presents that unlock the other modes, once past the fifth wave.
+        if self.first_time_adventure && self.waves.current_wave > 5 {
+            let ty = match self.level {
+                22 if !self.unlocked_minigames => Some(CoinType::PresentMinigames),
+                36 if !self.unlocked_puzzle => Some(CoinType::PresentPuzzle),
+                _ => None,
+            };
+            if let Some(ty) = ty
+                && !self.coins.iter().any(|(_, coin)| coin.ty == ty)
+            {
+                sounds.play_sample("SOUND_DIAMOND");
+                let coin = Coin::new(x as f32, y as f32, ty, CoinMotion::Coin, effects, res, images, sounds.rng());
+                self.coins.alloc(coin);
+                return;
+            }
+        }
         let mut hit = sounds.rng().next_range(30000) as i32;
         // Whack-a-zombie's zombies drop sun, more often the less the player has.
         if self.is_whack_a_zombie_level() {

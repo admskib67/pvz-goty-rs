@@ -19,8 +19,10 @@ pub const FOG_ROWS: usize = MAX_GRID_SIZE_Y + 1;
 pub const FOG_BLOW_RETURN_TIME: i32 = 2000;
 /// What a blover sets the countdown to.
 pub const BLOVER_BLOW_TIME: i32 = 4000;
-/// The stormy night level has no fog (`IsStormyNightLevel`).
-pub(super) const STORMY_NIGHT_LEVEL: i32 = 35;
+/// The stormy night level (4-10) has no fog (`IsStormyNightLevel`).
+pub(super) const STORMY_NIGHT_LEVEL: i32 = 40;
+/// 4-5 is the adventure's scary-potter level, which is at night.
+pub(super) const SCARY_POTTER_LEVEL: i32 = 35;
 
 /// The fog's state.
 #[derive(Debug, Clone)]

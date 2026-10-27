@@ -201,6 +201,8 @@ pub struct TestBoard {
     first_wave_count_down: i32,
     /// Money the player has picked up since the test began (what the board hands the profile).
     pub money: i32,
+    /// A present the board has opened (what it hands the profile).
+    pub unlocked: Option<crate::board::coin::PresentUnlock>,
 }
 
 impl TestBoard {
@@ -257,6 +259,7 @@ impl TestBoard {
                 waves: false,
                 first_wave_count_down,
                 money: 0,
+                unlocked: None,
             });
         }
         board.init_lawn_mowers();
@@ -287,6 +290,7 @@ impl TestBoard {
             waves: false,
             first_wave_count_down,
             money: 0,
+            unlocked: None,
         };
         // Graves come up fully (from as far as 50 ticks underground) and
         // the mowers finish rolling in before the test starts.
@@ -326,6 +330,9 @@ impl TestBoard {
         let mut sounds = self.sounds.get_mut(&mut self.world).expect("sounds without an audio device");
         let outcome = self.board.tick(&mut self.effects, resources, images, &mut self.music, &mut sounds);
         self.money += outcome.money;
+        if let Some(unlock) = outcome.unlocked {
+            self.unlocked = Some(unlock);
+        }
         self.sounds.apply(&mut self.world);
         self.world.resource_mut::<UpdateCount>().0 += 1;
     }

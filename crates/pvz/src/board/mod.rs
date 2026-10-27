@@ -377,8 +377,18 @@ pub struct Board {
     /// `mBonusLawnMowersRemaining`: bought mowers that roll in to replace a
     /// spent one.
     pub bonus_lawn_mowers_remaining: i32,
+    /// `mIceTrapCounter`: ticks the pool's water stays frozen after an
+    /// ice-shroom (`IceZombies`).
+    ice_trap_counter: i32,
     /// How many rakes the player has bought and not yet used (`STORE_ITEM_RAKE`).
     rake_count: i32,
+    /// `mPrevBoardResult`: the last board was lost or restarted.
+    pub prev_result_restart: bool,
+    /// The player already has the mode-unlocking presents.
+    unlocked_minigames: bool,
+    unlocked_puzzle: bool,
+    /// A present reached the advice box this tick.
+    pending_unlock: Option<coin::PresentUnlock>,
     /// Whether the player has bought the pool cleaner (`StoreItem::PoolCleaner`),
     /// which the pool rows' lawn mowers become.
     pool_cleaner: bool,
@@ -459,6 +469,16 @@ enum ParticleRequest {
 /// intro cinematic (`PreNewGame(GAMEMODE_INTRO)`).
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct PlayIntro(pub bool);
+/// How the last board ended (`mApp->mBoardResult`): the intro skips Crazy
+/// Dave on a boss level retried after a loss, like the original.
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoardResult {
+    #[default]
+    None,
+    Lost,
+    Restart,
+}
+
 
 /// Set when the Continue dialog resumes a save: the next board loads it
 /// instead of starting fresh (`LawnApp::TryLoadGame`).
@@ -536,7 +556,12 @@ impl Board {
             help_displayed: HashSet::new(),
             lawn_mowers: Vec::new(),
             bonus_lawn_mowers_remaining: 0,
+            ice_trap_counter: 0,
             rake_count: player.map_or(0, |p| p.purchases[StoreItem::Rake.slot()]),
+            prev_result_restart: false,
+            unlocked_minigames: player.is_some_and(|p| p.has_unlocked_minigames),
+            unlocked_puzzle: player.is_some_and(|p| p.has_unlocked_puzzle_mode),
+            pending_unlock: None,
             pool_cleaner: player.is_some_and(|p| p.purchases[StoreItem::PoolCleaner.slot()] != 0),
             roof_cleaner: player.is_some_and(|p| p.purchases[StoreItem::RoofCleaner.slot()] != 0),
             plants: DataArray::default(),
@@ -654,7 +679,8 @@ impl Board {
             l if l <= LEVELS_PER_AREA => BackgroundType::Day,
             l if l <= 2 * LEVELS_PER_AREA => BackgroundType::Night,
             l if l <= 3 * LEVELS_PER_AREA => BackgroundType::Pool,
-            // TODO: 4-5 (a scary potter level) is at night.
+            // `PickBackground`: the scary-potter level is at night.
+            fog::SCARY_POTTER_LEVEL => BackgroundType::Night,
             l if l <= 4 * LEVELS_PER_AREA => BackgroundType::Fog,
             l if l < FINAL_LEVEL => BackgroundType::Roof,
             FINAL_LEVEL => BackgroundType::Boss,
@@ -914,7 +940,11 @@ fn new_game(
     level_override: Res<LevelOverride>,
     load: Option<Res<LoadSavedGame>>,
     mut play_intro: ResMut<PlayIntro>,
+    last_result: Option<Res<BoardResult>>,
 ) {
+    // `Board::Board` copies the app's last result before it's cleared.
+    let was_lost = last_result.as_deref().is_some_and(|r| matches!(r, BoardResult::Lost | BoardResult::Restart));
+    commands.insert_resource(BoardResult::None);
     // `PlayIntro` plays the very first adventure's intro cinematic; a saved
     // game resumes instead of starting the level afresh.
     effects.clear();
@@ -945,6 +975,7 @@ fn new_game(
         return;
     }
     let mut board = Board::new(mode, player, &mut resources, &mut images, sounds.rng());
+    board.prev_result_restart = was_lost;
     board.level_overridden = level_override.0.is_some();
     // PreNewGame erases the mode's save before a fresh game (never for a
     // `--lvl` copy, which must leave the player's save alone).
@@ -1034,6 +1065,8 @@ pub(super) struct TickOutcome {
     packet_offer: Option<(i32, i32)>,
     /// The seed chooser has another question before play starts.
     chooser_warning: Option<ChooserWarning>,
+    /// A present was picked up: unlock the mode for the player.
+    unlocked: Option<coin::PresentUnlock>,
 }
 
 /// `Board::Update`, at 100 ticks per second: the game in [`Board::tick`],
@@ -1076,7 +1109,17 @@ fn update_board(
         }
         profiles.save_current_details();
     }
+    if let Some(unlock) = outcome.unlocked {
+        if let Some(player) = profiles.player_mut() {
+            match unlock {
+                coin::PresentUnlock::Minigames => player.has_unlocked_minigames = true,
+                coin::PresentUnlock::Puzzle => player.has_unlocked_puzzle_mode = true,
+            }
+        }
+        profiles.save_current_details();
+    }
     if outcome.game_over {
+        commands.insert_resource(BoardResult::Lost);
         // The run is over: no Continue from a lost level.
         if !board.level_overridden
             && let Some(dir) = save_dir()
@@ -1182,6 +1225,7 @@ impl Board {
             self.cob_cannon_cursor_delay = (self.cob_cannon_cursor_delay - 1).max(0);
             self.out_of_money_counter = (self.out_of_money_counter - 1).max(0);
             self.tick_fog_countdown();
+            self.ice_trap_counter = (self.ice_trap_counter - 1).max(0);
             self.update_sun_spawning(effects, resources, images, sounds);
             if self.has_conveyor_belt_seed_bank() {
                 self.update_conveyor_belt(sounds.rng());
@@ -1205,6 +1249,7 @@ impl Board {
         self.update_level_end_sequence(effects, resources, images, sounds);
         self.process_delete_queue();
         outcome.game_over = std::mem::take(&mut self.pending_game_over);
+        outcome.unlocked = self.pending_unlock.take();
         outcome.level_complete = self.level_complete;
         self.flush_particle_requests(effects, resources, images, sounds.rng());
         outcome
@@ -1465,6 +1510,7 @@ impl Board {
                         self.pending_money += money;
                     }
                     Some(CoinEvent::Landed(CoinType::Gold)) => sounds.play_foley(FoleyType::MoneyFalls),
+                    Some(CoinEvent::Unlocked(unlock)) => self.pending_unlock = Some(unlock),
                     Some(CoinEvent::Landed(_)) | None => {}
                 }
             }
@@ -1817,6 +1863,8 @@ impl Board {
                     }
                 }
                 self.add_particle(x as f32, y as f32, render_layer::TOP, ParticleEffect::IceTrap);
+                // `IceZombies`: the pool's water freezes with them.
+                self.ice_trap_counter = 300;
             }
             PlantAction::GraveBusterDone { x, y, col, row, render_order } => {
                 if let Some(grave) = self.grave_stone_at(col, row) {

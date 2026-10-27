@@ -502,7 +502,7 @@ impl Board {
             && !self.is_plant_in_cursor()
             && let Some(id) = self.coin_at(p)
         {
-            self.coin_mouse_down(id, res, sounds);
+            self.coin_mouse_down(id, effects, res, images, sounds);
             return;
         }
         if self.cursor.cursor_type == CursorType::CobCannonTarget {
@@ -544,7 +544,14 @@ impl Board {
     }
 
     /// `Coin::MouseDown` + `Coin::Collect`'s sun handling.
-    fn coin_mouse_down(&mut self, id: sexy::data_array::Id<Coin>, res: &GameResources, sounds: &mut Sounds) {
+    fn coin_mouse_down(
+        &mut self,
+        id: sexy::data_array::Id<Coin>,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        sounds: &mut Sounds,
+    ) {
         if self.paused || self.scene != GameScene::Playing {
             return;
         }
@@ -561,7 +568,17 @@ impl Board {
             coin.collect();
             // Behaviour per ruslan831 decomp, Coin::Collect: a money bag scatters
             // gold, and the last level's award scatters diamonds.
-            let (ty, x, y) = (coin.ty, coin.pos_x, coin.pos_y);
+            let (ty, x, y, order) = (coin.ty, coin.pos_x, coin.pos_y, coin.render_order);
+            // Its starburst, and the puff the award leaves behind.
+            let rng = sounds.rng();
+            effects.add_particle(x + 30.0, y + 30.0, order + 1, ParticleEffect::Starburst, res, images, rng);
+            let puff = if ty == super::coin::CoinType::Note {
+                (x + 30.0, y + 30.0, order + 1, ParticleEffect::PresentPickup)
+            } else {
+                (x + 30.0, y + 30.0, order - 1, ParticleEffect::SeedPacketPickup)
+            };
+            let rng = sounds.rng();
+            effects.add_particle(puff.0, puff.1, puff.2, puff.3, res, images, rng);
             if self.level == 50 {
                 self.pending_fan_out = Some((super::coin::CoinType::Diamond, 3, x, y));
                 sounds.play_sample("SOUND_DIAMOND");

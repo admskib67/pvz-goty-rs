@@ -2651,9 +2651,9 @@ impl Zombie {
         self.drop_loot();
     }
 
-    /// `Zombie::DropLoot`: asks the board whether this zombie ends the level.
+    /// `Zombie::DropLoot`: asks the board whether this zombie ends the level
+    /// or drops something worth its value.
     fn drop_loot(&mut self) {
-        // TODO: coins for the zombie's value (DropLootPiece), from level 1-11 on.
         self.loot_pending = true;
     }
 
@@ -3333,7 +3333,8 @@ impl Zombie {
         if flags & damage::DOESNT_LEAVE_BODY == 0 {
             let (x, y) = self.track_position(fx.effects, "Zombie_pogo_stick");
             let rng = fx.sounds.rng();
-            fx.effects.add_particle(x, y + 30.0, self.render_order + 1, ParticleEffect::ZombiePogo, fx.res, fx.images, rng);
+            let particle = fx.effects.add_particle(x, y + 30.0, self.render_order + 1, ParticleEffect::ZombiePogo, fx.res, fx.images, rng);
+            self.scale_particle(fx, particle);
         }
         self.height = ZombieHeight::Falling;
         self.phase = ZombiePhase::Normal;
@@ -4809,7 +4810,8 @@ impl Zombie {
                 if leaves_body {
                     let rng = fx.sounds.rng();
                     let (x, y) = (self.pos_x + 31.0, self.pos_y + 80.0);
-                    fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieLadder, fx.res, fx.images, rng);
+                    let particle = fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieLadder, fx.res, fx.images, rng);
+                    self.scale_particle(fx, particle);
                 }
             }
             ShieldType::Door => {
@@ -4817,7 +4819,8 @@ impl Zombie {
                 if leaves_body {
                     let (x, y) = self.track_position(fx.effects, "anim_screendoor");
                     let rng = fx.sounds.rng();
-                    fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieDoor, fx.res, fx.images, rng);
+                    let particle = fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieDoor, fx.res, fx.images, rng);
+                    self.scale_particle(fx, particle);
                 }
             }
             ShieldType::Newspaper => {
@@ -4833,7 +4836,8 @@ impl Zombie {
                 if leaves_body {
                     let (x, y) = self.track_position(fx.effects, "Zombie_paper_paper");
                     let rng = fx.sounds.rng();
-                    fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieNewspaper, fx.res, fx.images, rng);
+                    let particle = fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieNewspaper, fx.res, fx.images, rng);
+                    self.scale_particle(fx, particle);
                 }
                 if leaves_body && flags & damage::BYPASSES_SHIELD == 0 {
                     fx.sounds.play_foley(FoleyType::NewspaperRip);
@@ -5269,6 +5273,7 @@ impl Zombie {
         if flags & damage::DOESNT_LEAVE_BODY == 0 {
             let rng = fx.sounds.rng();
             let particle = fx.effects.add_particle(x, y, self.render_order + 1, ParticleEffect::ZombieArm, fx.res, fx.images, rng);
+            self.scale_particle(fx, particle);
             if let Some(image) = flying
                 && let Some(system) = particle.and_then(|p| fx.effects.particle_mut(p))
             {
@@ -5345,12 +5350,20 @@ impl Zombie {
         };
         let rng = fx.sounds.rng();
         let particle = fx.effects.add_particle(x, y, order, effect, fx.res, fx.images, rng);
+        self.scale_particle(fx, particle);
         if let Some(image) = image
             && let Some(system) = particle.and_then(|p| fx.effects.particle_mut(p))
         {
             system.override_image(None, Some(image));
         }
         fx.sounds.play_foley(FoleyType::LimbsPop);
+    }
+
+    /// `Zombie::OverrideParticleScale`: a shrunken zombie's bits shrink with it.
+    fn scale_particle(&self, fx: &mut Fx, particle: Option<crate::reanim::ParticleSystemId>) {
+        if let Some(system) = particle.and_then(|p| fx.effects.particle_mut(p)) {
+            system.override_scale(None, self.scale);
+        }
     }
 
     /// `Zombie::DropFlag`.
@@ -5367,7 +5380,8 @@ impl Zombie {
         self.has_object = false;
         let (x, y) = self.track_position(fx.effects, "Zombie_flaghand");
         let rng = fx.sounds.rng();
-        fx.effects.add_particle(x + 6.0, y - 45.0, self.render_order + 1, ParticleEffect::ZombieFlag, fx.res, fx.images, rng);
+        let particle = fx.effects.add_particle(x + 6.0, y - 45.0, self.render_order + 1, ParticleEffect::ZombieFlag, fx.res, fx.images, rng);
+        self.scale_particle(fx, particle);
     }
 
     /// `Zombie::PlayDeathAnim`.
@@ -5822,50 +5836,70 @@ impl Zombie {
             return;
         }
         let pos = self.draw_pos();
-        let (dx, dy) = match self.zombie_type {
-            ZombieType::Polevaulter => (36.0, 11.0),
-            ZombieType::Football => (41.0, 16.0),
-            ZombieType::Newspaper => (29.0, 4.0),
-            ZombieType::Balloon => (23.0, 13.0),
-            ZombieType::Bungee => (11.0, 0.0),
-            ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => (27.0, 7.0),
-            ZombieType::Imp => (25.0, 7.0),
-            _ => (23.0, 0.0),
-        };
-        // Behaviour per ruslan831 decomp, Zombie::DrawShadow: the shadow moves
-        // with the zombie's scale (`aShadowOffsetX += mScaleZombie * 20 - 20`).
-        // The football's shadow also moves with it (`20 + 21 * scale` forward,
-        // `-11 * scale` back). At scale 1 this is the table above.
         let s = self.scale;
-        let mut dx = dx + (s * 20.0 - 20.0);
-        if self.zombie_type == ZombieType::Football {
-            dx += if self.is_walking_backwards() { -11.0 * (s - 1.0) } else { 21.0 * (s - 1.0) };
+        let backwards = self.is_walking_backwards();
+        // Behaviour per ruslan831 decomp, Zombie::DrawShadow: the shadow
+        // follows the zombie's scale, and most types shift it their own way.
+        let mut dx = pos.image_offset_x + (s * 20.0 - 20.0);
+        let mut dy = pos.image_offset_y + pos.body_y;
+        let mut scale = s;
+        match self.zombie_type {
+            ZombieType::Football => dx += if backwards { -11.0 * s } else { 20.0 + 21.0 * s },
+            ZombieType::Newspaper => dx += if backwards { 5.0 } else { 29.0 },
+            ZombieType::Polevaulter => dx += if backwards { -5.0 } else { 36.0 },
+            ZombieType::Bobsled => dx += if backwards { 13.0 } else { 20.0 },
+            ZombieType::Imp => {
+                scale *= 0.6;
+                dx += if backwards { 13.0 } else { 25.0 };
+            }
+            ZombieType::Digger => dx += if backwards { 14.0 } else { 17.0 },
+            ZombieType::Snorkel => dx += if backwards { -2.0 } else { 35.0 },
+            ZombieType::DolphinRider => dx += if backwards { 15.0 } else { 19.0 },
+            ZombieType::Yeti => dx += if backwards { 20.0 } else { 3.0 },
+            ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => {
+                scale *= 1.5;
+                dx += 27.0;
+            }
+            ZombieType::Balloon | ZombieType::Bungee => {}
+            _ => dx += if backwards { 11.0 } else { 23.0 },
         }
-        let (offset_x, mut offset_y) = (pos.image_offset_x + dx, pos.image_offset_y + pos.body_y + dy);
-        // A climbing or dropping zombie's shadow stays on the ground.
-        if matches!(self.height, ZombieHeight::UpLadder | ZombieHeight::Falling) || self.is_flying() {
-            offset_y += self.altitude;
-        }
-        // A bungee zombie's shadow stays on the ground, growing as it drops.
-        // The shadow's size is the zombie's scale times the type's (`aScale`).
-        let mut scale = self.scale * match self.zombie_type {
-            ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => 1.5,
-            ZombieType::Imp => 0.6,
-            _ => 1.0,
+        dy += match self.zombie_type {
+            ZombieType::Football => 16.0,
+            ZombieType::Newspaper => 4.0,
+            ZombieType::Polevaulter => 11.0,
+            ZombieType::Bobsled => 13.0,
+            ZombieType::Imp => 7.0,
+            ZombieType::Digger | ZombieType::Snorkel => 5.0,
+            ZombieType::DolphinRider => 11.0,
+            ZombieType::Yeti => 20.0,
+            ZombieType::Gargantuar | ZombieType::RedeyeGargantuar => 7.0,
+            ZombieType::Balloon => 13.0,
+            _ => 0.0,
         };
-        // A thrown imp's shadow stays on the ground too.
-        if self.phase == ZombiePhase::ImpGettingThrown {
-            offset_y += self.altitude;
-        }
         if self.zombie_type == ZombieType::Bungee {
+            dx -= 12.0;
             let top = (BUNGEE_ZOMBIE_HEIGHT - 1000.0) as i32;
             scale = animate_curve_float(top, 100, self.altitude as i32, 0.1, 1.5, TodCurve::Linear);
-            offset_y += self.altitude;
         }
-        let Some(shadow) = res.image(if night { "IMAGE_PLANTSHADOW2" } else { "IMAGE_PLANTSHADOW" }) else { return };
+        // A climbing, falling, thrown, bouncing or flying zombie's shadow
+        // stays on the ground.
+        let airborne = matches!(self.height, ZombieHeight::UpLadder | ZombieHeight::Falling)
+            || self.phase == ZombiePhase::ImpGettingThrown
+            || self.zombie_type == ZombieType::Bungee
+            || matches!(self.phase, ZombiePhase::PogoBouncing | ZombiePhase::PogoHighBounce | ZombiePhase::PogoForwardBounce)
+            || self.is_flying();
+        if airborne {
+            dy += self.altitude;
+        }
         g.push_state();
         g.translate(self.x as f32, self.y as f32);
-        g.draw_image_cel_center_scaled(shadow, offset_x, offset_y + 92.0, 0, scale, scale);
+        if self.in_pool {
+            if let Some(shadow) = res.image("IMAGE_WHITEWATER_SHADOW") {
+                g.draw_image_cel_center_scaled(shadow, dx, dy + 67.0, 0, scale, scale);
+            }
+        } else if let Some(shadow) = res.image(if night { "IMAGE_PLANTSHADOW2" } else { "IMAGE_PLANTSHADOW" }) {
+            g.draw_image_cel_center_scaled(shadow, dx, dy + 92.0, 0, scale, scale);
+        }
         g.pop_state();
     }
 }
