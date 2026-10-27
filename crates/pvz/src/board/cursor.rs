@@ -101,6 +101,9 @@ pub enum PlantingReason {
     OnlyOnGround,
     /// A coffee bean needs an asleep mushroom (`PLANTING_NEEDS_SLEEPING`).
     NeedsSleeping,
+    /// An art challenge's ghost square wants its own plant
+    /// (`PLANTING_NOT_ON_ART`).
+    NotOnArt,
 }
 
 /// Whether `rect` contains `p`.
@@ -220,6 +223,14 @@ impl Board {
         // Challenge::CanPlantAt: nuts only start behind the line.
         if self.is_wallnut_bowling_level() {
             return if grid_x > 2 { PlantingReason::NotPassedLine } else { PlantingReason::Ok };
+        }
+        // Challenge::CanPlantAt: an art challenge's ghost square only takes
+        // its own plant (lily pads and pumpkins may go over it).
+        if let Some(art) = self.art_challenge_seed(grid_x, grid_y)
+            && art != seed
+            && !matches!(seed, SeedType::Lilypad | SeedType::Pumpkinshell)
+        {
+            return PlantingReason::NotOnArt;
         }
         // Grave busters only go on graves, and nothing else does.
         let has_grave = self.grave_stone_at(grid_x, grid_y).is_some();
@@ -795,6 +806,7 @@ impl Board {
                 }
                 return;
             }
+            PlantingReason::NotOnArt => return,
             PlantingReason::NotHere => return,
         }
         for advice in [
@@ -994,6 +1006,12 @@ impl Board {
             plant.set_spike_offset(offset);
         }
         let id = self.plants.alloc(plant);
+        // `Challenge::PlantAdded`: the picture's ghost cell lights up, and a
+        // finished picture wins the level.
+        if self.art_challenge_seed(grid_x, grid_y) == Some(planted) {
+            sounds.play_foley(FoleyType::Chime);
+            effects.add_particle((x + 40) as f32, (y + 40) as f32, super::render_layer::TOP, crate::particle::ParticleEffect::PresentPickup, res, images, sounds.rng());
+        }
         if seed == SeedType::Cobcannon
             && let Some(plant) = self.plants.get_mut(id)
         {

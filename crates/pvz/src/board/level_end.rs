@@ -111,6 +111,10 @@ impl Board {
         {
             return false;
         }
+        // An art challenge ends on its picture, not on the last wave.
+        if self.is_continuous_challenge() && self.is_minigame() && self.minigame() != Some(super::MiniGame::FinalBoss) {
+            return false;
+        }
         // A survival stage that isn't the last one doesn't end the run: the
         // next stage's waves come after the advice.
         if self.is_survival() && !self.is_final_survival_stage() {

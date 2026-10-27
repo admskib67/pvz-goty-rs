@@ -18,6 +18,10 @@
 
 use sexy::rand::MtRand;
 
+use crate::audio::Sounds;
+use crate::plant::SeedType;
+use crate::reanim::EffectSystem;
+use crate::resources::GameResources;
 use crate::zombie::ZombieType;
 
 use super::waves::{WaveState, ZOMBIE_COUNTDOWN_FIRST_WAVE};
@@ -153,6 +157,8 @@ impl MiniGame {
                 | Self::Column
                 | Self::Invisighoul
                 | Self::FinalBoss
+                | Self::Speed
+                | Self::SeeingStars
         )
     }
 
@@ -199,6 +205,8 @@ impl MiniGame {
             Self::BobsledBonanza => &[Z::Bobsled, Z::Zamboni],
             Self::WhackAZombie => &[Z::Normal, Z::TrafficCone, Z::Pail],
             Self::PogoParty => &[Z::Pogo],
+            Self::Speed => &[Z::Normal, Z::TrafficCone, Z::DolphinRider, Z::Polevaulter],
+            Self::SeeingStars => &[Z::Normal, Z::TrafficCone, Z::Pail],
             Self::Column => &[Z::Normal, Z::TrafficCone, Z::Pail, Z::Football],
             Self::Invisighoul => &[Z::Normal, Z::TrafficCone, Z::Pail, Z::DolphinRider, Z::Zamboni, Z::JackInTheBox],
             // The boss level's own waves never run (`is_final_boss_level`);
@@ -312,5 +320,80 @@ impl Board {
     /// still land). The level intro's street zombies are.
     pub fn zombie_hidden(&self, zombie: &super::zombie::Zombie) -> bool {
         self.minigame() == Some(MiniGame::Invisighoul) && zombie.from_wave != super::zombie::ZOMBIE_WAVE_CUTSCENE
+    }
+
+    /// `LawnApp::IsContinuousChallenge`: these modes don't end when the
+    /// waves run out (an art challenge ends on its picture, the boss on the
+    /// boss).
+    pub fn is_continuous_challenge(&self) -> bool {
+        matches!(self.minigame(), Some(MiniGame::FinalBoss | MiniGame::SeeingStars))
+    }
+
+    /// `gArtChallengeStarFruit`: Seeing Stars' ghost picture. A row is a
+    /// grid row, a column a grid column.
+    pub fn art_challenge_seed(&self, col: i32, row: i32) -> Option<SeedType> {
+        if self.minigame() != Some(MiniGame::SeeingStars) || !(0..9).contains(&col) || !(0..6).contains(&row) {
+            return None;
+        }
+        use SeedType::Starfruit;
+        const N: Option<SeedType> = None;
+        const S: Option<SeedType> = Some(Starfruit);
+        const SHAPE: [[Option<SeedType>; 9]; 6] = [
+            [N, N, N, S, N, N, N, N, N],
+            [N, N, N, S, S, N, N, N, N],
+            [N, S, S, S, S, S, S, N, N],
+            [N, N, N, S, S, S, N, N, N],
+            [N, N, N, S, N, N, S, N, N],
+            [N, N, N, N, N, N, N, N, N],
+        ];
+        SHAPE[row as usize][col as usize]
+    }
+
+    /// `Challenge::CheckForCompleteArtChallenge` + `SpawnLevelAward`: the
+    /// finished picture drops the level's award coin.
+    pub(super) fn check_art_challenge_complete(
+        &mut self,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut bevy::asset::Assets<bevy::image::Image>,
+        sounds: &mut Sounds,
+    ) {
+        if self.minigame() != Some(MiniGame::SeeingStars) || self.has_level_award_dropped() || !self.art_challenge_complete() {
+            return;
+        }
+        let Some((col, row)) = (0..6)
+            .flat_map(|row| (0..9).map(move |col| (col, row)))
+            .find(|&(col, row)| self.art_challenge_seed(col, row).is_some())
+        else {
+            return;
+        };
+        let (x, y) = (self.grid_to_pixel_x(col) + 40, self.grid_to_pixel_y(col, row) + 40);
+        self.level_award_spawned = true;
+        sounds.play_foley(crate::audio::FoleyType::SpawnSun);
+        self.add_coin(
+            x as f32,
+            y as f32,
+            super::coin::CoinType::SilverSunflower,
+            super::coin::CoinMotion::Coin,
+            effects,
+            res,
+            images,
+            sounds,
+        );
+    }
+
+    /// `Challenge::CheckForCompleteArtChallenge`: every ghost cell carries
+    /// its plant.
+    pub fn art_challenge_complete(&self) -> bool {
+        for row in 0..6 {
+            for col in 0..9 {
+                if let Some(seed) = self.art_challenge_seed(col, row)
+                    && self.normal_plant_at(col, row).is_none_or(|p| p.seed != seed)
+                {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }

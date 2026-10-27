@@ -280,6 +280,10 @@ impl Board {
     /// `OnStartButton`'s questions before play starts: "are you sure, without ...?"
     pub(super) fn chooser_warnings(&self, picked: impl Fn(SeedType) -> bool) -> Vec<ChooserWarning> {
         let mut warnings: Vec<ChooserWarning> = Vec::new();
+        // `SeedChooserScreen::OnStartButton`: Seeing Stars needs a starfruit.
+        if self.minigame() == Some(super::MiniGame::SeeingStars) && !picked(SeedType::Starfruit) {
+            warnings.push("[SEED_CHOOSER_SEEING_STARS_WARNING]".into());
+        }
         let night_one = self.first_time_adventure && self.level == 11;
         if night_one && !picked(SeedType::Puffshroom) {
             warnings.push("[SEED_CHOOSER_PUFFSHROOM_WARNING]".into());

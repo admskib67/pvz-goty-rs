@@ -1382,34 +1382,20 @@ impl Board {
         if self.is_whack_a_zombie_level() {
             self.update_whack_a_zombie(effects);
         }
-        // UpdateGame.
-        self.update_game_objects(effects, resources, images, sounds);
-        self.update_fog_offset();
+        // UpdateGame, twice on Zombies on Speed (`Challenge::Update` calls
+        // `Board::UpdateGame` a second time there).
+        self.update_game(effects, resources, images, music, sounds);
+        if self.minigame() == Some(MiniGame::Speed) && self.scene == GameScene::Playing {
+            self.update_game(effects, resources, images, music, sounds);
+        }
+        // An art challenge's picture can be finished by anything that plants
+        // (an imitater counts once it turns into the real thing).
+        self.check_art_challenge_complete(effects, resources, images, sounds);
         if let Some(zombie) = self.zombies_won_trigger.take() {
             self.zombies_won(zombie, effects, resources, images, music, sounds);
         }
         if self.scene == GameScene::ZombiesWon && cutscene::update_zombies_won(self, effects, resources, images, sounds) {
             self.pending_game_over = true;
-        }
-        if self.scene == GameScene::Playing {
-            self.main_counter += 1;
-            self.cob_cannon_cursor_delay = (self.cob_cannon_cursor_delay - 1).max(0);
-            self.out_of_money_counter = (self.out_of_money_counter - 1).max(0);
-            self.tick_fog_countdown();
-            self.ice_trap_counter = (self.ice_trap_counter - 1).max(0);
-            self.update_sun_spawning(effects, resources, images, sounds);
-            if self.has_conveyor_belt_seed_bank() {
-                self.update_conveyor_belt(sounds.rng());
-            }
-            self.update_zombie_spawning(effects, resources, images, music, sounds);
-            if self.main_counter == 1 && self.first_time_adventure && self.level == 1 {
-                self.set_tutorial_state(resources, TutorialState::Level1PickUpPeashooter);
-            } else if self.main_counter == 1 && self.first_time_adventure && self.level == 2 {
-                self.set_tutorial_state(resources, TutorialState::Level2PickUpSunflower);
-                self.display_advice(resources, "[ADVICE_PLANT_SUNFLOWER1]", MessageStyle::TutorialLevel2, None);
-                self.tutorial_timer = 500;
-            }
-            self.update_progress_meter();
         }
         if self.pending_fade_out {
             self.fade_out_level(music, sounds, resources);
@@ -1460,6 +1446,41 @@ impl Board {
 }
 
 impl Board {
+    /// `Board::UpdateGame`: the objects, then the level's timers and waves.
+    #[allow(clippy::too_many_arguments)]
+    fn update_game(
+        &mut self,
+        effects: &mut EffectSystem,
+        resources: &mut GameResources,
+        images: &mut Assets<Image>,
+        music: &mut Music,
+        sounds: &mut Sounds,
+    ) {
+        self.update_game_objects(effects, resources, images, sounds);
+        self.update_fog_offset();
+        if self.scene != GameScene::Playing {
+            return;
+        }
+        self.main_counter += 1;
+        self.cob_cannon_cursor_delay = (self.cob_cannon_cursor_delay - 1).max(0);
+        self.out_of_money_counter = (self.out_of_money_counter - 1).max(0);
+        self.tick_fog_countdown();
+        self.ice_trap_counter = (self.ice_trap_counter - 1).max(0);
+        self.update_sun_spawning(effects, resources, images, sounds);
+        if self.has_conveyor_belt_seed_bank() {
+            self.update_conveyor_belt(sounds.rng());
+        }
+        self.update_zombie_spawning(effects, resources, images, music, sounds);
+        if self.main_counter == 1 && self.first_time_adventure && self.level == 1 {
+            self.set_tutorial_state(resources, TutorialState::Level1PickUpPeashooter);
+        } else if self.main_counter == 1 && self.first_time_adventure && self.level == 2 {
+            self.set_tutorial_state(resources, TutorialState::Level2PickUpSunflower);
+            self.display_advice(resources, "[ADVICE_PLANT_SUNFLOWER1]", MessageStyle::TutorialLevel2, None);
+            self.tutorial_timer = 500;
+        }
+        self.update_progress_meter();
+    }
+
     /// `Board::UpdateGameObjects`.
     fn update_game_objects(
         &mut self,
@@ -2826,6 +2847,27 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
         && let Some(graveyard) = image("IMAGE_NIGHT_GRAVE_GRAPHIC")
     {
         g.draw_image(graveyard, 1092.0, 40.0);
+    }
+    // `Challenge::DrawArtChallenge`: Seeing Stars' ghost picture.
+    if board.minigame() == Some(MiniGame::SeeingStars) {
+        for row in 0..6 {
+            for col in 0..9 {
+                if let Some(seed) = board.art_challenge_seed(col, row)
+                    && board.normal_plant_at(col, row).is_none()
+                {
+                    seed_bank::draw_seed_packet(
+                        g,
+                        res,
+                        board.grid_to_pixel_x(col) as f32,
+                        board.grid_to_pixel_y(col, row) as f32,
+                        seed,
+                        0.0,
+                        100,
+                        false,
+                    );
+                }
+            }
+        }
     }
     // TODO: the level 1 tutorial's flashing sod row.
 }

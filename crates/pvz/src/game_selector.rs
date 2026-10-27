@@ -808,6 +808,16 @@ fn selector_input(
                 ))));
                 next_state.set(AppState::Board);
             }
+            Ok("minigame-speed") => {
+                commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(crate::board::MiniGame::Speed))));
+                next_state.set(AppState::Board);
+            }
+            Ok("minigame-stars") => {
+                commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(
+                    crate::board::MiniGame::SeeingStars,
+                ))));
+                next_state.set(AppState::Board);
+            }
             Ok("minigame-boss") => {
                 commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(crate::board::MiniGame::FinalBoss))));
                 next_state.set(AppState::Board);

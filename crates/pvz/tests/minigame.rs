@@ -219,3 +219,49 @@ fn the_boss_challenge_is_the_boss_level_without_adventure_rules() {
     });
     assert!(t.board.boss_zombie().is_some(), "Dr. Zomboss steps on");
 }
+
+#[test]
+fn zombies_on_speed_updates_the_board_twice_a_tick() {
+    let Some(mut t) = board(MiniGame::Speed) else { return };
+    assert_eq!(t.board.background, crate::board::BackgroundType::Pool);
+    assert_eq!(t.board.waves.num_waves, 40);
+    for ty in [ZombieType::Normal, ZombieType::TrafficCone, ZombieType::DolphinRider, ZombieType::Polevaulter] {
+        assert!(t.board.waves.zombie_allowed[ty as usize], "{ty:?}");
+    }
+    let before = t.board.main_counter;
+    t.ticks(10);
+    // `Challenge::Update` calls `Board::UpdateGame` again on this mode.
+    assert_eq!(t.board.main_counter - before, 20, "ten ticks, twenty updates");
+}
+
+#[test]
+fn seeing_stars_has_a_starfruit_picture_and_ends_when_it_is_filled() {
+    let Some(mut t) = board(MiniGame::SeeingStars) else { return };
+    assert!(t.board.is_continuous_challenge(), "waves alone don't end it");
+    assert_eq!(t.board.background, crate::board::BackgroundType::Day);
+    let ghosts: Vec<(i32, i32)> = (0..6)
+        .flat_map(|row| (0..9).map(move |col| (col, row)))
+        .filter(|&(col, row)| t.board.art_challenge_seed(col, row).is_some())
+        .collect();
+    assert_eq!(ghosts.len(), 14, "the starfruit picture's cells");
+    // A wrong plant can't go on a ghost cell; the wanted one can.
+    assert_eq!(
+        t.board.can_plant_at(ghosts[0].0, ghosts[0].1, crate::plant::SeedType::Wallnut),
+        crate::board::cursor::PlantingReason::NotOnArt
+    );
+    assert_eq!(
+        t.board.can_plant_at(ghosts[0].0, ghosts[0].1, crate::plant::SeedType::Starfruit),
+        crate::board::cursor::PlantingReason::Ok
+    );
+    assert!(!t.board.art_challenge_complete());
+    for (i, &(col, row)) in ghosts.iter().enumerate() {
+        t.plant(crate::plant::SeedType::Starfruit, col, row);
+        if i + 1 < ghosts.len() {
+            t.tick();
+            assert!(!t.board.has_level_award_dropped(), "still incomplete");
+        }
+    }
+    assert!(t.board.art_challenge_complete());
+    t.tick();
+    assert!(t.board.has_level_award_dropped(), "the finished picture wins");
+}
