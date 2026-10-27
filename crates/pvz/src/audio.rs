@@ -919,14 +919,82 @@ fn playable(bytes: &[u8]) -> bool {
     bytes.starts_with(b"OggS") || bytes.starts_with(b"RIFF")
 }
 
+/// Decodes a Sun/NeXT `.au` sound (the Windows pak's `tapglass.au` and
+/// `diamond.au`) into a 16-bit PCM WAV for Bevy's decoder. Supports µ-law,
+/// 8-bit signed and 16-bit big-endian linear PCM, mono or interleaved.
+fn au_to_wav(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 24 || &bytes[0..4] != b".snd" {
+        return None;
+    }
+    let be = |at: usize| -> Option<u32> {
+        Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+    };
+    let offset = be(4)? as usize;
+    let size = be(8)? as usize;
+    let encoding = be(12)?;
+    let rate = be(16)?;
+    let channels = be(20)?.max(1);
+    if offset < 24 || offset > bytes.len() || rate == 0 {
+        return None;
+    }
+    let end = if size == u32::MAX as usize || offset + size > bytes.len() {
+        bytes.len()
+    } else {
+        offset + size
+    };
+    let data = &bytes[offset..end];
+    let width = match encoding {
+        1 | 2 => 1,
+        3 => 2,
+        _ => return None,
+    };
+    let samples = data.len() / width;
+    let mut pcm = Vec::with_capacity(samples * 2);
+    match encoding {
+        1 => pcm.extend(data.iter().map(|&b| ulaw_to_i16(b))),
+        2 => pcm.extend(data.iter().map(|&b| i16::from(b as i8) << 8)),
+        3 => pcm.extend(data.as_chunks::<2>().0.iter().map(|b| i16::from_be_bytes(*b))),
+        _ => return None,
+    }
+    let data_len = (pcm.len() * 2) as u32;
+    let byte_rate = rate * channels * 2;
+    let mut wav = Vec::with_capacity(44 + pcm.len() * 2);
+    wav.extend(b"RIFF");
+    wav.extend((36 + data_len).to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend(1u16.to_le_bytes());
+    wav.extend((channels as u16).to_le_bytes());
+    wav.extend(rate.to_le_bytes());
+    wav.extend(byte_rate.to_le_bytes());
+    wav.extend(((channels * 2) as u16).to_le_bytes());
+    wav.extend(16u16.to_le_bytes());
+    wav.extend(b"data");
+    wav.extend(data_len.to_le_bytes());
+    for sample in pcm {
+        wav.extend(sample.to_le_bytes());
+    }
+    Some(wav)
+}
+
+/// G.711 µ-law to 16-bit linear (`TodLib` gets these from the Windows pak).
+fn ulaw_to_i16(byte: u8) -> i16 {
+    let u = !byte;
+    let sign = u & 0x80;
+    let exponent = (u >> 4) & 0x07;
+    let mantissa = u & 0x0f;
+    let magnitude = (((mantissa as i16) << 3) + 0x84) << exponent;
+    if sign != 0 { 0x84 - magnitude } else { magnitude - 0x84 }
+}
+
 impl SoundSystem {
     /// Adds a loaded sound (`SOUND_*`). Unsupported formats are skipped.
     pub fn insert(&mut self, id: String, bytes: Vec<u8>, assets: &mut Assets<AudioSource>) {
-        if playable(&bytes) {
+        let bytes = if playable(&bytes) { Some(bytes) } else { au_to_wav(&bytes) };
+        if let Some(bytes) = bytes {
             self.sounds.insert(id, assets.add(AudioSource { bytes: bytes.into() }));
         } else {
-            // TODO: the Windows pak has `.au` sounds, which need their own decoder.
-            warn!("{id}: sound format not supported yet, it will be silent");
+            warn!("{id}: sound format not supported, it will be silent");
         }
     }
 }
@@ -1068,6 +1136,27 @@ mod tests {
         assert!(playable(b"OggS\0\x02rest"));
         assert!(playable(b"RIFF....WAVE"));
         assert!(!playable(b".snd\0\0\0\x18"));
+    }
+
+    #[test]
+    fn au_ulaw_decodes_to_pcm_wav() {
+        // A tiny Sun µ-law file: 4 samples, mono, 8000 Hz.
+        let samples = [0xffu8, 0x7f, 0x00, 0x80];
+        let mut au = Vec::new();
+        au.extend(b".snd");
+        au.extend(24u32.to_be_bytes());
+        au.extend((samples.len() as u32).to_be_bytes());
+        au.extend(1u32.to_be_bytes());
+        au.extend(8000u32.to_be_bytes());
+        au.extend(1u32.to_be_bytes());
+        au.extend(samples);
+        let wav = au_to_wav(&au).expect("the au decodes");
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 8000);
+        assert_eq!(u16::from_le_bytes(wav[22..24].try_into().unwrap()), 1, "mono");
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 8, "four 16-bit samples");
+        assert!(au_to_wav(b"not an au").is_none());
     }
 
     #[test]
