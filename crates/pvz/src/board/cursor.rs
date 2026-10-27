@@ -573,6 +573,13 @@ impl Board {
             self.beghouled_packet_clicked(index, effects, res, images, sounds);
             return;
         }
+        // Vasebreaker: a click on a pot breaks it.
+        if self.is_scary_potter_level() && !right && self.scene == GameScene::Playing {
+            let (col, row) = (self.pixel_to_grid_x(ip.x), self.pixel_to_grid_y(ip.x, ip.y));
+            if self.break_scary_pot(col, row, effects, res, images, sounds) {
+                return;
+            }
+        }
         // Zombiquarium's two packets buy a fish or the trophy.
         if self.is_aquarium()
             && !right

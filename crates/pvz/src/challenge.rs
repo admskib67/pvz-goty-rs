@@ -21,7 +21,7 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::audio::{Music, MusicTune, Sounds};
-use crate::board::{GameMode, MiniGame, SelectedMode, SurvivalDifficulty, SurvivalLawn};
+use crate::board::{GameMode, MiniGame, PuzzleLevel, SelectedMode, SurvivalDifficulty, SurvivalLawn};
 use crate::dialog::{ButtonMode, DialogId, Dialogs};
 use crate::graphics::{Graphics, Justify, SexyColor, SexyRect};
 use crate::input::GameCursor;
@@ -53,6 +53,7 @@ pub enum ChallengePage {
     #[default]
     Survival,
     Challenge,
+    Puzzle,
 }
 
 /// Set by the main menu's Survival and Mini-games buttons: the page the
@@ -91,6 +92,10 @@ pub struct ChallengeProgress {
     endless_best: [i32; 5],
     /// The mini-games won, by `MiniGame::index`.
     challenge_beaten: [bool; 20],
+    /// The Vasebreaker levels won, by `PuzzleLevel::index` (0..8).
+    scary_potter_beaten: [bool; 9],
+    /// The best endless Vasebreaker streak.
+    scary_potter_best: i32,
 }
 
 impl ChallengeProgress {
@@ -122,6 +127,28 @@ impl ChallengeProgress {
     /// `LawnApp::GetNumTrophies(CHALLENGE_PAGE_CHALLENGE)`.
     pub fn challenge_trophies(&self) -> i32 {
         self.challenge_beaten.iter().filter(|&&won| won).count() as i32
+    }
+
+    /// The puzzle page's trophies: Vasebreaker's nine levels.
+    pub fn puzzle_trophies(&self) -> i32 {
+        self.scary_potter_beaten.iter().filter(|&&won| won).count() as i32
+    }
+
+    pub fn has_beaten_puzzle(&self, level: PuzzleLevel) -> bool {
+        !level.is_endless() && self.scary_potter_beaten.get(level.index()).copied().unwrap_or(false)
+    }
+
+    /// A won Vasebreaker level (endless keeps its streak instead).
+    pub fn record_puzzle(&mut self, level: PuzzleLevel, streak: i32) {
+        if level.is_endless() {
+            self.scary_potter_best = self.scary_potter_best.max(streak);
+        } else if let Some(won) = self.scary_potter_beaten.get_mut(level.index()) {
+            *won = true;
+        }
+    }
+
+    pub fn scary_potter_best(&self) -> i32 {
+        self.scary_potter_best
     }
 
     pub fn has_beaten(&self, lawn: SurvivalLawn, difficulty: SurvivalDifficulty) -> bool {
@@ -182,6 +209,21 @@ impl ChallengeProgress {
         MiniGame::ALL.into_iter().filter(|game| game.is_ported()).collect()
     }
 
+    /// The puzzle page's unlock rule over Vasebreaker's ten entries: first
+    /// three free, then one per trophy.
+    fn puzzle_needed(&self, level: PuzzleLevel, finished_adventure: bool) -> i32 {
+        let index = level.index() as i32;
+        if !finished_adventure {
+            return match index {
+                ..3 => 0,
+                3 => 1,
+                _ => 2,
+            };
+        }
+        let owed = self.puzzle_trophies() + 3;
+        if index >= owed { index - owed + 1 } else { 0 }
+    }
+
     /// `AccomplishmentsNeeded` for a mini-game tile, counting only the
     /// ported games (the others can't be won and would block the chain).
     fn minigame_needed(&self, game: MiniGame, finished_adventure: bool) -> i32 {
@@ -221,7 +263,13 @@ fn in_tile(point: Vec2, rect: (f32, f32, f32, f32)) -> bool {
 
 /// The page a returned challenge run belongs to.
 pub(crate) fn request_page_for(board: &crate::board::Board) -> ChallengePageRequest {
-    ChallengePageRequest(if board.is_minigame() { ChallengePage::Challenge } else { ChallengePage::Survival })
+    ChallengePageRequest(if board.is_scary_potter_level() {
+        ChallengePage::Puzzle
+    } else if board.is_minigame() {
+        ChallengePage::Challenge
+    } else {
+        ChallengePage::Survival
+    })
 }
 
 /// Records a won challenge run for the current player.
@@ -232,6 +280,8 @@ pub(crate) fn record_challenge_win(profiles: &ProfileMgr, board: &crate::board::
         progress.record(lawn, difficulty, board.survival_flags_completed());
     } else if let Some(game) = board.minigame() {
         progress.record_minigame(game);
+    } else if let GameMode::Puzzle(level) = board.mode {
+        progress.record_puzzle(level, board.survival_stage);
     }
     progress.save(&dir, player.id);
 }
@@ -239,12 +289,18 @@ pub(crate) fn record_challenge_win(profiles: &ProfileMgr, board: &crate::board::
 /// Records where a challenge run got to, when it's over (endless survival
 /// keeps its best flags).
 pub(crate) fn record_challenge_end(profiles: &ProfileMgr, board: &crate::board::Board) {
-    let (Some((lawn, difficulty)), Some(player), Some(dir)) = (board.survival(), profiles.player(), userdata_dir()) else { return };
-    if difficulty != SurvivalDifficulty::Endless {
+    let (Some(player), Some(dir)) = (profiles.player(), userdata_dir()) else { return };
+    let mut progress = ChallengeProgress::load(&dir, player.id);
+    if let Some((lawn, difficulty)) = board.survival() {
+        if difficulty != SurvivalDifficulty::Endless {
+            return;
+        }
+        progress.record(lawn, difficulty, board.survival_flags_completed());
+    } else if board.is_scary_potter_level() && board.mode == GameMode::Puzzle(PuzzleLevel::VasebreakerEndless) {
+        progress.record_puzzle(PuzzleLevel::VasebreakerEndless, board.survival_stage);
+    } else {
         return;
     }
-    let mut progress = ChallengeProgress::load(&dir, player.id);
-    progress.record(lawn, difficulty, board.survival_flags_completed());
     progress.save(&dir, player.id);
 }
 
@@ -344,6 +400,21 @@ fn challenge_input(
                 return;
             }
         }
+        ChallengePage::Puzzle => {
+            for level in PuzzleLevel::ALL {
+                let (x, y) = puzzle_tile_pos(level);
+                if !in_tile(point, (x, y, CHALLENGE_TILE.2, CHALLENGE_TILE.3)) {
+                    continue;
+                }
+                if screen.progress.puzzle_needed(level, finished) > 0 {
+                    return;
+                }
+                sounds.play_sample("SOUND_GRAVEBUTTON");
+                commands.insert_resource(SelectedMode(Some(GameMode::Puzzle(level))));
+                next_state.set(AppState::Board);
+                return;
+            }
+        }
         ChallengePage::Challenge => {
             for game in MiniGame::ALL {
                 let (x, y) = challenge_tile_pos(game);
@@ -385,6 +456,7 @@ fn draw_challenge_screen(
     let (title, trophies, total) = match screen.page {
         ChallengePage::Survival => ("[PICK_AREA]", screen.progress.trophies(), SURVIVAL_TROPHIES_TOTAL),
         ChallengePage::Challenge => ("[PICK_CHALLENGE]", screen.progress.challenge_trophies(), CHALLENGE_TROPHIES_TOTAL),
+        ChallengePage::Puzzle => ("[SCARY_POTTER]", screen.progress.puzzle_trophies(), 18),
     };
     if let Some(font) = res.font("FONT_HOUSEOFTERROR28") {
         g.tod_draw_string(font, 400, 58, &res.translate(title), SexyColor::rgba(220, 220, 220, 255), Justify::Center);
@@ -399,6 +471,7 @@ fn draw_challenge_screen(
     match screen.page {
         ChallengePage::Survival => draw_survival_page(&screen, res, g, cursor.0, finished),
         ChallengePage::Challenge => draw_challenge_page(&screen, res, g, cursor.0, finished),
+        ChallengePage::Puzzle => draw_puzzle_page(&screen, res, g, cursor.0, finished),
     }
     screen.back.draw(g, res);
 }
@@ -492,6 +565,57 @@ fn draw_challenge_page(screen: &ChallengeScreen, res: &GameResources, g: &mut Gr
             && let Some(lock) = res.image("IMAGE_LOCK")
         {
             g.draw_image_scaled(lock, x + 24.0, y + 9.0, 0.7, 0.7);
+        }
+    }
+}
+
+fn puzzle_tile_pos(level: PuzzleLevel) -> (f32, f32) {
+    let index = level.index() as i32;
+    (
+        CHALLENGE_TILE.0 + (index % COLUMNS) as f32 * COLUMN_STEP,
+        CHALLENGE_TILE.1 + (index / COLUMNS) as f32 * CHALLENGE_ROW_STEP,
+    )
+}
+
+fn draw_puzzle_page(screen: &ChallengeScreen, res: &GameResources, g: &mut Graphics, mouse: Option<Vec2>, finished: bool) {
+    for level in PuzzleLevel::ALL {
+        let (x, y) = puzzle_tile_pos(level);
+        let needed = screen.progress.puzzle_needed(level, finished);
+        if needed > 1 {
+            image(g, res, "IMAGE_CHALLENGE_BLANK", x, y);
+            continue;
+        }
+        let over = mouse.is_some_and(|p| in_tile(p, (x, y, CHALLENGE_TILE.2, CHALLENGE_TILE.3)));
+        let locked = needed == 1;
+        if let Some(thumbs) = res.image("IMAGE_CHALLENGE_THUMBNAILS") {
+            if locked {
+                g.push_state();
+                g.set_colorize_images(true);
+                g.set_color(SexyColor::rgba(92, 92, 92, 255));
+            }
+            g.draw_image_cel(thumbs, x + 13.0, y + 4.0, 10, 0);
+            if locked {
+                g.pop_state();
+            }
+        }
+        image(g, res, if over { "IMAGE_CHALLENGE_WINDOW" } else { "IMAGE_CHALLENGE_WINDOW_HIGHLIGHT" }, x - 6.0, y - 2.0);
+        if let Some(font) = res.font("FONT_BRIANNETOD12") {
+            let name = if locked { "?".to_owned() } else { res.translate(level.name()) };
+            draw_tile_name(g, font, &name, x, y, (96, 88, 102));
+        }
+        if screen.progress.has_beaten_puzzle(level) {
+            image(g, res, "IMAGE_MINIGAME_TROPHY", x - 6.0, y - 2.0);
+        } else if locked {
+            if let Some(lock) = res.image("IMAGE_LOCK") {
+                g.draw_image_scaled(lock, x + 24.0, y + 9.0, 0.7, 0.7);
+            }
+        } else if level.is_endless()
+            && screen.progress.scary_potter_best() > 0
+            && let Some(font) = res.font("FONT_CONTINUUMBOLD14")
+        {
+            let streak = res.translate("[LONGEST_STREAK]").replace("{STREAK}", &screen.progress.scary_potter_best().to_string());
+            let rect = SexyRect::new(x, y + 15.0, 96.0, 200.0);
+            g.tod_draw_string_wrapped(font, rect, &streak, SexyColor::WHITE, Justify::CenterMiddle);
         }
     }
 }

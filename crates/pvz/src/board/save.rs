@@ -47,6 +47,9 @@ fn mode_index(mode: GameMode) -> i32 {
         GameMode::Survival { lawn, difficulty } => 1 + difficulty.index() * 5 + lawn.index(),
         // `ConstEnums.h`: the challenge modes follow the 15 survival ones.
         GameMode::MiniGame(game) => 16 + game.index() as i32,
+        // The puzzle modes sit after the challenge and Zen modes in
+        // `ConstEnums.h`; their saves aren't used.
+        GameMode::Puzzle(level) => 200 + level.index() as i32,
         GameMode::Intro => 81,
     }
 }
@@ -328,6 +331,8 @@ impl SaveData {
                         GridItemType::Rake => 2,
                         // Portals only exist in Portal Combat, which isn't saved.
                         GridItemType::PortalSquare | GridItemType::PortalCircle => 3,
+                        // Vasebreaker pots aren't saved.
+                        GridItemType::ScaryPot => 4,
                     },
                     col: g.grid_x,
                     row: g.grid_y,

@@ -311,7 +311,7 @@ impl Board {
     /// Challenge modes (survival and mini-games): level 50's adventure rules
     /// don't apply to them.
     pub fn is_challenge(&self) -> bool {
-        self.is_survival() || self.is_minigame()
+        self.is_survival() || self.is_minigame() || self.is_scary_potter_level()
     }
 
     /// `Board::InitZombieWaves` for a mini-game.
@@ -397,7 +397,7 @@ impl Board {
     /// `LawnApp::IsChallengeWithoutSeedBank`: It's Raining Seeds plants
     /// straight from the packets that fall.
     pub fn is_challenge_without_seed_bank(&self) -> bool {
-        self.minigame() == Some(MiniGame::RainingSeeds)
+        self.minigame() == Some(MiniGame::RainingSeeds) || self.is_scary_potter_level()
     }
 
     /// `Challenge::UpdateRainingSeeds` + `Challenge::UpdateRain`.

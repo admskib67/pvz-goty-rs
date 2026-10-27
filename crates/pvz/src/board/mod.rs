@@ -32,6 +32,7 @@ mod message;
 mod minigame;
 mod plant;
 mod save;
+mod scary_potter;
 pub(crate) use save::{
     board_from_save, erase_save, has_save, load_save_data, need_save_game, save_dir, try_to_save_game,
 };
@@ -145,6 +146,55 @@ pub enum GameMode {
     Survival { lawn: SurvivalLawn, difficulty: SurvivalDifficulty },
     /// A mini-game from the challenge screen (`GAMEMODE_CHALLENGE_*`).
     MiniGame(MiniGame),
+    /// A puzzle level (`GAMEMODE_SCARY_POTTER_*`).
+    Puzzle(PuzzleLevel),
+}
+
+/// Vasebreaker's ten puzzle levels (`GAMEMODE_SCARY_POTTER_1` ... `_ENDLESS`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PuzzleLevel {
+    Vasebreaker(u8),
+    VasebreakerEndless,
+}
+
+impl PuzzleLevel {
+    pub const ALL: [Self; 10] = [
+        Self::Vasebreaker(1),
+        Self::Vasebreaker(2),
+        Self::Vasebreaker(3),
+        Self::Vasebreaker(4),
+        Self::Vasebreaker(5),
+        Self::Vasebreaker(6),
+        Self::Vasebreaker(7),
+        Self::Vasebreaker(8),
+        Self::Vasebreaker(9),
+        Self::VasebreakerEndless,
+    ];
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|&l| l == self).unwrap_or(0)
+    }
+
+    pub fn is_endless(self) -> bool {
+        self == Self::VasebreakerEndless
+    }
+
+    /// The tile's label key.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Vasebreaker(1) => "[SCARY_POTTER_1]",
+            Self::Vasebreaker(2) => "[SCARY_POTTER_2]",
+            Self::Vasebreaker(3) => "[SCARY_POTTER_3]",
+            Self::Vasebreaker(4) => "[SCARY_POTTER_4]",
+            Self::Vasebreaker(5) => "[SCARY_POTTER_5]",
+            Self::Vasebreaker(6) => "[SCARY_POTTER_6]",
+            Self::Vasebreaker(7) => "[SCARY_POTTER_7]",
+            Self::Vasebreaker(8) => "[SCARY_POTTER_8]",
+            Self::Vasebreaker(9) => "[SCARY_POTTER_9]",
+            Self::VasebreakerEndless => "[SCARY_POTTER_ENDLESS]",
+            Self::Vasebreaker(_) => "[SCARY_POTTER_1]",
+        }
+    }
 }
 
 /// The five survival lawns (`GAMEMODE_SURVIVAL_*_STAGE_1` to `_STAGE_5`).
@@ -642,6 +692,7 @@ impl Board {
             // Mini-games run on challenge level 0, as in `InitLevel`; their
             // own tables replace everything the level would decide.
             GameMode::MiniGame(_) => 0,
+            GameMode::Puzzle(_) => 0,
         };
         let first_time_adventure =
             mode == GameMode::Adventure && !player.is_some_and(PlayerInfo::has_finished_adventure);
@@ -859,6 +910,9 @@ impl Board {
         } else if let GameMode::Survival { lawn, .. } = self.mode {
             // `Challenge::InitLevel`: the survival lawn picks the background.
             lawn.background()
+        } else if self.is_scary_potter_level() {
+            // `PickBackground`: the puzzle levels are at night.
+            BackgroundType::Night
         } else if let Some(game) = self.minigame() {
             // `PickBackground`: each mini-game has its own lawn.
             game.background()
@@ -948,6 +1002,7 @@ impl Board {
         self.minigame() != Some(MiniGame::SlotMachine)
             && self.minigame() != Some(MiniGame::Zombiquarium)
             && !self.is_beghouled()
+            && !self.is_scary_potter_level()
             && !self.has_conveyor_belt_seed_bank()
             && !self.is_whack_a_zombie_level()
             && !self.is_challenge_without_seed_bank()
@@ -967,6 +1022,9 @@ impl Board {
         }
         if self.minigame() == Some(MiniGame::Zombiquarium) {
             return 2;
+        }
+        if self.is_scary_potter_level() {
+            return 0;
         }
         if self.has_conveyor_belt_seed_bank() {
             return 10;
@@ -1063,8 +1121,8 @@ impl Board {
     /// `Board::InitLawnMowers`: one per row that zombies can walk down. Pool
     /// rows get the pool cleaner when it's been bought (see `LawnMower::new`).
     fn init_lawn_mowers(&mut self) {
-        // Zombiquarium has no lawn.
-        if self.is_aquarium() {
+        // Zombiquarium has no lawn, and the puzzle levels have no mowers.
+        if self.is_aquarium() || self.is_scary_potter_level() {
             return;
         }
         // The roof has mowers only once the player has bought the roof cleaner.
@@ -1209,6 +1267,7 @@ fn new_game(
     board.start_slot_machine(&mut effects, &mut resources, &mut images);
     board.start_beghouled(&mut effects, &mut resources, &mut images, sounds.rng());
     board.start_zombiquarium(&mut effects, &mut resources, &mut images, &mut sounds);
+    board.start_scary_potter(&mut effects, &mut resources, &mut images, sounds.rng());
     board.prev_result_restart = was_lost;
     board.level_overridden = level_override.0.is_some();
     // PreNewGame erases the mode's save before a fresh game (never for a
@@ -1389,7 +1448,7 @@ fn update_board(
         }
         // A won challenge run earns its trophy and goes back to the
         // challenge screen (LawnApp::ShowChallengeScreen).
-        if board.is_challenge() {
+        if board.is_challenge() || board.is_scary_potter_level() {
             crate::challenge::record_challenge_win(&profiles, board);
             commands.insert_resource(crate::challenge::request_page_for(board));
             board.finish_challenge();

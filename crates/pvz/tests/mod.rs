@@ -242,6 +242,14 @@ impl TestBoard {
         }, false)
     }
 
+    /// A Vasebreaker level from the puzzle page.
+    pub fn puzzle(level: crate::board::PuzzleLevel) -> Option<Self> {
+        Self::create(GameMode::Puzzle(level), 0, |p| {
+            p.finished_adventure = 1;
+            p.has_unlocked_puzzle_mode = true;
+        }, false)
+    }
+
     /// A mini-game from the challenge screen, played from the start with
     /// its own lawn and wave table.
     pub fn minigame(game: MiniGame) -> Option<Self> {
@@ -271,6 +279,7 @@ impl TestBoard {
             board.start_beghouled(&mut effects, resources, images, &mut rng);
             let mut live = sounds.get_mut(&mut world).expect("sounds");
             board.start_zombiquarium(&mut effects, resources, images, &mut live);
+            board.start_scary_potter(&mut effects, resources, images, &mut rng);
             sounds.apply(&mut world);
         }
         if intro {

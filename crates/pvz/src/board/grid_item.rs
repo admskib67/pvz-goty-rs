@@ -40,6 +40,8 @@ pub enum GridItemType {
     PortalSquare,
     /// Portal Combat's round portal (`GRIDITEM_PORTAL_CIRCLE`).
     PortalCircle,
+    /// Vasebreaker's pot (`GRIDITEM_SCARY_POT`).
+    ScaryPot,
 }
 
 /// `GridItemState`, for what's ported so far.
@@ -54,6 +56,10 @@ pub enum GridItemState {
     RakeTriggered,
     /// A portal playing its disappear animation (`GRIDITEM_STATE_PORTAL_CLOSED`).
     PortalClosed,
+    /// A pot with a question mark (`GRIDITEM_STATE_SCARY_POT_QUESTION`).
+    ScaryPotQuestion,
+    /// A pot showing a leaf: it holds a seed (`..._LEAF`).
+    ScaryPotLeaf,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +73,8 @@ pub struct GridItem {
     counter: i32,
     /// The rake's animation (`mGridItemReanimID`).
     reanim: Option<crate::reanim::ReanimationId>,
+    /// What a Vasebreaker pot holds (`mScaryPotType` and its payload).
+    pub pot: Option<super::scary_potter::ScaryPot>,
     pub dead: bool,
 }
 
@@ -154,6 +162,7 @@ impl Board {
             render_order: make_render_order(render_layer::GROUND, grid_y, 1),
             counter,
             reanim: None,
+            pot: None,
             dead: false,
         });
     }
@@ -168,16 +177,32 @@ impl Board {
             render_order: make_render_order(render_layer::PLANT, grid_y, 800),
             counter: 0,
             reanim: None,
+            pot: None,
             dead: false,
         });
     }
 }
 
 impl GridItem {
+    /// A Vasebreaker pot.
+    pub(super) fn scary_pot(grid_x: i32, grid_y: i32, pot: super::scary_potter::ScaryPot) -> Self {
+        Self {
+            item_type: GridItemType::ScaryPot,
+            state: GridItemState::ScaryPotQuestion,
+            grid_x,
+            grid_y,
+            render_order: make_render_order(render_layer::PLANT, grid_y, 0),
+            counter: 0,
+            reanim: None,
+            pot: Some(pot),
+            dead: false,
+        }
+    }
+
     /// A Portal Combat portal (`GRIDITEM_PORTAL_SQUARE`/`_CIRCLE`).
     pub(super) fn portal(item_type: GridItemType, grid_x: i32, grid_y: i32) -> Self {
         let render_order = make_render_order(render_layer::PARTICLE, grid_y, 0);
-        Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter: 0, reanim: None, dead: false }
+        Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter: 0, reanim: None, pot: None, dead: false }
     }
 
     /// `GridItem::IsOpenPortal`.
@@ -217,12 +242,25 @@ impl GridItem {
             GridItemType::PortalSquare | GridItemType::PortalCircle => {
                 (make_render_order(render_layer::PARTICLE, grid_y, 0), 0)
             }
+            GridItemType::ScaryPot => (make_render_order(render_layer::PLANT, grid_y, 0), 0),
         };
-        Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter, reanim: None, dead: false }
+        Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter, reanim: None, pot: None, dead: false }
     }
 }
 
 impl Board {
+    /// `GridItem::DrawScaryPot`: the pot's cel (question, leaf or zombie).
+    pub(super) fn draw_scary_pot(&self, item: &GridItem, res: &GameResources, g: &mut crate::graphics::Graphics) {
+        let Some(image) = res.image("IMAGE_SCARY_POT") else { return };
+        let cel = match item.state {
+            GridItemState::ScaryPotLeaf => 1,
+            _ => 0,
+        };
+        let x = self.grid_to_pixel_x(item.grid_x) as f32 - 5.0;
+        let y = self.grid_to_pixel_y(item.grid_x, item.grid_y) as f32 - 15.0;
+        g.draw_image_cel(image, x, y, cel, 0);
+    }
+
     /// `Board::GetLadderAt`.
     pub(super) fn ladder_at(&self, grid_x: i32, grid_y: i32) -> Option<Id<GridItem>> {
         self.grid_items
@@ -268,6 +306,7 @@ impl Board {
             render_order: make_render_order(render_layer::GRAVE_STONE, grid_y, 3),
             counter: -(rng.next_range(50) as i32),
             reanim: None,
+            pot: None,
             dead: false,
         });
     }
@@ -472,6 +511,7 @@ impl Board {
             render_order: make_render_order(render_layer::GRAVE_STONE, grid_y, 9),
             counter: 0,
             reanim,
+            pot: None,
             dead: false,
         });
     }
@@ -560,6 +600,7 @@ impl Board {
             GridItemType::Crater => self.draw_crater(item, res, g),
             GridItemType::Ladder => self.draw_ladder(item, res, g),
             GridItemType::PortalSquare | GridItemType::PortalCircle => {}
+            GridItemType::ScaryPot => self.draw_scary_pot(item, res, g),
             GridItemType::Rake => {
                 if let Some(reanim) = item.reanim.and_then(|id| effects.get(id)) {
                     crate::reanim::draw_reanimation(g, reanim, res);

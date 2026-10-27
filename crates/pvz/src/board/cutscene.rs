@@ -393,7 +393,7 @@ pub fn update_zombies_won(
 
 /// `CutScene::ShowShovel`: not until the shovel is introduced in 1-5.
 fn show_shovel(board: &mut Board) {
-    if board.is_whack_a_zombie_level() || board.is_beghouled() || board.is_aquarium() {
+    if board.is_whack_a_zombie_level() || board.is_beghouled() || board.is_aquarium() || board.is_scary_potter_level() {
         return;
     }
     if !board.first_time_adventure || board.level > 4 {

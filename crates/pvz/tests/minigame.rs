@@ -599,3 +599,94 @@ fn a_fish_eats_a_nearby_brain_and_the_empty_tank_loses() {
     t.tick();
     assert!(t.board.aquarium_lost, "an empty tank is a loss");
 }
+
+#[test]
+fn vasebreaker_one_fills_the_night_lawn_with_pots() {
+    let Some(t) = TestBoard::puzzle(crate::board::PuzzleLevel::Vasebreaker(1)) else { return };
+    assert_eq!(t.board.background, crate::board::BackgroundType::Night);
+    assert_eq!(t.board.sun_money, 0);
+    assert_eq!(t.board.seed_bank.num_packets, 0, "packets come out of pots");
+    assert_eq!(t.board.waves.num_waves, 0);
+    assert!(t.board.is_challenge_without_seed_bank());
+    let pots: Vec<_> = t.board.grid_items.iter().filter(|(_, g)| g.item_type == crate::board::grid_item::GridItemType::ScaryPot).collect();
+    assert_eq!(pots.len(), 25, "5+5+5 seed pots and 6+3+1 zombie pots");
+    for (_, pot) in &pots {
+        assert!(pot.grid_x >= 2, "the first three columns are kept clear");
+        assert!(pot.pot.is_some());
+    }
+}
+
+#[test]
+fn breaking_a_seed_pot_drops_a_usable_packet_and_a_zombie_pot_spawns_its_zombie() {
+    let Some(mut t) = TestBoard::puzzle(crate::board::PuzzleLevel::Vasebreaker(1)) else { return };
+    let seed_pot = t
+        .board
+        .grid_items
+        .iter()
+        .find(|(_, g)| g.pot.is_some_and(|p| p.kind == crate::board::scary_potter::ScaryPotKind::Seed))
+        .map(|(_, g)| (g.grid_x, g.grid_y));
+    let Some((col, row)) = seed_pot else { panic!("a seed pot") };
+    let (x, y) = t.square_center(col, row);
+    t.click(x, y);
+    assert!(
+        t.board
+            .coins
+            .iter()
+            .any(|(_, c)| c.ty == crate::board::coin::CoinType::UsableSeedPacket && c.usable_seed.is_some())
+    );
+    assert!(!t.board.grid_items.iter().any(|(_, g)| g.grid_x == col && g.grid_y == row && g.item_type == crate::board::grid_item::GridItemType::ScaryPot && !g.dead));
+
+    let zombie_pot = t
+        .board
+        .grid_items
+        .iter()
+        .find(|(_, g)| g.pot.is_some_and(|p| p.kind == crate::board::scary_potter::ScaryPotKind::Zombie))
+        .map(|(_, g)| (g.grid_x, g.grid_y));
+    let Some((col, row)) = zombie_pot else { panic!("a zombie pot") };
+    let (x, y) = t.square_center(col, row);
+    t.click(x, y);
+    assert!(t.board.zombies.iter().any(|(_, z)| z.row == row && !z.is_dead_or_dying()));
+}
+
+#[test]
+fn clearing_vasebreaker_one_awards_and_endless_deals_another_round() {
+    let Some(mut t) = TestBoard::puzzle(crate::board::PuzzleLevel::Vasebreaker(1)) else { return };
+    let cells: Vec<(i32, i32)> = t
+        .board
+        .grid_items
+        .iter()
+        .filter(|(_, g)| g.item_type == crate::board::grid_item::GridItemType::ScaryPot)
+        .map(|(_, g)| (g.grid_x, g.grid_y))
+        .collect();
+    t.with(|board, effects, res, images, sounds| {
+        for (col, row) in &cells {
+            board.break_scary_pot(*col, *row, effects, res, images, sounds);
+        }
+        for (_, zombie) in board.zombies.iter_mut() {
+            zombie.die_no_loot(effects);
+        }
+        board.scary_potter_complete(effects, res, images, sounds);
+    });
+    assert!(t.board.level_award_spawned, "the level is won");
+
+    drop(t);
+    let Some(mut t) = TestBoard::puzzle(crate::board::PuzzleLevel::VasebreakerEndless) else { return };
+    let cells: Vec<(i32, i32)> = t
+        .board
+        .grid_items
+        .iter()
+        .filter(|(_, g)| g.item_type == crate::board::grid_item::GridItemType::ScaryPot)
+        .map(|(_, g)| (g.grid_x, g.grid_y))
+        .collect();
+    t.with(|board, effects, res, images, sounds| {
+        for (col, row) in &cells {
+            board.break_scary_pot(*col, *row, effects, res, images, sounds);
+        }
+        for (_, zombie) in board.zombies.iter_mut() {
+            zombie.die_no_loot(effects);
+        }
+        board.scary_potter_complete(effects, res, images, sounds);
+    });
+    assert_eq!(t.board.survival_stage, 1, "the endless streak moves on");
+    assert!(t.board.grid_items.iter().any(|(_, g)| g.item_type == crate::board::grid_item::GridItemType::ScaryPot));
+}

@@ -575,6 +575,11 @@ impl GameSelector {
                 commands.insert_resource(crate::challenge::ChallengePageRequest(crate::challenge::ChallengePage::Challenge));
                 next_state.set(AppState::Challenges);
             }
+            // KillGameSelector + ShowChallengeScreen(CHALLENGE_PAGE_PUZZLE).
+            ButtonId::Puzzle => {
+                commands.insert_resource(crate::challenge::ChallengePageRequest(crate::challenge::ChallengePage::Puzzle));
+                next_state.set(AppState::Challenges);
+            }
             ButtonId::Options => {
                 let finished_adventure = profiles.player().is_some_and(PlayerInfo::has_finished_adventure);
                 do_new_options(dialogs, resources, settings, OptionsFrom::GameSelector { finished_adventure });
@@ -810,6 +815,16 @@ fn selector_input(
             }
             Ok("minigame-speed") => {
                 commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::MiniGame(crate::board::MiniGame::Speed))));
+                next_state.set(AppState::Board);
+            }
+            Ok("puzzles") => {
+                commands.insert_resource(crate::challenge::ChallengePageRequest(crate::challenge::ChallengePage::Puzzle));
+                next_state.set(AppState::Challenges);
+            }
+            Ok("puzzle-1") => {
+                commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::Puzzle(
+                    crate::board::PuzzleLevel::Vasebreaker(1),
+                ))));
                 next_state.set(AppState::Board);
             }
             Ok("minigame-aquarium") => {
