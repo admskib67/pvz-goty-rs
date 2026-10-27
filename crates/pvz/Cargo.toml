@@ -7,6 +7,9 @@ license.workspace = true
 # `board::tests` (pvz is a binary, so it can't have integration tests).
 autotests = false
 
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
+
 [dependencies]
 pak.workspace = true
 sexy.workspace = true

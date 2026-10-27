@@ -62,4 +62,4 @@ Run this for the live list:
 grep -rn -E "TODO|Not ported|not ported" crates --include='*.rs'
 ```
 
-Most entries above carry their `file:line` from the 2026-10-26 snapshot; lines drift as code changes.
+There are currently no `TODO`/`Not ported` markers in `crates/`; add one only with the missing behavior and its decomp reference.

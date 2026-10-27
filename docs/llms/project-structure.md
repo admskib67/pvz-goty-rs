@@ -1,6 +1,6 @@
 # Project structure
 
-A Rust reconstruction of Plants vs. Zombies GOTY on Bevy 0.20. Cargo workspace, edition 2024, about 43k lines of Rust (snapshot 2026-10-26, branch `core`).
+A Rust reconstruction of Plants vs. Zombies GOTY on Bevy 0.20. Cargo workspace, edition 2024, about 43k lines of Rust (snapshot 2026-10-27, branch `core`).
 
 ```
 Cargo.toml              workspace; dev profile: our crates opt-level 1, deps 3
@@ -8,7 +8,6 @@ agents.md               binding rules + detailed per-feature notes (CLAUDE.md im
 readme.md               user-maintained: never edit
 docs/
   architecture.md       short human overview
-  todo.md               older TODO list (partly stale)
   llms/                 these docs
   superpowers/          past design specs and plans
 dev/

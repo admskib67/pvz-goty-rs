@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-Rust reconstruction of Plants vs. Zombies: Game of the Year Edition on Bevy 0.20. Ships no game data: the app reads the player's own `main.pak` at runtime. Steam/GOTY achievements are a Steamworks platform feature, not game content: they are out of scope and must not be ported. Start with `docs/llms/` (`README.md`, `project-structure.md`, `workflow.md`, `status-and-todo.md`); `docs/architecture.md` is the short human overview.
+Rust reconstruction of Plants vs. Zombies: Game of the Year Edition on Bevy 0.20. Ships no `main.pak` or extracted game data: the app reads the player's own `main.pak` at runtime; the launcher icons under `github/` are the only bundled game art. Steam/GOTY achievements are a Steamworks platform feature, not game content: they are out of scope and must not be ported. Start with `docs/llms/` (`README.md`, `project-structure.md`, `workflow.md`, `status-and-todo.md`); `docs/architecture.md` is the short human overview.
 
-Binding rules: never commit or push (leave changes uncommitted, no amend/reset/rebase); never edit `readme.md` (user-owned); LF line endings everywhere (`* text=auto eol=lf`); game assets (`*.pak`, `/extracted`) never go in the repo.
+Binding rules: never commit or push (leave changes uncommitted, no amend/reset/rebase); never edit `readme.md` (user-owned); LF line endings everywhere (`* text=auto eol=lf`); game assets (`*.pak`, `/extracted`) never go in the repo, except the explicitly requested launcher icons (`github/pvz.icns`, `github/pvz.ico`, `github/pvz-icon.png`).
 
 Reference decomp (use respectfully): shallow-clone `https://github.com/ruslan831/PlantsVsZombies-decompilation` outside the repo, `grep -a` (Latin-1/GBK). Reimplement, don't transcribe; add `// Behaviour per ruslan831 decomp, <Fn>` credit; respect its MIT license.
 
@@ -29,7 +29,7 @@ libopenmpt <-- openmpt::Module <-- pvz audio mixer (main/drums/hi-hats sample-lo
 - `crates/openmpt/src/`: `lib.rs` (`Module`); `build.rs` links prebuilts.
 - `crates/pvz/src/`: `main.rs` (app/states), `board/` (simulation: `plant.rs`, `zombie/`, `projectile.rs`, `waves.rs`, `survival.rs`, `minigame.rs`, `coin.rs`, `cursor.rs`, `seed_bank.rs`, `seed_chooser.rs`, `cutscene.rs`, `grid_item.rs`, `level_end.rs`, `lawn_mower.rs`, `pool.rs`, `fog.rs`, `boss.rs`, `conveyor.rs`, `crazy_dave.rs`, `bungee.rs`, `whack_a_zombie.rs`, `save.rs`), `challenge.rs`, `graphics.rs`, `resources.rs`, `audio.rs`, `reanim.rs`, `particle.rs`, `dialog.rs`, `widgets/`, `lawn_app.rs`, `player.rs`, `game_selector.rs`, `title.rs`, `setup.rs`, `install.rs`, `store.rs`, `almanac.rs`, `credits.rs`, `options.rs`, `pak_source.rs`, `input.rs`, `devshot.rs`.
 - `crates/pvz/tests/`: `TestBoard` suite compiled into the crate as `board::tests` (see Testing & QA; `survival.rs` and `minigame.rs` cover the challenge modes).
-- `docs/llms/`, `docs/architecture.md`, `docs/todo.md`, `docs/superpowers/`: specs/plans archive.
+- `docs/llms/`, `docs/architecture.md`, `docs/superpowers/`: specs/plans archive.
 - `dev/build-libopenmpt/`, `dev/libopenmpt-darwin|win|linux/<target>/`, `dev/README.md`: libopenmpt sources/prebuilts.
 - `github/main menu.png`: reference screenshot.
 
@@ -80,7 +80,7 @@ Variants: `PVZ_AUTO_START=1|adventure|options|help|store|almanac|almanac-plants|
 - Drawing/audio: `crates/pvz/src/graphics.rs` (`Graphics`), `crates/pvz/src/reanim.rs` (`ReanimationType` → file table, `draw_reanimation`, `NO_BASE_POSE`), `crates/pvz/src/audio.rs` (`Music`, `MusicTune`, `FoleyType`, `gLawnFoleyParamArray`), `crates/pvz/src/credits.rs` (credits movie).
 - Dialogs/UI: `crates/pvz/src/dialog.rs` (`LawnDialog`, `DialogKind`, `Dialogs`), `crates/pvz/src/lawn_app.rs` (`ButtonDepress` dispatch), `crates/pvz/src/widgets/`, `crates/pvz/src/options.rs` (`Settings`), `crates/pvz/src/game_selector.rs`, `crates/pvz/src/title.rs`, `crates/pvz/src/setup.rs`.
 - Content tables: `crates/pvz/src/plant.rs` (`SeedType`, `gPlantDefs`), `crates/pvz/src/zombie.rs` (`ZombieType`, `gZombieDefs`, `gZombieWaves`); every zombie type has a reanim, so waves pick from all of them.
-- Sources of truth for behavior: `docs/llms/status-and-todo.md` (current port status; `grep -rn -E "TODO|Not ported" crates --include='*.rs'` for live index), `docs/architecture.md` (update when structure changes), `docs/llms/workflow.md` (port loop + gotchas).
+- Sources of truth for behavior: `docs/llms/status-and-todo.md` (current port status; the live TODO grep is clean as of 2026-10-27), `docs/architecture.md` (update when structure changes), `docs/llms/workflow.md` (port loop + gotchas).
 
 ## Runtime/Tooling Preferences
 

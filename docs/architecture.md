@@ -42,4 +42,4 @@ The application. Bevy supplies the window, input, rendering, audio and asset plu
 
 ## Game data
 
-No game assets are in the repository. The player picks their own install on first run, and everything is read from its `main.pak` at runtime.
+No game pak or extracted assets are in the repository; only the launcher icons are bundled. The player picks their own install on first run, and everything else is read from its `main.pak` at runtime.
