@@ -46,15 +46,14 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 
 ### Menus and screens
 - Main menu: the trophy's tooltip.
-- Store: bonus mower and chocolate pages, award-screen intro talks, and opening the store over a level/seed chooser (the store is a screen that returns to the menu).
-- Seed chooser: its Store button (same reason as above). The Almanac button works.
+- Store: bonus mower and chocolate pages, and the award-screen intro talks.
 - Widgets: vertical sliders (no screen uses them), clipboard and password characters in `EditWidget` (no OS clipboard here; nothing asks for a password).
 
 ### Engine
 
 ## Suggested order
 
-1. Screen integration: store over the seed chooser, award-screen store talks, trophy tooltip.
+1. Screen integration leftovers: award-screen store talks, trophy tooltip, endless puzzle award stages, survival repick View Lawn.
 2. Windows visual pass and `.au` decoder; Linux.
 
 ## Code TODO index

@@ -57,7 +57,10 @@ impl Plugin for StorePlugin {
             .add_systems(OnExit(AppState::Store), end_store)
             .add_systems(FixedUpdate, update_store.run_if(open))
             .add_systems(Update, store_input.in_set(UiSet::ScreenInput).run_if(open))
-            .add_systems(Update, draw_store.in_set(UiSet::ScreenDraw).run_if(open));
+            .add_systems(
+                Update,
+                draw_store.in_set(UiSet::ScreenDraw).run_if(open).after(crate::board::draw_board),
+            );
     }
 }
 
@@ -677,6 +680,27 @@ fn end_store(mut commands: Commands, store: Option<ResMut<StoreScreen>>, mut eff
     commands.remove_resource::<StoreReturn>();
 }
 
+/// Opens the store as an overlay on the live board (the seed chooser's Shop
+/// button). The board stays as a resource and is paused; closing the store
+/// removes it again.
+pub fn open_store_over_board(
+    commands: &mut Commands,
+    resources: &mut GameResources,
+    images: &mut Assets<Image>,
+    effects: &mut EffectSystem,
+    sounds: &mut Sounds,
+    player: &PlayerInfo,
+) {
+    if let Err(e) = resources.load_group_now("DelayLoad_Store", images) {
+        error!("{e}");
+    }
+    let mut store = StoreScreen::new(resources, player);
+    store.back.label = resources.translate("[STORE_BACK_TO_GAME]");
+    store.dave.enter(effects, resources, images, sounds.rng());
+    commands.insert_resource(store);
+    commands.insert_resource(StoreReturn(Some(AppState::Board)));
+}
+
 /// `StoreScreen::Update`, once a tick.
 #[allow(clippy::too_many_arguments)]
 fn update_store(
@@ -758,6 +782,7 @@ fn update_store(
 /// `StoreScreen::MouseDown`, `MouseUp`, `KeyChar` and the buttons.
 #[allow(clippy::too_many_arguments)]
 fn store_input(
+    mut commands: Commands,
     mut store: ResMut<StoreScreen>,
     cursor: Res<GameCursor>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -769,6 +794,7 @@ fn store_input(
     mut sounds: Sounds,
     mut profiles: ResMut<ProfileMgr>,
     return_to: Option<Res<StoreReturn>>,
+    mut music: ResMut<Music>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     let back_state = return_to.as_ref().and_then(|r| r.0).unwrap_or(AppState::GameSelector);
@@ -777,8 +803,14 @@ fn store_input(
     if let Some((id, yes)) = store.dialog_answer.take() {
         match id {
             DialogId::StorePurchase => store.finish_purchase(yes, &mut profiles, &mut dialogs, &mut ctx),
-            // TODO: go to the Tree of Wisdom once it exists.
-            DialogId::VisitTree if yes => next_state.set(AppState::TreeOfWisdom),
+            DialogId::VisitTree if yes => {
+                if back_state == AppState::Board {
+                    store.dave.die(ctx.effects, ctx.sounds);
+                    commands.remove_resource::<StoreScreen>();
+                    commands.remove_resource::<StoreReturn>();
+                }
+                next_state.set(AppState::TreeOfWisdom);
+            }
             _ => {}
         }
     }
@@ -810,6 +842,15 @@ fn store_input(
     }
     if mouse.just_released(MouseButton::Left) {
         if store.back.is_down && over_back {
+            store.back.is_down = false;
+            if back_state == AppState::Board {
+                // Overlay store: back to the live board, Dave leaves with it.
+                store.dave.die(&mut effects, &mut sounds);
+                music.make_sure_music_is_playing(MusicTune::ChooseYourSeeds);
+                commands.remove_resource::<StoreScreen>();
+                commands.remove_resource::<StoreReturn>();
+                return;
+            }
             next_state.set(back_state);
         }
         store.back.is_down = false;

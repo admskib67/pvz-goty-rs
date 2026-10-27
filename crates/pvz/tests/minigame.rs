@@ -734,6 +734,42 @@ fn i_zombie_endless_rolls_formations_left_of_its_line() {
 }
 
 #[test]
+fn the_store_can_open_over_a_live_board() {
+    let Some(mut t) = TestBoard::at_intro("3-5") else { return };
+    let player = crate::player::PlayerInfo { name: "Shopper".to_owned(), level: 25, ..Default::default() };
+    let mut world = bevy::prelude::World::new();
+    let mut commands = world.commands();
+    t.with(|_, effects, res, images, sounds| {
+        crate::store::open_store_over_board(&mut commands, res, images, effects, sounds, &player);
+    });
+    world.flush();
+    assert!(world.get_resource::<crate::store::StoreScreen>().is_some(), "the store is up");
+    assert!(
+        matches!(world.get_resource::<crate::store::StoreReturn>().map(|r| r.0), Some(Some(crate::AppState::Board))),
+        "closing it returns to the board"
+    );
+}
+
+#[test]
+fn the_seed_chooser_shop_button_opens_the_store_once_it_is_unlocked() {
+    use crate::board::seed_chooser::{ChooserClick, SeedChooser};
+    let Some(mut t) = TestBoard::at_intro("3-5") else { return };
+    assert!(t.board.can_show_store);
+    t.board.seed_chooser = Some(SeedChooser::new(&t.board.owned_seeds, t.board.has_seven_chooser_rows(), 0));
+    t.board.start_seed_choosing();
+    let result = t.with(|board, _, _, _, sounds| board.seed_chooser_mouse_down(bevy::math::IVec2::new(730, 585), sounds));
+    assert!(matches!(result, Some(ChooserClick::Store)));
+
+    drop(t);
+    let Some(mut early) = TestBoard::at_intro("1-8") else { return };
+    assert!(!early.board.can_show_store, "the shop waits for level 25");
+    early.board.seed_chooser = Some(SeedChooser::new(&early.board.owned_seeds, early.board.has_seven_chooser_rows(), 0));
+    early.board.start_seed_choosing();
+    let result = early.with(|board, _, _, _, sounds| board.seed_chooser_mouse_down(bevy::math::IVec2::new(730, 585), sounds));
+    assert!(!matches!(result, Some(ChooserClick::Store)));
+}
+
+#[test]
 fn i_zombie_starts_with_brains_plants_and_a_zombie_shop() {
     let Some(t) = TestBoard::puzzle(crate::board::PuzzleLevel::IZombie(1)) else { return };
     assert_eq!(t.board.background, crate::board::BackgroundType::Night);

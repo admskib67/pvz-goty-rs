@@ -103,10 +103,15 @@ impl Plugin for BoardPlugin {
         app.add_systems(OnEnter(AppState::Board), new_game)
             .add_systems(OnExit(AppState::Board), kill_board)
             .add_systems(FixedUpdate, update_board.run_if(open))
-            .add_systems(Update, board_input.in_set(UiSet::ScreenInput).run_if(open))
-            .add_systems(Update, update_mouse_icon.run_if(open))
+            .add_systems(Update, board_input.in_set(UiSet::ScreenInput).run_if(open).run_if(store_closed))
+            .add_systems(Update, update_mouse_icon.run_if(open).run_if(store_closed))
             .add_systems(Update, draw_board.in_set(UiSet::ScreenDraw).run_if(open));
     }
+}
+
+/// The board's own input stays off while the store is open over it.
+fn store_closed(store: Option<Res<crate::store::StoreScreen>>) -> bool {
+    store.is_none()
 }
 
 pub const BOARD_WIDTH: i32 = 800;
@@ -512,6 +517,8 @@ pub struct Board {
     /// `mNextSurvivalStageCounter`: ticks of the "more zombies" pause
     /// between two survival stages.
     pub next_survival_stage_counter: i32,
+    /// `LawnApp::CanShowStore`, for the seed chooser's Shop button.
+    pub can_show_store: bool,
     /// Between-stage seed repick (`CutScene::IsSurvivalRepick`): the chooser
     /// is open and the next stage's waves wait for it.
     pub survival_repick: bool,
@@ -774,6 +781,7 @@ impl Board {
             level,
             survival_stage: 0,
             next_survival_stage_counter: 0,
+            can_show_store: player.is_some_and(PlayerInfo::can_show_store),
             survival_repick: false,
             scary_mallet: None,
             pending_survival_repick_start: false,
@@ -1464,10 +1472,11 @@ fn update_board(
     mut profiles: ResMut<ProfileMgr>,
     mut next_state: ResMut<NextState<AppState>>,
     mut defeated: ResMut<crate::almanac::ZombiesDefeated>,
+    store: Option<Res<crate::store::StoreScreen>>,
 ) {
     let board = &mut *board;
-    // LawnApp::NeedPauseGame: an open dialog pauses the game.
-    board.paused = dialogs.is_modal();
+    // LawnApp::NeedPauseGame: an open dialog or the overlay store pauses the game.
+    board.paused = dialogs.is_modal() || store.is_some();
     let outcome = board.tick(&mut effects, &mut resources, &mut images, &mut music, &mut sounds);
     // `Board::UpdateLevelEndSequence`: TryToSaveGame one tick before the
     // between-stage repick, so quitting there resumes the run.
@@ -2732,6 +2741,7 @@ fn update_mouse_icon(
 /// (`GameButton::Update`).
 #[allow(clippy::too_many_arguments)]
 fn board_input(
+    mut commands: Commands,
     mut board: ResMut<Board>,
     cursor: Res<GameCursor>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -2743,6 +2753,7 @@ fn board_input(
     mut effects: ResMut<EffectSystem>,
     mut sounds: Sounds,
     settings: Res<crate::options::Settings>,
+    profiles: Res<crate::player::ProfileMgr>,
 ) {
     let board = &mut *board;
     if board.mode == GameMode::Intro {
@@ -2798,6 +2809,19 @@ fn board_input(
                 }
                 Some(seed_chooser::ChooserClick::Almanac) => {
                     crate::almanac::do_almanac_dialog(&mut dialogs, &resources, crate::almanac::AlmanacStart::Index);
+                }
+                Some(seed_chooser::ChooserClick::Store) => {
+                    if let Some(player) = profiles.player() {
+                        board.paused = true;
+                        crate::store::open_store_over_board(
+                            &mut commands,
+                            &mut resources,
+                            &mut images,
+                            &mut effects,
+                            &mut sounds,
+                            player,
+                        );
+                    }
                 }
                 None => {}
             }
@@ -2909,7 +2933,7 @@ enum RenderItem {
 }
 
 /// `Board::Draw` / `DrawGameObjects`.
-fn draw_board(
+pub(crate) fn draw_board(
     mut board: ResMut<Board>,
     effects: Res<EffectSystem>,
     resources: Res<GameResources>,

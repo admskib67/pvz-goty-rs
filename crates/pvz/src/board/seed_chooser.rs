@@ -31,6 +31,8 @@ const START_BUTTON: (i32, i32, i32, i32) = (154, 545, 156, 42);
 const ALMANAC_BUTTON: (i32, i32) = (560, 572);
 /// `IMAGE_SEEDCHOOSER_BUTTON2`'s size.
 const ALMANAC_BUTTON_SIZE: (i32, i32) = (111, 26);
+/// `mStoreButton`: `[SHOP_BUTTON]`, at the bottom right of the chooser.
+const STORE_BUTTON: (i32, i32) = (680, 572);
 /// What a click in the chooser asked for besides picking seeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ChooserClick {
@@ -38,6 +40,8 @@ pub(super) enum ChooserClick {
     Warning(ChooserWarning),
     /// The Almanac button was pressed.
     Almanac,
+    /// The Shop button was pressed: the store opens over the board.
+    Store,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -436,6 +440,16 @@ impl Board {
             sounds.play_sample("SOUND_TAP");
             return Some(ChooserClick::Almanac);
         }
+        // `CanShowStore`: the Shop button, bottom right.
+        if self.can_show_store
+            && p.x >= STORE_BUTTON.0
+            && p.x < STORE_BUTTON.0 + ALMANAC_BUTTON_SIZE.0
+            && p.y >= STORE_BUTTON.1
+            && p.y < STORE_BUTTON.1 + ALMANAC_BUTTON_SIZE.1
+        {
+            sounds.play_sample("SOUND_TAP");
+            return Some(ChooserClick::Store);
+        }
         let (bx, by, bw, bh) = START_BUTTON;
         if p.x >= bx && p.x < bx + bw && p.y >= by && p.y < by + bh {
             sounds.play_sample("SOUND_TAP");
@@ -652,6 +666,31 @@ impl Board {
                 let ascent = font.font.ascent;
                 let y = ay + (ALMANAC_BUTTON_SIZE.1 - ascent / 6 - 1 + ascent) / 2 - 1;
                 g.tod_draw_string(font, ax + ALMANAC_BUTTON_SIZE.0 / 2, y, &label, SexyColor::rgba(42, 42, 90, 255), Justify::Center);
+            }
+        }
+        // `CanShowStore`: the Shop button, bottom right.
+        if self.can_show_store
+            && let Some(button) = res.image("IMAGE_SEEDCHOOSER_BUTTON2")
+        {
+            let (sx, sy) = STORE_BUTTON;
+            g.draw_image(button, sx as f32, sy as f32);
+            let over = mouse.is_some_and(|(mx, my)| {
+                mx >= sx as f32
+                    && mx < (sx + ALMANAC_BUTTON_SIZE.0) as f32
+                    && my >= sy as f32
+                    && my < (sy + ALMANAC_BUTTON_SIZE.1) as f32
+            });
+            if over
+                && chooser.mouse_visible
+                && let Some(glow) = res.image("IMAGE_SEEDCHOOSER_BUTTON2_GLOW")
+            {
+                g.draw_image(glow, sx as f32, sy as f32);
+            }
+            let label = res.translate("[SHOP_BUTTON]");
+            if let Some(font) = res.font("FONT_BRIANNETOD12") {
+                let ascent = font.font.ascent;
+                let y = sy + (ALMANAC_BUTTON_SIZE.1 - ascent / 6 - 1 + ascent) / 2 - 1;
+                g.tod_draw_string(font, sx + ALMANAC_BUTTON_SIZE.0 / 2, y, &label, SexyColor::rgba(42, 42, 90, 255), Justify::Center);
             }
         }
         // ShowToolTip: the plant under the mouse, when nothing's moving.
