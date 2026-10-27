@@ -143,18 +143,6 @@ impl ZombieType {
         }
     }
 
-    /// The reanimation that shows a zombie of this type in the almanac,
-    /// including the types not ported yet (`gZombieDefs`' `mReanimationType`).
-    pub fn almanac_reanim(self) -> Option<ReanimationType> {
-        self.reanim().or(match self {
-            Self::JackInTheBox => Some(ReanimationType::Jackinthebox),
-            Self::Digger => Some(ReanimationType::Digger),
-            Self::Pogo => Some(ReanimationType::Pogo),
-            Self::Yeti => Some(ReanimationType::Yeti),
-            _ => None,
-        })
-    }
-
     /// The `[NAME]` in `LawnStrings.txt`, without brackets (`mZombieName`).
     pub fn name(self) -> &'static str {
         ZOMBIE_NAMES[self as usize]
@@ -183,12 +171,6 @@ impl ZombieType {
     /// `Board::IsZombieTypePoolOnly`.
     pub fn is_pool_only(self) -> bool {
         matches!(self, Self::Snorkel | Self::DolphinRider)
-    }
-
-    /// Whether zombies of this type are ported. Until the rest are, waves
-    /// only pick from these.
-    pub fn is_implemented(self) -> bool {
-        self.reanim().is_some()
     }
 }
 
@@ -317,7 +299,7 @@ const fn bits(v: &[u8; 50]) -> [bool; 50] {
 /// never allowed.
 pub fn can_spawn_on_level(ty: ZombieType, level: i32) -> bool {
     let d = ty.definition();
-    if !ty.is_implemented() || level < d.starting_level || d.pick_weight == 0 {
+    if level < d.starting_level || d.pick_weight == 0 {
         return false;
     }
     let i = (level - 1).clamp(0, 49) as usize;

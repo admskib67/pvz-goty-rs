@@ -11,9 +11,8 @@
 //! `DrawProgressMeter`; and
 //! `Lawn/TodCommon.cpp` (`TodPickFromSmoothArray`).
 //!
-//! Only the zombies ported so far (see [`ZombieType::is_implemented`]) are
-//! picked. Not yet: the huge wave banner's animated letters, the music's
-//! drum burst and zombies rising from graves.
+//! Not yet: the huge wave banner's animated letters, the music's drum burst
+//! and zombies rising from graves.
 
 use bevy::prelude::*;
 use sexy::data_array::Id;
@@ -188,7 +187,7 @@ impl Board {
     }
 
     /// `Board::GetIntroducedZombieType`: the zombie that first appears on
-    /// this level, if it's ported.
+    /// this level.
     fn introduced_zombie_type(&self) -> Option<ZombieType> {
         if self.level == 1 {
             return None;
@@ -196,7 +195,6 @@ impl Board {
         (0..NUM_ZOMBIE_TYPES)
             .map(ZombieType::from_index)
             .find(|ty| *ty != ZombieType::Yeti && *ty != ZombieType::DuckyTube && ty.definition().starting_level == self.level)
-            .filter(|ty| ty.is_implemented())
     }
 
     /// `Board::PickZombieWaves`.

@@ -1,6 +1,6 @@
 # Status and TODO
 
-Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `is_implemented`, `GameMode`, `AppState`) and from `agents.md`. **Check an item against the code before you start on it**, and update this file when you finish or find one.
+Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMode`, `AppState`) and from `agents.md`. **Check an item against the code before you start on it**, and update this file when you finish or find one.
 
 ## What works (macOS, Mac pak)
 
@@ -30,7 +30,6 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `is_imp
 - Brains cutscene shake (`cutscene.rs:346`), fog and boss specifics in the intro timeline (`cutscene.rs:215`), the rake (`cutscene.rs:372`).
 - Level 1 tutorial's flashing sod row (`board/mod.rs:2235`); whack-a-zombie's tutorial; the water-planting advice (`ADVICE_LILYPAD_ON_WATER` etc.).
 - Crazy Dave's talks from level 11 on, except those listed above; 1-5's explanation and giant wall-nuts.
-- Street zombie preview grid (`CutScene::PlaceStreetZombies`); placement is a guess now.
 - The house door overlay on a lost level (`DrawHouseDoorTop`); the Main Menu button on the Game Over dialog (`board/mod.rs:1936`).
 - Hand cursor over clickable things (`board/mod.rs:1862`), plant highlight under the shovel, cursor preview bob over water.
 - Bonus mowers rolling back in (`lawn_mower.rs:397`).

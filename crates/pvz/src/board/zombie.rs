@@ -22,8 +22,8 @@
 //! `GetDancerPhase`, `ZombieNotWalking`, `IsMovingAtChilledSpeed`,
 //! `DrawDancerReanim`) and `SetupReanimForLostArm`.
 //!
-//! Not yet: the other zombie types, the chilled/frozen/buttered/yucky
-//! states, pools and ladders, and mind control.
+//! Not yet: the dance's `anim_dance` loop, the loot a zombie drops by value,
+//! and rising from the pool's and roof's graves.
 
 use bevy::prelude::*;
 use sexy::data_array::{DataArray, Id};
@@ -435,7 +435,7 @@ pub struct Fx<'a, 'w, 's> {
 /// The reanimations must be loaded beforehand.
 pub fn draw_cached_zombie(g: &mut Graphics, res: &GameResources, x: f32, y: f32, ty: ZombieType, with_pole: bool) {
     use sexy::reanim::Reanimation;
-    let Some(reanim_type) = ty.almanac_reanim() else { return };
+    let Some(reanim_type) = ty.reanim() else { return };
     let load = |ty: ReanimationType, x: f32, y: f32| res.loaded_reanim_definition(ty.file()).map(|d| Reanimation::new(x, y, d));
     let (pos_x, pos_y) = (x + 40.0, y + 40.0);
     match reanim_type {

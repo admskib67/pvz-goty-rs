@@ -401,9 +401,6 @@ pub(crate) fn board_from_save(
             continue;
         }
         let ty = ZombieType::from_index(ty_idx);
-        if !ty.is_implemented() {
-            continue;
-        }
         let env = board.zombie_env();
         let mut zombie = Zombie::new(z.row, ty, z.variant, z.from_wave, false, &env, &mut fx);
         zombie.pos_x = z.pos_x;

@@ -415,7 +415,7 @@ impl Zombie {
             let list: Vec<ZombieType> = BOSS_ZOMBIE_LIST
                 .iter()
                 .copied()
-                .filter(|ty| ty.is_implemented() && !(self.boss.target_row == 0 && *ty == ZombieType::Gargantuar))
+                .filter(|ty| !(self.boss.target_row == 0 && *ty == ZombieType::Gargantuar))
                 .collect();
             list[fx.sounds.rng().next_range(list.len() as u32) as usize]
         };

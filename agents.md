@@ -79,7 +79,7 @@ Variants: `PVZ_AUTO_START=1|adventure|options|help|store|almanac|almanac-plants|
 - Simulation: `crates/pvz/src/board/mod.rs` (`BoardPlugin`, `Board`, `can_plant_at`, `add_plant`, `TickOutcome`), `crates/pvz/tests/mod.rs` (`test_board!`, `TestBoard`).
 - Drawing/audio: `crates/pvz/src/graphics.rs` (`Graphics`), `crates/pvz/src/reanim.rs` (`ReanimationType` → file table, `draw_reanimation`, `NO_BASE_POSE`), `crates/pvz/src/audio.rs` (`Music`, `MusicTune`, `FoleyType`, `gLawnFoleyParamArray`), `crates/pvz/src/credits.rs` (credits movie).
 - Dialogs/UI: `crates/pvz/src/dialog.rs` (`LawnDialog`, `DialogKind`, `Dialogs`), `crates/pvz/src/lawn_app.rs` (`ButtonDepress` dispatch), `crates/pvz/src/widgets/`, `crates/pvz/src/options.rs` (`Settings`), `crates/pvz/src/game_selector.rs`, `crates/pvz/src/title.rs`, `crates/pvz/src/setup.rs`.
-- Content tables: `crates/pvz/src/plant.rs` (`SeedType`, `gPlantDefs`), `crates/pvz/src/zombie.rs` (`ZombieType`, `gZombieDefs`, `gZombieWaves`); only `ZombieType::is_implemented` types are picked for waves.
+- Content tables: `crates/pvz/src/plant.rs` (`SeedType`, `gPlantDefs`), `crates/pvz/src/zombie.rs` (`ZombieType`, `gZombieDefs`, `gZombieWaves`); every zombie type has a reanim, so waves pick from all of them.
 - Sources of truth for behavior: `docs/llms/status-and-todo.md` (current port status; `grep -rn -E "TODO|Not ported" crates --include='*.rs'` for live index), `docs/architecture.md` (update when structure changes), `docs/llms/workflow.md` (port loop + gotchas).
 
 ## Runtime/Tooling Preferences

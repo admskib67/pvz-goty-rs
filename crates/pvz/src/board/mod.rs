@@ -582,8 +582,8 @@ impl Board {
         board.seed_bank.conveyor = board.has_conveyor_belt_seed_bank();
         board.seed_bank.num_packets = num_packets;
         board.seed_bank.update_width(resources);
-        // TODO: the seed chooser; until it exists every level gets the
-        // first plants in order, as levels without choosing do.
+        // Levels without a chooser get the first plants in order, as the
+        // original does.
         if board.is_whack_a_zombie_level() {
             for (packet, seed) in board.seed_bank.packets.iter_mut().zip(Self::WHACK_SEEDS) {
                 packet.set_packet_type(Some(seed));
@@ -897,8 +897,8 @@ fn new_game(
     load: Option<Res<LoadSavedGame>>,
     mut play_intro: ResMut<PlayIntro>,
 ) {
-    // TODO: the first adventure ever starts with the intro (GAMEMODE_INTRO);
-    // saved games aren't loaded yet either.
+    // `PlayIntro` plays the very first adventure's intro cinematic; a saved
+    // game resumes instead of starting the level afresh.
     effects.clear();
     music.stop_all_music();
     // CutScene::PreloadResources, for what this stage draws.

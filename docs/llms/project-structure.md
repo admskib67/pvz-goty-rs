@@ -97,7 +97,7 @@ Safe wrapper over libopenmpt's C API (load from memory, render stereo, order/row
 ### Game data tables (outside the board)
 
 - `plant.rs`: `SeedType` (all 53, original order), `PlantDefinition` (`gPlantDefs`), upgrade/aquatic/nocturnal predicates, adventure award tables.
-- `zombie.rs`: `ZombieType` (all 33), `gZombieDefs`, `gZombieWaves`, allowed-level tables, `is_implemented` (= has a reanim wired in `reanim()`).
+- `zombie.rs`: `ZombieType` (all 33), `gZombieDefs`, `gZombieWaves`, allowed-level tables.
 
 ### `board/`: the level
 
@@ -145,7 +145,7 @@ Unit tests for the lower crates live next to their code (`#[cfg(test)]`).
 ## Where new code goes
 
 - A plant behaviour: `board/plant.rs` (+ `PlantAction` handling in `board/mod.rs`), definition data in `plant.rs`, a test in `tests/plants.rs`.
-- A zombie type: `board/zombie.rs` (or a submodule like `zombie/boss.rs` if it is large), wire its reanim in `zombie.rs::reanim()` so `is_implemented` turns on, add `FoleyType`s in `audio.rs` as needed, test in `tests/zombies.rs` or a new file listed in `tests/mod.rs`.
+- A zombie type: `board/zombie.rs` (or a submodule like `zombie/boss.rs` if it is large), wire its reanim in `zombie.rs::reanim()`, add `FoleyType`s in `audio.rs` as needed, test in `tests/zombies.rs` or a new file listed in `tests/mod.rs`.
 - A new screen: a new module with a plugin and an `AppState` variant in `main.rs`; draw through `graphics`, buttons through `widgets`, dialogs through `dialog`/`lawn_app`.
 - Something engine-independent (a format, an algorithm from TodLib): `crates/sexy`, with unit tests there.
 - A particle effect: add it to `ParticleEffect` in `particle.rs`, start it with `EffectSystem::add_particle`.

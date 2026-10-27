@@ -197,7 +197,7 @@ impl Almanac {
         // the reanimations they're drawn from.
         let seeds = (0..NUM_ALMANAC_SEEDS).filter(|&i| has_seed[i]).filter_map(|i| SeedType::from_index(i as i32));
         let plant_reanims = seeds.map(|s| s.definition().reanim);
-        let zombie_reanims = (0..NUM_ALMANAC_ZOMBIES).filter_map(|i| ZombieType::from_index(i).almanac_reanim());
+        let zombie_reanims = (0..NUM_ALMANAC_ZOMBIES).filter_map(|i| ZombieType::from_index(i).reanim());
         let extra = [ReanimationType::Flag, ReanimationType::BossDriver];
         for ty in plant_reanims.chain(zombie_reanims).chain(extra) {
             if let Err(e) = res.reanim_definition(ty.file(), images) {
@@ -282,11 +282,8 @@ impl Almanac {
         self.plant = Some(plant);
     }
 
-    /// Zombies not ported yet are shown as still pictures instead.
+    /// Builds the zombie shown in the almanac's close-up.
     fn make_zombie(&mut self, ty: ZombieType, (x, y): (f32, f32), res: &mut GameResources, images: &mut Assets<Image>, sounds: &mut Sounds) {
-        if !ty.is_implemented() {
-            return;
-        }
         let mut fx = Fx { effects: &mut self.effects, res, images, sounds };
         let mut zombie = Zombie::new(0, ty, false, ZOMBIE_WAVE_UI, false, &ZombieEnv::ui(), &mut fx);
         zombie.place(x, y);
@@ -613,15 +610,11 @@ impl Almanac {
                 _ => (0.0, 0.0),
             };
             g.translate(dx, dy);
-            match &self.zombie {
-                Some(zombie) => {
-                    if !matches!(ty, ZombieType::Bungee | ZombieType::Boss | ZombieType::Zamboni | ZombieType::Catapult) {
-                        zombie.draw_shadow(g, false, res);
-                    }
-                    zombie.draw(g, &self.effects, res, None, false, false);
+            if let Some(zombie) = &self.zombie {
+                if !matches!(ty, ZombieType::Bungee | ZombieType::Boss | ZombieType::Zamboni | ZombieType::Catapult) {
+                    zombie.draw_shadow(g, false, res);
                 }
-                // Not ported yet: a still picture where the zombie would stand.
-                None => draw_cached_zombie(g, res, zx - 40.0, zy - 40.0, ty, false),
+                zombie.draw(g, &self.effects, res, None, false, false);
             }
             g.pop_state();
         }
