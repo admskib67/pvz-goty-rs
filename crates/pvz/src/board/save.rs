@@ -310,12 +310,14 @@ impl SaveData {
             grid_items: board
                 .grid_items
                 .iter()
-                .filter(|(_, g)| !g.dead)
+                .filter(|(_, g)| !g.dead && g.item_type != GridItemType::Rake)
                 .map(|(_, g)| GridItemSave {
                     ty: match g.item_type {
                         GridItemType::GraveStone => 0,
                         GridItemType::Crater => 1,
                         GridItemType::Ladder => 2,
+                        // A rake is spent at the level's start; filtered out above.
+                        GridItemType::Rake => 2,
                     },
                     col: g.grid_x,
                     row: g.grid_y,

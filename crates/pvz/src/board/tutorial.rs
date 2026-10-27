@@ -33,6 +33,10 @@ pub enum TutorialState {
     /// Level 1-5: Crazy Dave has the player dig up the peashooters.
     ShovelPickup,
     ShovelDig,
+    /// Whack-a-zombie: once there's sun, the packets flash for a pick.
+    WhackBeforePickSeed,
+    WhackPickSeed,
+    WhackCompleted,
     ShovelKeepDigging,
     ShovelCompleted,
 }
@@ -231,7 +235,11 @@ impl Board {
                 self.cut_scene.set_time(1500);
                 self.cut_scene.crazy_dave_dialog_start = 2410;
             }
-            TutorialState::MoreSunCompleted | TutorialState::Off => {}
+            TutorialState::MoreSunCompleted
+            | TutorialState::Off
+            | TutorialState::WhackBeforePickSeed
+            | TutorialState::WhackPickSeed
+            | TutorialState::WhackCompleted => {}
         }
         self.tutorial_state = state;
     }

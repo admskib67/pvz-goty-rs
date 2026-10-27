@@ -33,7 +33,10 @@ impl Plugin for AudioPlugin {
             .init_resource::<UpdateCount>()
             .add_systems(Startup, start_music_stream)
             .add_systems(FixedFirst, |mut count: ResMut<UpdateCount>| count.0 += 1)
-            .add_systems(FixedUpdate, |mut music: ResMut<Music>| music.update());
+            .add_systems(FixedUpdate, |mut music: ResMut<Music>, board: Option<Res<crate::board::Board>>| {
+                let zombies = board.as_deref().filter(|b| !b.paused).map(crate::board::count_zombies_on_screen);
+                music.update(zombies);
+            });
     }
 }
 
@@ -183,6 +186,25 @@ pub fn load_song(bytes: &[u8]) -> Result<openmpt::Module, String> {
     Ok(module)
 }
 
+/// `MusicBurstState`: the drums and hi-hats coming in and going out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MusicBurstState {
+    Off,
+    Starting,
+    On,
+    Finishing,
+}
+
+/// `MusicDrumsState`: which drum part plays, and when it changes over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MusicDrumsState {
+    Off,
+    OnQueued,
+    On,
+    OffQueued,
+    Fading,
+}
+
 /// The original's `Music`: which tune is playing and how its parts are mixed.
 #[derive(Resource)]
 pub struct Music {
@@ -194,6 +216,14 @@ pub struct Music {
     music_disabled: bool,
     fade_out_counter: i32,
     fade_out_duration: i32,
+    burst_state: MusicBurstState,
+    burst_counter: i32,
+    drums_state: MusicDrumsState,
+    drums_counter: i32,
+    /// The main song's position when the drums were queued to join it.
+    queued_drum_order: (i32, i32),
+    /// `mBurstOverride`: -1 follows the zombies, 1 forces a burst on, 2 off.
+    burst_override: i32,
 }
 
 impl Music {
@@ -207,6 +237,12 @@ impl Music {
             music_disabled: false,
             fade_out_counter: 0,
             fade_out_duration: 0,
+            burst_state: MusicBurstState::Off,
+            burst_counter: 0,
+            drums_state: MusicDrumsState::Off,
+            drums_counter: 0,
+            queued_drum_order: (0, 0),
+            burst_override: -1,
         }
     }
 
@@ -317,8 +353,175 @@ impl Music {
         }
     }
 
-    /// `MusicUpdate`, every tick. TODO: drum/hi-hat bursts once the board exists.
-    fn update(&mut self) {
+    /// The tune playing now, if any.
+    pub fn current_tune(&self) -> Option<MusicTune> {
+        self.cur_tune
+    }
+
+    /// `StartBurst`: the drums (and hi-hats) come in over the next bars.
+    pub fn start_burst(&mut self) {
+        if self.burst_state == MusicBurstState::Off {
+            self.burst_state = MusicBurstState::Starting;
+            self.burst_counter = 400;
+        }
+    }
+
+    /// `GetMusicOrder` for a playing file: (order, row).
+    fn packed_order(&self, file: MusicFile) -> Option<(i32, i32)> {
+        let mixer = self.mixer.lock().unwrap();
+        let track = mixer.tracks[file.index()].as_ref()?;
+        Some((track.module.current_order(), track.module.current_row()))
+    }
+
+    fn set_track_volume(&mut self, file: MusicFile, volume: f32) {
+        if let Some(track) = &mut self.mixer.lock().unwrap().tracks[file.index()] {
+            track.volume = volume;
+        }
+    }
+
+    fn jump_to_order(&mut self, file: MusicFile, order: i32) {
+        if let Some(track) = &mut self.mixer.lock().unwrap().tracks[file.index()] {
+            track.module.set_position_order_row(order, 0);
+        }
+    }
+
+    /// `Music::UpdateMusicBurst`: the day, pool, fog and roof tunes fade the
+    /// drums and hi-hats in while the lawn is busy; the night tune swaps the
+    /// main part for the drums. `None` means no board is running.
+    fn update_music_burst(&mut self, zombies_on_screen: i32) {
+        use MusicFile::Main;
+        use MusicTune::*;
+        let Some(tune) = self.cur_tune else { return };
+        let scheme = match tune {
+            DayGrasswalk | PoolWaterygraves | FogRigormormist | RoofGrazetheroof => 1,
+            NightMoongrains => 2,
+            _ => return,
+        };
+        let main_position = self.packed_order(Main).unwrap_or((0, 0));
+        let mut fade_volume = 0.0;
+        let mut drums_volume = 0.0;
+        let mut main_volume = 1.0;
+        if self.burst_counter > 0 {
+            self.burst_counter -= 1;
+        }
+        if self.drums_counter > 0 {
+            self.drums_counter -= 1;
+        }
+        match self.burst_state {
+            MusicBurstState::Off => {
+                if zombies_on_screen >= 10 || self.burst_override == 1 {
+                    self.start_burst();
+                }
+            }
+            MusicBurstState::Starting => {
+                if scheme == 1 {
+                    fade_volume = animate_curve_float(400, 0, self.burst_counter, 0.0, 1.0, TodCurve::Linear);
+                    if self.burst_counter == 100 {
+                        self.drums_state = MusicDrumsState::OnQueued;
+                        self.queued_drum_order = main_position;
+                    } else if self.burst_counter == 0 {
+                        self.burst_state = MusicBurstState::On;
+                        self.burst_counter = 800;
+                    }
+                } else if self.drums_state == MusicDrumsState::Off {
+                    self.drums_state = MusicDrumsState::OnQueued;
+                    self.queued_drum_order = main_position;
+                    self.burst_counter = 400;
+                } else if self.drums_state == MusicDrumsState::OnQueued {
+                    self.burst_counter = 400;
+                } else {
+                    main_volume = animate_curve_float(400, 0, self.burst_counter, 1.0, 0.0, TodCurve::Linear);
+                    if self.burst_counter == 0 {
+                        self.burst_state = MusicBurstState::On;
+                        self.burst_counter = 800;
+                    }
+                }
+            }
+            MusicBurstState::On => {
+                fade_volume = 1.0;
+                if scheme == 2 {
+                    main_volume = 0.0;
+                }
+                if self.burst_counter == 0
+                    && ((zombies_on_screen < 4 && self.burst_override == -1) || self.burst_override == 2)
+                {
+                    if scheme == 1 {
+                        self.burst_state = MusicBurstState::Finishing;
+                        self.burst_counter = 800;
+                        self.drums_state = MusicDrumsState::OffQueued;
+                        self.queued_drum_order = main_position;
+                    } else {
+                        self.burst_state = MusicBurstState::Finishing;
+                        self.burst_counter = 1100;
+                        self.drums_state = MusicDrumsState::Fading;
+                        self.drums_counter = 800;
+                    }
+                }
+            }
+            MusicBurstState::Finishing => {
+                if scheme == 1 {
+                    fade_volume = animate_curve_float(800, 0, self.burst_counter, 1.0, 0.0, TodCurve::Linear);
+                } else {
+                    main_volume = animate_curve_float(400, 0, self.burst_counter, 0.0, 1.0, TodCurve::Linear);
+                }
+                if self.burst_counter == 0 && self.drums_state == MusicDrumsState::Off {
+                    self.burst_state = MusicBurstState::Off;
+                }
+            }
+        }
+        // The drum part changes over on a pattern boundary of the main song.
+        let (main_order, drum_order) = if scheme == 1 {
+            (main_position.1 / 128, self.queued_drum_order.1 / 128)
+        } else {
+            let bump = |(order, row): (i32, i32)| order + i32::from(row > 252);
+            (bump(main_position), bump(self.queued_drum_order))
+        };
+        let mut drums_jump = None;
+        match self.drums_state {
+            MusicDrumsState::Off => {}
+            MusicDrumsState::OnQueued => {
+                if main_order != drum_order {
+                    drums_volume = 1.0;
+                    self.drums_state = MusicDrumsState::On;
+                    if scheme == 2 {
+                        drums_jump = Some(if main_order % 2 == 0 { 76 } else { 77 });
+                    }
+                }
+            }
+            MusicDrumsState::On => drums_volume = 1.0,
+            MusicDrumsState::OffQueued => {
+                drums_volume = 1.0;
+                if main_order != drum_order && scheme == 1 {
+                    self.drums_state = MusicDrumsState::Fading;
+                    self.drums_counter = 50;
+                }
+            }
+            MusicDrumsState::Fading => {
+                drums_volume = if scheme == 2 {
+                    animate_curve_float(800, 0, self.drums_counter, 1.0, 0.0, TodCurve::Linear)
+                } else {
+                    animate_curve_float(50, 0, self.drums_counter, 1.0, 0.0, TodCurve::Linear)
+                };
+                if self.drums_counter == 0 {
+                    self.drums_state = MusicDrumsState::Off;
+                }
+            }
+        }
+        if scheme == 1 {
+            self.set_track_volume(MusicFile::Hihats, fade_volume);
+            self.set_track_volume(MusicFile::Drums, drums_volume);
+        } else {
+            self.set_track_volume(Main, main_volume);
+            self.set_track_volume(MusicFile::Drums, drums_volume);
+            if let Some(order) = drums_jump {
+                self.jump_to_order(MusicFile::Drums, order);
+            }
+        }
+    }
+
+    /// `MusicUpdate`, every tick. `zombies_on_screen` is `None` when no board
+    /// is running (or it's paused), which also stops the burst.
+    fn update(&mut self, zombies_on_screen: Option<i32>) {
         if self.fade_out_counter > 0 {
             self.fade_out_counter -= 1;
             if self.fade_out_counter == 0 {
@@ -330,6 +533,9 @@ impl Music {
                     track.volume = level;
                 }
             }
+        }
+        if let Some(zombies) = zombies_on_screen {
+            self.update_music_burst(zombies);
         }
     }
 }
@@ -845,5 +1051,37 @@ mod tests {
         let mut out = vec![1.0; 8];
         mixer.render(&mut out);
         assert!(out.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn the_drum_burst_starts_and_ends_with_the_lawn() {
+        let mut music = Music::silent();
+        music.cur_tune = Some(MusicTune::DayGrasswalk);
+        music.update(Some(10));
+        assert_eq!(music.burst_state, MusicBurstState::Starting, "a busy lawn starts the burst");
+
+        // 400 ticks of coming in: the drums queue at 100, then it's on.
+        for _ in 0..300 {
+            music.update(Some(10));
+        }
+        assert_eq!(music.drums_state, MusicDrumsState::OnQueued);
+        for _ in 0..100 {
+            music.update(Some(10));
+        }
+        assert_eq!(music.burst_state, MusicBurstState::On);
+
+        // 800 ticks on, then an empty lawn brings it back down.
+        for _ in 0..800 {
+            music.update(Some(0));
+        }
+        assert_eq!(music.burst_state, MusicBurstState::Finishing);
+        assert_eq!(music.drums_state, MusicDrumsState::OffQueued);
+
+        // No board (or a paused one) leaves it where it was.
+        let before = (music.burst_state, music.burst_counter);
+        for _ in 0..100 {
+            music.update(None);
+        }
+        assert_eq!((music.burst_state, music.burst_counter), before);
     }
 }

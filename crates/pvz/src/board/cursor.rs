@@ -66,6 +66,9 @@ pub struct CursorPreview {
     pub visible: bool,
     pub x: i32,
     pub y: i32,
+    /// The grid square it shows (`mGridX`/`mGridY`), for the water bob.
+    pub grid_x: i32,
+    pub grid_y: i32,
 }
 
 impl CursorPreview {
@@ -389,7 +392,7 @@ impl Board {
     }
 
     /// `SeedBank::MouseHitTest`: the packet under the mouse.
-    fn seed_packet_at(&self, p: IVec2) -> Option<usize> {
+    pub(super) fn seed_packet_at(&self, p: IVec2) -> Option<usize> {
         let bank = &self.seed_bank;
         let local = p - IVec2::new(bank.x, bank.y);
         bank.packets[..bank.num_packets].iter().position(|packet| {
@@ -402,7 +405,7 @@ impl Board {
     }
 
     /// The topmost sun under the mouse.
-    fn coin_at(&self, p: Vec2) -> Option<sexy::data_array::Id<Coin>> {
+    pub(super) fn coin_at(&self, p: Vec2) -> Option<sexy::data_array::Id<Coin>> {
         self.coins
             .iter()
             .filter(|(_, c)| c.hit_test(p))
@@ -632,6 +635,10 @@ impl Board {
             return;
         }
         self.clear_advice(Some(AdviceType::CantAffordPlant));
+        // `SeedPacket::Deactivate` in the whack level ends its lesson.
+        if matches!(self.tutorial_state, TutorialState::WhackBeforePickSeed | TutorialState::WhackPickSeed) {
+            self.tutorial_state = TutorialState::WhackCompleted;
+        }
         self.cursor = CursorObject { cursor_type: CursorType::PlantFromBank, seed: Some(seed), seed_bank_index: Some(index), imitater: self.seed_bank.packets[index].imitater, ..Default::default() };
         sounds.play_sample("SOUND_SEEDLIFT");
         if self.tutorial_state == TutorialState::Level1PickUpPeashooter {
@@ -894,8 +901,28 @@ impl Board {
         effects.add_particle(px, py, render_layer::TOP, splash, res, images, sounds.rng());
     }
 
+    /// `Board::HighlightPlantsForMouse`: with the shovel out, the plant under
+    /// it lights up (the Zen Garden's tools come with the garden).
+    fn update_plant_highlight(&mut self) {
+        for (_, plant) in self.plants.iter_mut() {
+            plant.highlighted = false;
+        }
+        if self.cursor.cursor_type != CursorType::Shovel {
+            return;
+        }
+        let Some(p) = self.mouse else { return };
+        let (x, y) = (p.x as i32, p.y as i32);
+        let (grid_x, grid_y) = (self.pixel_to_grid_x(x), self.pixel_to_grid_y(x, y));
+        for (_, plant) in self.plants.iter_mut() {
+            if plant.col == grid_x && plant.row == grid_y && !plant.not_on_ground() {
+                plant.highlighted = true;
+            }
+        }
+    }
+
     /// `CursorPreview::Update`: shows where the carried plant would go.
     pub(super) fn update_cursor_preview(&mut self) {
+        self.update_plant_highlight();
         self.cursor_preview.visible = false;
         if self.scene != GameScene::Playing || !self.is_plant_in_cursor() {
             return;
@@ -907,6 +934,8 @@ impl Board {
                 visible: true,
                 x: self.grid_to_pixel_x(grid_x),
                 y: self.grid_to_pixel_y(grid_x, grid_y),
+                grid_x,
+                grid_y,
             };
         }
     }
@@ -915,8 +944,16 @@ impl Board {
     pub(super) fn draw_cursor_preview(&self, res: &GameResources, g: &mut Graphics) {
         let preview = &self.cursor_preview;
         let Some(seed) = self.cursor.seed.filter(|_| preview.visible) else { return };
+        // Floating squares bob the preview like the plant itself would.
+        let on_water = preview.x + 40 >= LAWN_XMIN
+            && self.plant_row.get(preview.grid_y.max(0) as usize).copied() == Some(super::PlantRowType::Pool);
+        let bob = if on_water {
+            crate::board::plant::pool_bob_offset(self.main_counter, preview.grid_x, preview.grid_y)
+        } else {
+            0.0
+        };
         g.push_state();
-        g.translate(preview.x as f32, preview.y as f32);
+        g.translate(preview.x as f32, preview.y as f32 + bob);
         g.set_colorize_images(true);
         g.set_color(SexyColor::rgba(255, 255, 255, 100));
         draw_seed_type(g, res, seed, 0.0, plant_draw_height_offset(seed), 1.0);

@@ -9,6 +9,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 - **Plants: all 49 adventure/store plants** (every `SeedType` except Zen Garden's `Sprout`), including upgrades (gatling, twin sunflower, gloom, cattail, winter melon, gold magnet, spikerock, cob cannon) and the imitater.
 - **Zombies: all 33 types**: normal, flag, cone, bucket, pole vaulter, newspaper, screen door, football, dancer, backup dancer, ducky tube, snorkel, Zamboni, bobsled, dolphin rider, balloon, bungee, ladder, catapult, gargantuar, imp, Dr. Zomboss, plus jack-in-the-box (runs, pops, explodes), digger (tunnels, rises, loses its axe to magnets), pogo (bounces, vaults, tall-nut breaks it), yeti (flees), red-eyed gargantuar (6000 HP), and the six Zombotany heads (pea/gatling shoot backwards, jalapeno burns its row, squash jumps, wall/tall-nuts are helmets).
 - Crazy Dave talks on 1-5, 2-1, 2-2, 2-3+ (seed slots), 2-5, 3-1, 3-5, 4-1, 5-1, 5-10.
+- **Presentation pass**: the huge-wave banner's letter animations and the music's drum burst, the hand cursor (hidden for the hammer), the shovel's plant highlight, the cursor preview's water bob, the selector hand's clip, the rake (store item: swings at the first zombie), bonus mowers rolling back in, the Game Over dialog's top-right Main Menu button and the door overlay on a lost level, the level-1 sod-row flash, the whack-a-zombie packet tutorial, the fog roll-in and 3-5/4-5 talks, and the doom-shroom's shaking heads.
 - **Saving a level in progress** (`board::save`, `tests/save.rs`): leaving through the menu, or quitting the app, saves an adventure level in progress (`TryToSaveGame`/`NeedSaveGame`, `userdata/game{id}_{mode}.dat` as TOML); Adventure offers the Continue dialog (resume, or erase and restart); winning, losing, restarting or starting fresh erases it; `--lvl` copies never save; deleting a profile deletes its saves.
 - Windows: builds, setup screen and resource loading verified; everything else untested there.
 
@@ -26,13 +27,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 
 ### Board and levels
 - Presents, potted plants and chocolate drops from zombies.
-- Huge-wave drum burst (`waves.rs:788`, `audio.rs:320`) and the original's animated wave/huge-wave lettering (`board/message.rs:33`; plain text now).
-- Brains cutscene shake (`cutscene.rs:346`), fog and boss specifics in the intro timeline (`cutscene.rs:215`), the rake (`cutscene.rs:372`).
-- Level 1 tutorial's flashing sod row (`board/mod.rs:2235`); whack-a-zombie's tutorial; the water-planting advice (`ADVICE_LILYPAD_ON_WATER` etc.).
-- Crazy Dave's talks from level 11 on, except those listed above; 1-5's explanation and giant wall-nuts.
-- The house door overlay on a lost level (`DrawHouseDoorTop`); the Main Menu button on the Game Over dialog (`board/mod.rs:1936`).
-- Hand cursor over clickable things (`board/mod.rs:1862`), plant highlight under the shovel, cursor preview bob over water.
-- Bonus mowers rolling back in (`lawn_mower.rs:397`).
+- The water-planting advice variants (`ADVICE_LILYPAD_ON_WATER` etc.).
 - Pool and roof gravestone and crater variants (`grid_item.rs:303`, `grid_item.rs:341`); 4-5 at night (`board/mod.rs:619`).
 - Seed packet visuals: explode-o-nut tint, left repeater (`seed_bank.rs:456`); packet starburst on pick-up (`cursor.rs:573`); award coin extras (`coin.rs:538`).
 - Ice-shroom pausing the pool water's counter.
@@ -40,7 +35,6 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 - Tiny zombies' particles not scaled (`OverrideParticleScale`).
 
 ### Plants
-- Plant glow as a zombie nears (`board/plant.rs:922`), multi-head shake (`:1206`), several faces for threepeater/split pea/twin sunflower (`:2605`).
 - Remaining `PlantInitialize` per-plant setup (`:624`); other shooters' fire timings (cactus 35..., `:2197`); spikeweed height by row/stage (`:355`).
 - Instant kills only hurting gargantuars and the boss (`:966`).
 - Magnet-shroom pulling ladders propped on plants (`:1321`) and loot from unported zombies; gold magnet waiting for another (`:1371`); cob flashing while it waits (`:1443`); a pumpkin over a kernel-pult invalidating a cannon spot (`cursor.rs:328`); coffee bean's wake-up squash; attached particle (`:1794`).
@@ -51,7 +45,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 - Boss: a replayed boss level should skip Dave after a loss; pots' and fireballs' smoke trails should go when he dies.
 
 ### Menus and screens
-- Main menu: trophy and its sparkle (`game_selector.rs:374`, `:828`), adventure-complete message (`:625`), Zen "needs water" bubble (`:892`), hand clipping (`:895`), the other mode buttons.
+- Main menu: trophy and its sparkle (`game_selector.rs:374`, `:828`), adventure-complete message (`:625`), Zen "needs water" bubble (`:892`), the other mode buttons.
 - Options: pausing music and MUTE_ON_PAUSE foley (`audio.rs:782`), volume changes for sounds already playing.
 - Store: Zen items (potted marigolds, `store.rs:306`, `:862`), going to the tree (`:746`), "coming soon" rule (`:188`), bonus mower and chocolate pages, award-screen intro talks, night background, opening from the seed chooser.
 - Seed chooser: almanac and store buttons.
@@ -60,11 +54,11 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 - Widgets: vertical sliders, clipboard/undo/password in `EditWidget`.
 
 ### Engine
-- Music drum/hi-hat bursts during levels; per-mode music (Zen Garden, mini-games).
+- Per-mode music (Zen Garden, mini-games).
 
 ## Suggested order
 
-1. Presentation gaps on the board (animated wave text, drum burst, hand cursor, glow, faces).
+1. Presentation details left on the board (pool/roof graves and craters, tiny-zombie particles).
 2. Survival and mini-games (reuse `Board` with a `GameMode` per mode), then puzzle.
 3. Zen Garden and Tree of Wisdom, then the store's Zen items.
 4. Achievements; Windows visual pass and `.au` decoder; Linux.

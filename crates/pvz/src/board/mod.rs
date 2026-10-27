@@ -78,7 +78,7 @@ use coin::{Coin, CoinEvent, CoinMotion, CoinType};
 use cursor::{CursorObject, CursorPreview};
 use cutscene::CutScene;
 use grid_item::{GridCels, GridItem};
-use lawn_mower::LawnMower;
+use lawn_mower::{LawnMower, LawnMowerState};
 use message::{MessageStyle, MessageWidget};
 use plant::{Plant, PlantAction};
 use projectile::Projectile;
@@ -96,6 +96,7 @@ impl Plugin for BoardPlugin {
             .add_systems(OnExit(AppState::Board), kill_board)
             .add_systems(FixedUpdate, update_board.run_if(open))
             .add_systems(Update, board_input.in_set(UiSet::ScreenInput).run_if(open))
+            .add_systems(Update, update_mouse_icon.run_if(open))
             .add_systems(Update, draw_board.in_set(UiSet::ScreenDraw).run_if(open));
     }
 }
@@ -265,6 +266,16 @@ pub mod render_layer {
     pub const SCREEN_FADE: i32 = 900000;
 }
 
+/// `Board::CountZombiesOnScreen`: the ones the music's drum burst answers to
+/// (hypnotised zombies aren't a threat).
+pub fn count_zombies_on_screen(board: &Board) -> i32 {
+    board
+        .zombies
+        .iter()
+        .filter(|(_, z)| z.has_head && !z.is_dead_or_dying() && !z.mind_controlled && z.is_on_board())
+        .count() as i32
+}
+
 /// `Board::MakeRenderOrder`.
 pub fn make_render_order(layer: i32, row: i32, offset: i32) -> i32 {
     row * render_layer::ROW_OFFSET + layer + offset
@@ -363,6 +374,11 @@ pub struct Board {
     help_index: Option<AdviceType>,
     help_displayed: HashSet<AdviceType>,
     lawn_mowers: Vec<LawnMower>,
+    /// `mBonusLawnMowersRemaining`: bought mowers that roll in to replace a
+    /// spent one.
+    pub bonus_lawn_mowers_remaining: i32,
+    /// How many rakes the player has bought and not yet used (`STORE_ITEM_RAKE`).
+    rake_count: i32,
     /// Whether the player has bought the pool cleaner (`StoreItem::PoolCleaner`),
     /// which the pool rows' lawn mowers become.
     pool_cleaner: bool,
@@ -519,6 +535,8 @@ impl Board {
             help_index: None,
             help_displayed: HashSet::new(),
             lawn_mowers: Vec::new(),
+            bonus_lawn_mowers_remaining: 0,
+            rake_count: player.map_or(0, |p| p.purchases[StoreItem::Rake.slot()]),
             pool_cleaner: player.is_some_and(|p| p.purchases[StoreItem::PoolCleaner.slot()] != 0),
             roof_cleaner: player.is_some_and(|p| p.purchases[StoreItem::RoofCleaner.slot()] != 0),
             plants: DataArray::default(),
@@ -973,7 +991,7 @@ fn new_game(
         return;
     }
     let player_name = player.map_or("", |p| p.name.as_str());
-    cutscene::start_level_intro(&mut board, &resources, &mut music, player_name);
+    cutscene::start_level_intro(&mut board, &mut effects, &mut resources, &mut images, &mut music, &mut sounds, player_name);
     // Level 1-5 starts with peashooters for Crazy Dave to have the player dig up.
     if board.first_time_adventure && board.level == 5 {
         for (col, row) in [(5, 1), (7, 2), (6, 3)] {
@@ -1049,6 +1067,15 @@ fn update_board(
     {
         player.coins += outcome.money;
     }
+    // `PlaceRake` spends one of the player's bought rakes, once per level.
+    let rake_slot = crate::store::StoreItem::Rake.slot();
+    let rake_used = profiles.player().is_some_and(|p| p.purchases[rake_slot] != board.rake_count);
+    if rake_used {
+        if let Some(player) = profiles.player_mut() {
+            player.purchases[rake_slot] = board.rake_count;
+        }
+        profiles.save_current_details();
+    }
     if outcome.game_over {
         // The run is over: no Continue from a lost level.
         if !board.level_overridden
@@ -1057,7 +1084,7 @@ fn update_board(
         {
             erase_save(&dir, id, board.mode);
         }
-        do_game_over_dialog(&mut dialogs, &resources);
+        do_game_over_dialog(&mut dialogs, &resources, board);
     }
     if let Some(warning) = outcome.chooser_warning {
         do_chooser_warning_dialog(&mut dialogs, &resources, warning);
@@ -1130,10 +1157,14 @@ impl Board {
         self.update_fwoosh(effects);
         self.coin_bank_fade_count = (self.coin_bank_fade_count - 1).max(0);
         outcome.money = std::mem::take(&mut self.pending_money);
-        self.advice.update();
+        self.advice.update(effects, resources, images);
         self.update_tutorial(resources);
 
         self.update_grid_items();
+        if self.scene == GameScene::Playing {
+            let mut fx = Fx { effects, res: resources, images, sounds: &mut *sounds };
+            self.update_rakes(&mut fx);
+        }
         if self.is_whack_a_zombie_level() {
             self.update_whack_a_zombie(effects);
         }
@@ -1155,7 +1186,7 @@ impl Board {
             if self.has_conveyor_belt_seed_bank() {
                 self.update_conveyor_belt(sounds.rng());
             }
-            self.update_zombie_spawning(effects, resources, images, sounds);
+            self.update_zombie_spawning(effects, resources, images, music, sounds);
             if self.main_counter == 1 && self.first_time_adventure && self.level == 1 {
                 self.set_tutorial_state(resources, TutorialState::Level1PickUpPeashooter);
             } else if self.main_counter == 1 && self.first_time_adventure && self.level == 2 {
@@ -1402,6 +1433,16 @@ impl Board {
                     &mut self.waves.wave_row_got_lawn_mowered,
                     &mut fx,
                 );
+            }
+            // `LawnMower::Die`: a bought bonus mower rolls in to replace it.
+            let spent: Vec<i32> = self.lawn_mowers.iter().filter(|m| m.dead).map(|m| m.row).collect();
+            for row in spent {
+                if self.bonus_lawn_mowers_remaining > 0 && !self.has_level_award_dropped() {
+                    self.bonus_lawn_mowers_remaining -= 1;
+                    let mut mower = LawnMower::new(self, row);
+                    mower.state = LawnMowerState::RollingIn;
+                    self.lawn_mowers.push(mower);
+                }
             }
         }
         if playing {
@@ -1993,10 +2034,55 @@ impl Board {
     fn can_interact_with_board_buttons(&self) -> bool {
         !self.paused && self.cursor.cursor_type == cursor::CursorType::Normal
     }
+
+    /// `Board::SetCursor`: whether the pointer is a hand (or hidden) at `p`
+    /// and whether it's shown at all.
+    fn pointer_icon(&self, p: Vec2, res: &GameResources, modal: bool) -> (bool, bool) {
+        if modal || self.paused || self.seed_chooser.is_some() || self.scene == GameScene::ZombiesWon {
+            return (false, true);
+        }
+        // The hammer has its own cursor, drawn in its place.
+        if self.cursor.cursor_type == cursor::CursorType::Hammer {
+            return (false, false);
+        }
+        let over_packet = self
+            .seed_packet_at(p.as_ivec2())
+            .is_some_and(|i| self.seed_bank.packets[i].active && self.packet_can_pick_up(i));
+        let (sx, sy, sw, sh) = self.shovel_button_rect(res);
+        let over_shovel = self.show_shovel
+            && p.x >= sx as f32
+            && p.x < (sx + sw) as f32
+            && p.y >= sy as f32
+            && p.y < (sy + sh) as f32;
+        let hand = over_packet || over_shovel || self.coin_at(p).is_some() || self.menu_button.is_mouse_over();
+        (hand, true)
+    }
+}
+
+/// `Board::SetCursor`: the hand over anything clickable, hidden for the hammer.
+#[allow(clippy::too_many_arguments, reason = "a Bevy system's parameters")]
+fn update_mouse_icon(
+    board: Res<Board>,
+    cursor: Res<crate::input::GameCursor>,
+    dialogs: Res<Dialogs>,
+    res: Res<GameResources>,
+    window: Single<Entity, With<bevy::window::PrimaryWindow>>,
+    icons: Query<&bevy::window::CursorIcon>,
+    mut options: Single<&mut bevy::window::CursorOptions, With<bevy::window::PrimaryWindow>>,
+    mut commands: Commands,
+) {
+    use bevy::window::{CursorIcon, SystemCursorIcon};
+    let Some(p) = cursor.0 else { return };
+    let (hand, visible) = board.pointer_icon(p, &res, dialogs.is_modal());
+    options.visible = visible;
+    let icon = if hand { CursorIcon::System(SystemCursorIcon::Pointer) } else { CursorIcon::default() };
+    if icons.get(*window).ok() != Some(&icon) {
+        commands.entity(*window).insert(icon);
+    }
 }
 
 /// Mouse handling: `Board::MouseDown`/`MouseUp` and the menu button
-/// (`GameButton::Update`). TODO: the hand cursor over things to click.
+/// (`GameButton::Update`).
 #[allow(clippy::too_many_arguments)]
 fn board_input(
     mut board: ResMut<Board>,
@@ -2070,16 +2156,25 @@ fn board_input(
     board.flush_particle_requests(&mut effects, &mut resources, &mut images, sounds.rng());
 }
 
-/// `GameOverDialog`: try again or go back to the main menu. TODO: the
-/// original puts the Main Menu button at the top right instead.
-fn do_game_over_dialog(dialogs: &mut Dialogs, res: &GameResources) {
-    let dialog = dialogs.do_dialog(res, DialogId::GameOver, &res.translate("[GAME_OVER]"), "", "", ButtonMode::YesNo);
-    if let Some(yes) = &mut dialog.yes_button {
-        yes.label = res.translate("[TRY_AGAIN]");
-    }
-    if let Some(no) = &mut dialog.no_button {
-        no.label = res.translate("[MAIN_MENU_BUTTON]");
-    }
+/// `GameOverDialog`: Try Again in the dialog, Main Menu at the screen's top
+/// right, and the board's own buttons hidden.
+fn do_game_over_dialog(dialogs: &mut Dialogs, res: &GameResources, board: &mut Board) {
+    use crate::dialog::{DialogButton, DialogKind};
+    use crate::widgets::StoneButton;
+    let dialog = dialogs.do_dialog(
+        res,
+        DialogId::GameOver,
+        &res.translate("[GAME_OVER]"),
+        "",
+        &res.translate("[TRY_AGAIN]"),
+        ButtonMode::Footer,
+    );
+    let (x, y) = (dialog.x, dialog.y);
+    let mut menu = StoneButton::new(DialogButton::MainMenu, res.translate("[MAIN_MENU_BUTTON]"));
+    menu.resize(635 - x, -10 - y, 163, 46);
+    dialog.kind = DialogKind::GameOver { menu };
+    board.show_shovel = false;
+    board.menu_button.no_draw = true;
 }
 
 /// `CutScene::AdvanceCrazyDaveDialog`'s question: buy a seed slot for `cost` coins?
@@ -2128,6 +2223,8 @@ enum RenderItem {
     CursorPreview,
     Ice(usize),
     Fog,
+    /// The door frame over the lawn when the zombies have won.
+    DoorMask,
 }
 
 /// `Board::Draw` / `DrawGameObjects`.
@@ -2214,6 +2311,14 @@ fn draw_board(
     if board.mode != GameMode::Intro {
         items.push((make_render_order(render_layer::UI_TOP, 0, 0), RenderItem::TopUi));
     }
+    if board.scene == GameScene::ZombiesWon {
+        let z = if board.stage_has_roof() {
+            make_render_order(render_layer::GRAVE_STONE, 0, 4)
+        } else {
+            make_render_order(render_layer::GRAVE_STONE, 3, 2)
+        };
+        items.push((z, RenderItem::DoorMask));
+    }
     // TODO: the coin bank, screen fade and cursor preview.
     items.sort_by_key(|(z, _)| *z);
 
@@ -2235,7 +2340,7 @@ fn draw_board(
             RenderItem::LawnMower(i) => board.lawn_mowers[i].draw(board, &effects, &resources, &mut g),
             RenderItem::GridItem(id) => {
                 if let Some(item) = board.grid_items.get(id) {
-                    board.draw_grid_item(item, &resources, &mut g);
+                    board.draw_grid_item(item, &effects, &resources, &mut g);
                 }
             }
             RenderItem::Reanimation(id) => effects.draw(&mut g, id, &resources),
@@ -2252,6 +2357,7 @@ fn draw_board(
             RenderItem::FadeOut => board.draw_fade_out(&mut g),
             RenderItem::Ice(row) => board.draw_ice(row, &resources, &mut g),
             RenderItem::Fog => board.draw_fog(&resources, &mut g),
+            RenderItem::DoorMask => draw_house_door_mask(board, &resources, &mut g),
             RenderItem::Zombie(id) => {
                 if let Some(zombie) = board.zombies.get(id).filter(|z| !z.is_winner() || board.cut_scene.show_zombie_walking()) {
                     let carried = zombie.target_plant.and_then(|p| board.plants.get(p)).filter(|p| !p.dead && p.on_bungee != plant::OnBungee::No);
@@ -2297,6 +2403,35 @@ fn draw_board(
         }
     }
     g.pop_state();
+}
+
+/// `DrawHouseDoorBottom`: the inside of the house, seen once the zombies are in.
+fn draw_house_door_bottom(board: &Board, res: &GameResources, g: &mut Graphics) {
+    let (id, x, y) = match board.background {
+        BackgroundType::Day => ("IMAGE_BACKGROUND1_GAMEOVER_INTERIOR_OVERLAY", -126.0, 225.0),
+        BackgroundType::Night => ("IMAGE_BACKGROUND2_GAMEOVER_INTERIOR_OVERLAY", -125.0, 196.0),
+        BackgroundType::Pool => ("IMAGE_BACKGROUND3_GAMEOVER_INTERIOR_OVERLAY", -171.0, 241.0),
+        BackgroundType::Fog => ("IMAGE_BACKGROUND4_GAMEOVER_INTERIOR_OVERLAY", -172.0, 246.0),
+        _ => return,
+    };
+    if let Some(image) = res.image(id) {
+        g.draw_image(image, x, y);
+    }
+}
+
+/// `DrawHouseDoorTop`: the door frame over the lawn when the zombies won.
+fn draw_house_door_mask(board: &Board, res: &GameResources, g: &mut Graphics) {
+    let (id, x, y) = match board.background {
+        BackgroundType::Day => ("IMAGE_BACKGROUND1_GAMEOVER_MASK", -130.0, 202.0),
+        BackgroundType::Night => ("IMAGE_BACKGROUND2_GAMEOVER_MASK", -128.0, 207.0),
+        BackgroundType::Pool => ("IMAGE_BACKGROUND3_GAMEOVER_MASK", -172.0, 234.0),
+        BackgroundType::Fog => ("IMAGE_BACKGROUND4_GAMEOVER_MASK", -173.0, 133.0),
+        BackgroundType::Roof => ("IMAGE_BACKGROUND5_GAMEOVER_MASK", -220.0, 81.0),
+        BackgroundType::Boss => ("IMAGE_BACKGROUND6_GAMEOVER_MASK", -220.0, 81.0),
+    };
+    if let Some(image) = res.image(id) {
+        g.draw_image(image, x, y);
+    }
 }
 
 /// `Board::DrawBackdrop`: the background, with the intro's unsodded lawn
@@ -2348,12 +2483,27 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
             }
         }
     }
+    // `DrawHouseDoorBottom`: the inside of the house once the zombies are in.
+    if board.scene == GameScene::ZombiesWon {
+        draw_house_door_bottom(board, res, g);
+    }
     // PoolEffectDraw: the animated water, or the static picture if that can't be drawn.
     if board.stage_has_pool() {
         let animated = board.pool_water.as_ref().is_some_and(|water| water.draw(g, res, board.stage_is_night()));
         if !animated && let Some(pool) = image(if board.stage_is_night() { "IMAGE_POOL_NIGHT" } else { "IMAGE_POOL" }) {
             g.draw_image(pool, 34.0, 278.0);
         }
+    }
+    // Level 1's tutorial flashes the sod row it wants the peashooter on.
+    if board.tutorial_state == TutorialState::Level1PlantPeashooter
+        && let Some(sod) = image("IMAGE_SOD1ROW")
+    {
+        let gray = seed_bank::flashing_gray(board.main_counter, 75) as u8;
+        g.push_state();
+        g.set_colorize_images(true);
+        g.set_color(SexyColor::rgba(gray, gray, gray, 255));
+        g.draw_image(sod, (239 - BOARD_OFFSET) as f32, 265.0);
+        g.pop_state();
     }
     // Challenge::DrawBackground: the line wall-nuts start behind.
     if board.is_wallnut_bowling_level()
@@ -2432,7 +2582,7 @@ fn draw_ui_top(board: &Board, effects: &EffectSystem, res: &GameResources, g: &m
         draw_level(board, res, g);
     }
     board.draw_coin_bank(res, g);
-    board.advice.draw(board, res, g);
+    board.advice.draw(board, res, g, effects);
     board.draw_cursor_object(res, g);
     board.draw_hammer(effects, res, g);
 }

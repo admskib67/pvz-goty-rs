@@ -7,9 +7,42 @@ use crate::zombie::ZombieType;
 
 use super::super::conveyor::mini_boss_seeds;
 use super::super::cursor::CursorType;
+use super::super::message::MessageStyle;
+use super::super::tutorial::AdviceType;
 use super::super::zombie::ZombiePhase;
 use super::super::{STORE_ITEM_PACKET_UPGRADE, cutscene};
 use super::{TestBoard, test_board};
+
+#[test]
+fn the_whack_a_zombie_tutorial_flashes_the_packets_once_there_is_sun() {
+    use super::super::tutorial::TutorialState;
+    let mut t = test_board!("2-5");
+    assert!(t.board.sun_money > 0, "the level starts with sun");
+    assert!(
+        t.run_until(50, |b| b.tutorial_state == TutorialState::WhackBeforePickSeed),
+        "the first sun starts the lesson"
+    );
+    assert!(
+        t.run_until(2000, |b| b.tutorial_state == TutorialState::WhackPickSeed),
+        "then the packets flash"
+    );
+    assert!(t.run_until(1000, |b| b.tutorial_state == TutorialState::WhackCompleted), "and it's over");
+}
+
+#[test]
+fn the_huge_wave_banner_animates_its_letters() {
+    let mut t = test_board!("1-1");
+    let letters = t.with(|board, _effects, res, images, _sounds| {
+        let _ = res.load_group_now("LoadingFonts", images);
+        board.display_advice_again(res, "[ADVICE_HUGE_WAVE]", MessageStyle::HugeWave, AdviceType::HugeWave);
+        res.translate("[ADVICE_HUGE_WAVE]").chars().count()
+    });
+    t.tick();
+    assert_eq!(t.board.advice.letters_len(), letters, "one animation per letter");
+    t.ticks(20);
+    let alpha = t.board.advice.first_letter_alpha(&t.effects).expect("the first letter");
+    assert!(alpha > 0.0, "the letters fade in, alpha {alpha}");
+}
 
 #[test]
 fn night_mini_boss_belt_brings_night_plants() {

@@ -208,6 +208,9 @@ pub enum DialogKind {
     User { list: ListWidget, num_users: i32, rename: StoneButton<DialogButton>, delete: StoneButton<DialogButton> },
     /// `ContinueDialog`: resume the saved game or start over.
     Continue { continue_button: StoneButton<DialogButton>, new_game_button: StoneButton<DialogButton> },
+    /// `GameOverDialog`: its Main Menu button sits at the screen's top right,
+    /// outside the dialog (`mMenuButton`).
+    GameOver { menu: StoneButton<DialogButton> },
     /// `NewOptionsDialog`: a picture instead of the stone frame.
     Options(Box<OptionsWidgets>),
     /// `AlmanacDialog`: the whole screen, drawn and run by `almanac`; it
@@ -561,6 +564,8 @@ impl LawnDialog {
                     new_game_button.resize(cancel.x + cancel.width - w, cancel.y - cancel.height - 2, w, cancel.height);
                 }
             }
+            // Its Main Menu button sits at the screen's top right (see `do_game_over_dialog`).
+            DialogKind::GameOver { .. } => {}
         }
     }
 
@@ -665,6 +670,7 @@ impl LawnDialog {
                 [Some(continue_button), Some(new_game_button), None]
             }
             DialogKind::Options(o) => [Some(&o.almanac), Some(&o.restart), Some(&o.main_menu)],
+            DialogKind::GameOver { menu } => [Some(menu), None, None],
             _ => [None, None, None],
         };
         self.yes_button.iter().chain(self.no_button.iter()).chain(extra.into_iter().flatten())
@@ -680,6 +686,7 @@ impl LawnDialog {
                 let o = &mut **o;
                 [Some(&mut o.almanac), Some(&mut o.restart), Some(&mut o.main_menu)]
             }
+            DialogKind::GameOver { menu } => [Some(menu), None, None],
             _ => [None, None, None],
         };
         self.yes_button.iter_mut().chain(self.no_button.iter_mut()).chain(extra.into_iter().flatten())
@@ -742,6 +749,7 @@ impl LawnDialog {
                 continue_button.draw(g, res);
                 new_game_button.draw(g, res);
             }
+            DialogKind::GameOver { menu } => menu.draw(g, res),
         }
         g.pop_state();
     }

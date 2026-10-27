@@ -20,7 +20,7 @@ pub const FOG_BLOW_RETURN_TIME: i32 = 2000;
 /// What a blover sets the countdown to.
 pub const BLOVER_BLOW_TIME: i32 = 4000;
 /// The stormy night level has no fog (`IsStormyNightLevel`).
-const STORMY_NIGHT_LEVEL: i32 = 35;
+pub(super) const STORMY_NIGHT_LEVEL: i32 = 35;
 
 /// The fog's state.
 #[derive(Debug, Clone)]

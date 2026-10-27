@@ -54,6 +54,79 @@ fn render_order_sorts_rows_within_layers() {
     assert_eq!(make_render_order(render_layer::TOP, 0, 1), 400001);
 }
 
+#[test]
+fn a_bought_rake_swings_at_the_first_zombie() {
+    use super::grid_item::GridItemType;
+    let slot = crate::store::StoreItem::Rake.slot();
+    let Some(mut t) = TestBoard::build("1-1", |p| p.purchases[slot] = 1, true) else { return };
+    assert!(
+        t.run_until(6000, |b| b.grid_items.iter().any(|(_, g)| g.item_type == GridItemType::Rake)),
+        "the bought rake is laid out"
+    );
+    let (row, x) = {
+        let (_, rake) = t.board.grid_items.iter().find(|(_, g)| g.item_type == GridItemType::Rake).unwrap();
+        (rake.grid_y, t.board.grid_to_pixel_x(rake.grid_x) as f32)
+    };
+    assert!(t.run_until(6000, |b| b.scene == crate::board::GameScene::Playing), "the intro ends");
+    let zombie = t.zombie(ZombieType::Normal, row, x + 45.0);
+    assert!(t.run_until(400, |b| b.zombies.get(zombie).is_none_or(|z| z.is_dead_or_dying())), "the rake kills it");
+    assert!(
+        t.run_until(400, |b| !b.grid_items.iter().any(|(_, g)| g.item_type == GridItemType::Rake)),
+        "and is spent"
+    );
+    assert_eq!(t.board.rake_count, 0, "one rake of the player's was used");
+}
+
+#[test]
+fn the_game_over_dialog_puts_main_menu_at_the_top_right() {
+    let mut t = test_board!("1-1");
+    t.board.show_shovel = true;
+    let (screen_x, screen_y, width) = t.with(|board, _effects, res, _images, _sounds| {
+        let mut dialogs = crate::dialog::Dialogs::default();
+        super::do_game_over_dialog(&mut dialogs, res, board);
+        let dialog = dialogs.get(crate::dialog::DialogId::GameOver).expect("the dialog is open");
+        let crate::dialog::DialogKind::GameOver { menu } = &dialog.kind else { panic!("not the game over dialog") };
+        assert!(!board.show_shovel, "the board's shovel is put away");
+        assert!(board.menu_button.no_draw, "and its menu button hidden");
+        (menu.x + dialog.x, menu.y + dialog.y, menu.width)
+    });
+    assert_eq!((screen_x, screen_y, width), (635, -10, 163), "the original's placement");
+}
+
+#[test]
+fn a_bought_bonus_mower_rolls_in_after_one_is_used() {
+    let mut t = test_board!("1-1");
+    t.board.bonus_lawn_mowers_remaining = 1;
+    let before = t.board.lawn_mowers.len();
+    if let Some(mower) = t.board.lawn_mowers.first_mut() {
+        mower.dead = true;
+    }
+    t.tick();
+    assert_eq!(t.board.bonus_lawn_mowers_remaining, 0, "the bonus mower was used");
+    assert_eq!(t.board.lawn_mowers.len(), before, "a replacement took its place");
+    assert!(
+        t.board.lawn_mowers.iter().any(|m| m.state == super::lawn_mower::LawnMowerState::RollingIn),
+        "and it rolls in"
+    );
+}
+
+#[test]
+fn the_pointer_is_a_hand_over_the_shovel_and_hidden_for_the_hammer() {
+    let mut t = test_board!("1-1");
+    t.board.show_shovel = true;
+    let (hand, visible) = t.with(|board, _effects, res, _images, _sounds| {
+        let (x, y, w, h) = board.shovel_button_rect(res);
+        board.pointer_icon(Vec2::new((x + w / 2) as f32, (y + h / 2) as f32), res, false)
+    });
+    assert!(hand && visible, "the shovel button takes the hand");
+
+    t.board.cursor.cursor_type = super::cursor::CursorType::Hammer;
+    let (hand, visible) = t.with(|board, _effects, res, _images, _sounds| {
+        board.pointer_icon(Vec2::new(400.0, 300.0), res, false)
+    });
+    assert!(!hand && !visible, "the hammer hides the pointer");
+}
+
 /// The game's resources, loaded once and shared by every test (decoding
 /// every image again for each test would take far too long). Tests take
 /// turns with them.
@@ -157,7 +230,7 @@ impl TestBoard {
         world.insert_resource(SoundSystem::default());
         world.insert_resource(GameRng(MtRand::new(2009)));
         world.insert_resource(UpdateCount::default());
-        let sounds = SystemState::<Sounds>::new(&mut world);
+        let mut sounds = SystemState::<Sounds>::new(&mut world);
 
         let mut player = PlayerInfo { level, ..Default::default() };
         adjust(&mut player);
@@ -167,11 +240,16 @@ impl TestBoard {
         if intro {
             board.draw_count = 1;
             let mut music = Music::silent();
-            super::cutscene::start_level_intro(&mut board, resources, &mut music, "Tester");
+            let mut effects = EffectSystem::default();
+            {
+                let mut live = sounds.get_mut(&mut world).expect("sounds without an audio device");
+                super::cutscene::start_level_intro(&mut board, &mut effects, resources, images, &mut music, &mut live, "Tester");
+                sounds.apply(&mut world);
+            }
             let first_wave_count_down = board.waves.zombie_count_down;
             return Some(Self {
                 board,
-                effects: EffectSystem::default(),
+                effects,
                 music,
                 world,
                 sounds,

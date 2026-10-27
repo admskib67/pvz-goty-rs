@@ -27,7 +27,7 @@ use crate::zombie::ZombieType;
 use super::cursor::CursorType;
 use super::grid_item::GridItemType;
 use super::zombie::{Fx, Zombie};
-use super::{Board, GameMode, MAX_GRID_SIZE_X, MAX_GRID_SIZE_Y, circle_rect_overlap, render_layer};
+use super::{Board, GameMode, MAX_GRID_SIZE_X, MAX_GRID_SIZE_Y, TutorialState, circle_rect_overlap, render_layer};
 
 /// What the board keeps for whack-a-zombie.
 #[derive(Debug, Default)]
@@ -78,6 +78,21 @@ impl Board {
             && !self.has_level_award_dropped()
         {
             self.cursor.cursor_type = CursorType::Hammer;
+        }
+        // `Challenge::WhackAZombieUpdate`: once the first sun is in, the
+        // packets flash so the player knows they can be used.
+        if self.scene == super::GameScene::Playing {
+            if self.sun_money > 0 && self.tutorial_state == TutorialState::Off {
+                self.tutorial_state = TutorialState::WhackBeforePickSeed;
+                self.tutorial_timer = 1500;
+            }
+            if self.tutorial_state == TutorialState::WhackBeforePickSeed && self.tutorial_timer == 0 {
+                self.tutorial_state = TutorialState::WhackPickSeed;
+                self.tutorial_timer = 400;
+            }
+            if self.tutorial_state == TutorialState::WhackPickSeed && self.tutorial_timer == 0 {
+                self.tutorial_state = TutorialState::WhackCompleted;
+            }
         }
     }
 

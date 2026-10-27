@@ -18,7 +18,7 @@ use bevy::prelude::*;
 use sexy::data_array::Id;
 use sexy::rand::MtRand;
 
-use crate::audio::Sounds;
+use crate::audio::{Music, MusicTune, Sounds};
 use crate::reanim::EffectSystem;
 use crate::resources::GameResources;
 use crate::zombie::{NUM_ZOMBIE_TYPES, ZombieType, can_spawn_on_level, waves_for_level};
@@ -740,6 +740,7 @@ impl Board {
         effects: &mut EffectSystem,
         res: &mut GameResources,
         images: &mut Assets<Image>,
+        music: &mut Music,
         sounds: &mut Sounds,
     ) {
         if matches!(
@@ -782,8 +783,23 @@ impl Board {
             } else {
                 if self.waves.huge_wave_count_down == 725 {
                     sounds.play_sample("SOUND_HUGE_WAVE");
+                } else {
+                    // The drums come in a few bars before the wave
+                    // (`Music::StartBurst`), sooner on the night tune.
+                    let burst_at = match music.current_tune() {
+                        Some(MusicTune::NightMoongrains) => Some(700),
+                        Some(
+                            MusicTune::DayGrasswalk
+                            | MusicTune::PoolWaterygraves
+                            | MusicTune::FogRigormormist
+                            | MusicTune::RoofGrazetheroof,
+                        ) => Some(400),
+                        _ => None,
+                    };
+                    if burst_at == Some(self.waves.huge_wave_count_down) {
+                        music.start_burst();
+                    }
                 }
-                // TODO: the music's drum burst before the wave.
                 return;
             }
         }

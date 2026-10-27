@@ -11,6 +11,7 @@
 //! `Lawn/GridItem.cpp` (`DrawGraveStone`, `AddGraveStoneParticles`,
 //! `DrawCrater`), and `Board::AddACrater` and `GetCraterAt`.
 
+use bevy::prelude::*;
 use sexy::data_array::Id;
 use sexy::rand::MtRand;
 use sexy::tod::{TodCurve, animate_curve, animate_curve_float};
@@ -18,11 +19,12 @@ use sexy::tod::{TodCurve, animate_curve, animate_curve_float};
 use crate::audio::FoleyType;
 use crate::graphics::{Graphics, SexyRect};
 use crate::particle::ParticleEffect;
+use crate::reanim::ReanimationType;
 use crate::resources::GameResources;
 use crate::zombie::ZombieType;
 
-use super::zombie::Fx;
-use super::{Board, GridSquareType, MAX_GRID_SIZE_X, MAX_GRID_SIZE_Y, make_render_order, render_layer};
+use super::zombie::{Fx, IRect, Zombie, rect_overlap};
+use super::{Board, GridSquareType, MAX_GRID_SIZE_X, MAX_GRID_SIZE_Y, PlantRowType, make_render_order, render_layer};
 
 /// `GridItemType`, for what's ported so far.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +34,8 @@ pub enum GridItemType {
     Crater,
     /// A ladder zombie's ladder, leaning on a plant for zombies to climb over.
     Ladder,
+    /// The store's rake: swings at the first zombie to reach it.
+    Rake,
 }
 
 /// `GridItemState`, for what's ported so far.
@@ -40,6 +44,10 @@ pub enum GridItemState {
     Normal,
     /// The one grave per level drawn with the special look (`GRIDITEM_STATE_GRAVESTONE_SPECIAL`).
     GravestoneSpecial,
+    /// The rake waiting for a zombie (`GRIDITEM_STATE_RAKE_ATTRACTING`).
+    RakeAttracting,
+    /// The rake swinging; it goes once its countdown ends.
+    RakeTriggered,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +59,8 @@ pub struct GridItem {
     pub render_order: i32,
     /// `mGridItemCounter`: a grave rises from below 0 up to 100.
     counter: i32,
+    /// The rake's animation (`mGridItemReanimID`).
+    reanim: Option<crate::reanim::ReanimationId>,
     pub dead: bool,
 }
 
@@ -137,6 +147,7 @@ impl Board {
             grid_y,
             render_order: make_render_order(render_layer::GROUND, grid_y, 1),
             counter,
+            reanim: None,
             dead: false,
         });
     }
@@ -150,6 +161,7 @@ impl Board {
             grid_y,
             render_order: make_render_order(render_layer::PLANT, grid_y, 800),
             counter: 0,
+            reanim: None,
             dead: false,
         });
     }
@@ -165,8 +177,9 @@ impl GridItem {
             }
             GridItemType::Crater => (make_render_order(render_layer::GROUND, grid_y, 1), 18000),
             GridItemType::Ladder => (make_render_order(render_layer::PLANT, grid_y, 800), 0),
+            GridItemType::Rake => (make_render_order(render_layer::GRAVE_STONE, grid_y, 9), 0),
         };
-        Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter, dead: false }
+        Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter, reanim: None, dead: false }
     }
 }
 
@@ -215,6 +228,7 @@ impl Board {
             grid_y,
             render_order: make_render_order(render_layer::GRAVE_STONE, grid_y, 3),
             counter: -(rng.next_range(50) as i32),
+            reanim: None,
             dead: false,
         });
     }
@@ -337,12 +351,130 @@ impl Board {
         }
     }
 
+    /// `Board::PlaceRake`: the store's rake waits in column 7 of a random
+    /// walkable row, and swings at the first zombie that reaches it.
+    pub(super) fn place_rake(&mut self, fx: &mut Fx) {
+        if self.rake_count <= 0 || self.is_whack_a_zombie_level() || self.is_final_boss_level() {
+            return;
+        }
+        let rows: Vec<i32> = (0..MAX_GRID_SIZE_Y as i32)
+            .filter(|&row| row != 5 && self.plant_row[row as usize] == PlantRowType::Normal)
+            .collect();
+        let Some(&grid_y) = rows.get(fx.sounds.rng().next_range(rows.len() as u32) as usize) else { return };
+        self.rake_count -= 1;
+        let grid_x = 7;
+        let (x, y) = (self.grid_to_pixel_x(grid_x) as f32, self.grid_to_pixel_y(grid_x, grid_y) as f32);
+        // `CreateRakeReanim`: parked on its first frame until a zombie comes.
+        let reanim = fx
+            .effects
+            .add_reanimation(x + 20.0, y, ReanimationType::Rake, fx.res, fx.images)
+            .ok()
+            .map(|(id, reanim)| {
+                reanim.anim_rate = 0.0;
+                reanim.loop_type = sexy::reanim::LoopType::PlayOnceAndHold;
+                reanim.is_attachment = true;
+                id
+            });
+        self.grid_items.alloc(GridItem {
+            item_type: GridItemType::Rake,
+            state: GridItemState::RakeAttracting,
+            grid_x,
+            grid_y,
+            render_order: make_render_order(render_layer::GRAVE_STONE, grid_y, 9),
+            counter: 0,
+            reanim,
+            dead: false,
+        });
+    }
+
+    /// `GridItem::UpdateRake`: the rake swings at a zombie in its square and
+    /// is spent once the swing ends.
+    pub(super) fn update_rakes(&mut self, fx: &mut Fx) {
+        struct RakeAction {
+            id: Id<GridItem>,
+            target: Option<Id<Zombie>>,
+            state: GridItemState,
+            counter: i32,
+            reanim: Option<crate::reanim::ReanimationId>,
+        }
+        let actions: Vec<RakeAction> = self
+            .grid_items
+            .iter()
+            .filter(|(_, item)| item.item_type == GridItemType::Rake)
+            .map(|(id, item)| {
+                let foot = IRect::new(self.grid_to_pixel_x(item.grid_x), self.grid_to_pixel_y(item.grid_x, item.grid_y), 63, 80);
+                let target = self
+                    .zombies
+                    .iter()
+                    .find(|(_, z)| {
+                        !z.is_dead_or_dying()
+                            && !z.is_bobsled_team_with_sled()
+                            && z.row == item.grid_y
+                            && z.effected_by_damage(1)
+                            && rect_overlap(foot, z.zombie_rect()) >= 0
+                    })
+                    .map(|(id, _)| id);
+                RakeAction { id, target, state: item.state, counter: item.counter, reanim: item.reanim }
+            })
+            .collect();
+        let env = self.zombie_env();
+        // The rake is an attachment with no parent, so it's updated here
+        // (`GridItem::UpdateGridItem` calls its `Update`).
+        for action in &actions {
+            if let Some(id) = action.reanim {
+                fx.effects.update_reanimation(id);
+            }
+        }
+        for action in actions {
+            match action.state {
+                GridItemState::RakeAttracting => {
+                    if action.target.is_some() {
+                        if let Some(item) = self.grid_items.get_mut(action.id) {
+                            item.state = GridItemState::RakeTriggered;
+                            item.counter = 200;
+                        }
+                        if let Some(reanim) = action.reanim.and_then(|id| fx.effects.get_mut(id)) {
+                            reanim.anim_rate = 20.0;
+                        }
+                        fx.sounds.play_foley(FoleyType::Swing);
+                    }
+                }
+                GridItemState::RakeTriggered => {
+                    if let Some(target) = action.target
+                        && action.reanim.and_then(|id| fx.effects.get(id)).is_some_and(|r| r.should_trigger_timed_event(0.8))
+                        && let Some(zombie) = self.zombies.get_mut(target)
+                    {
+                        zombie.take_damage(1800, 0, &env, fx);
+                        fx.sounds.play_foley(FoleyType::Bonk);
+                    }
+                    let counter = action.counter - 1;
+                    if counter <= 0 {
+                        if let Some(item) = self.grid_items.get_mut(action.id) {
+                            item.dead = true;
+                        }
+                        if let Some(reanim) = action.reanim {
+                            fx.effects.kill(reanim);
+                        }
+                    } else if let Some(item) = self.grid_items.get_mut(action.id) {
+                        item.counter = counter;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// `GridItem::DrawGridItem`.
-    pub(super) fn draw_grid_item(&self, item: &GridItem, res: &GameResources, g: &mut Graphics) {
+    pub(super) fn draw_grid_item(&self, item: &GridItem, effects: &crate::reanim::EffectSystem, res: &GameResources, g: &mut Graphics) {
         match item.item_type {
             GridItemType::GraveStone => self.draw_grave_stone(item, res, g),
             GridItemType::Crater => self.draw_crater(item, res, g),
             GridItemType::Ladder => self.draw_ladder(item, res, g),
+            GridItemType::Rake => {
+                if let Some(reanim) = item.reanim.and_then(|id| effects.get(id)) {
+                    crate::reanim::draw_reanimation(g, reanim, res);
+                }
+            }
         }
     }
 

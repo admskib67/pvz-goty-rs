@@ -483,6 +483,14 @@ impl<D: std::ops::Deref<Target = ReanimDefinition>> Reanimation<D> {
         self.tracks[i].shake_override = amount;
     }
 
+    /// `ShowOnlyTrack`: draws this track and hides every other one.
+    pub fn show_only_track(&mut self, track: &str) {
+        let only = self.definition.find_track(track);
+        for (i, inst) in self.tracks.iter_mut().enumerate() {
+            inst.render_group = if Some(i) == only { RENDER_GROUP_NORMAL } else { RENDER_GROUP_HIDDEN };
+        }
+    }
+
     /// `GetTrackBasePoseMatrix`.
     pub fn track_base_pose_matrix(&self, track: usize) -> Matrix3 {
         if self.frame_base_pose == NO_BASE_POSE {

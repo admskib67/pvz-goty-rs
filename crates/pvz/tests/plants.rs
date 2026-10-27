@@ -277,6 +277,36 @@ fn ice_shroom_freezes_every_zombie() {
 }
 
 #[test]
+fn an_armed_potato_mine_glows_faster_as_a_zombie_nears() {
+    let mut t = test_board!("2-1");
+    let mine = t.plant(SeedType::Potatomine, 4, 2);
+    assert!(
+        t.run_until(2000, |b| b.plants.get(mine).is_some_and(|p| p.state() == PlantState::PotatoArmed)),
+        "the mine arms after its rise"
+    );
+    t.tick();
+    let slow = t.plant_ref(mine).unwrap().glow_frames(&t.effects).expect("the mine's glow");
+    assert_eq!(slow, 10, "with nothing near it beats slowly");
+
+    // A zombie 40 px past its reach: close enough to quicken the glow, not
+    // close enough to set the mine off.
+    let zombie = t.zombie(ZombieType::Normal, 2, 500.0);
+    t.tick();
+    let (attack_right, zombie_x) = {
+        let attack = t.plant_ref(mine).unwrap().attack_rect();
+        (attack.x + attack.w, t.zombie_ref(zombie).unwrap().zombie_rect().x)
+    };
+    let delta = attack_right + 40 - zombie_x;
+    if let Some(z) = t.board.zombies.get_mut(zombie) {
+        z.pos_x += delta as f32;
+        z.x += delta;
+    }
+    t.tick();
+    let fast = t.plant_ref(mine).unwrap().glow_frames(&t.effects).expect("it still glows");
+    assert_eq!(fast, 3, "a zombie at its edge makes it beat fast");
+}
+
+#[test]
 fn doom_shroom_destroys_widely_and_leaves_a_crater() {
     let mut t = test_board!("2-1");
     let zombies: Vec<_> = (0..5).map(|row| t.zombie(ZombieType::Normal, row, 450.0)).collect();

@@ -901,9 +901,16 @@ fn draw_overlay(
     // TODO: zen garden "needs water" bubble once the zen garden exists.
 
     if let Some(hand) = gs.hand_reanim.and_then(|id| effects.get(id)) {
-        // TODO: the original clips the hand to y < 560 (except its rocks);
-        // transformed draws don't clip yet.
+        // The hand goes down behind the lawn's edge; its rocks ignore the clip.
+        g.push_state();
+        g.clip_rect(
+            0.0,
+            0.0,
+            crate::board::BOARD_WIDTH as f32,
+            (crate::board::BOARD_HEIGHT - 40) as f32,
+        );
         draw_reanimation(g, hand, resources);
+        g.pop_state();
     }
     if let Some(leaf) = effects.get(gs.leaf_reanim) {
         draw_reanimation(g, leaf, resources);

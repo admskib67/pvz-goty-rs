@@ -101,9 +101,10 @@ impl SeedPacket {
         if board.scene != GameScene::Playing {
             grayness = board.seed_bank.cut_scene_darken;
             percent_dark = 0.0;
-        } else if (board.tutorial_state == super::TutorialState::Level1PickUpPeashooter
-            && board.tutorial_timer == -1
-            && seed == SeedType::Peashooter)
+        } else if board.tutorial_state == super::TutorialState::WhackPickSeed
+            || (board.tutorial_state == super::TutorialState::Level1PickUpPeashooter
+                && board.tutorial_timer == -1
+                && seed == SeedType::Peashooter)
             || (board.tutorial_state.is_sunflower_pick_up() && seed == SeedType::Sunflower)
         {
             grayness = flashing_gray(board.main_counter, 75);

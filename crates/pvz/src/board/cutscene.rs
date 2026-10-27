@@ -3,8 +3,8 @@
 //! levels and the lawn mowers roll in before play starts.
 //!
 //! Times are in hundredths of a second (`mCutsceneTime` advances by 10 per
-//! tick). On night levels the graves rise out of the lawn after the pan.
-//! Not yet ported: fog and the boss.
+//! tick). On night levels the graves rise out of the lawn after the pan, and
+//! the fog rolls back in on foggy ones.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/CutScene.cpp`: `StartLevelIntro`,
 //! `Update`, `AnimateBoard`, `PlaceLawnItems`, `ShowShovel`,
@@ -44,12 +44,16 @@ const TIME_SEED_BANK_RIGHT_END: i32 = 6000;
 const TIME_ROLL_SOD_START: i32 = 6000;
 const TIME_ROLL_SOD_END: i32 = 8000;
 const TIME_READY_SET_PLANT_START: i32 = 6000;
+/// `TimeFogRollIn`: when the fog starts coming back in during the intro.
+const TIME_FOG_ROLL_IN: i32 = 5950;
 const TIME_READY_SET_PLANT_END: i32 = 7830;
 const TIME_INTRO_END: i32 = 6000;
 const TIME_GRAVE_STONE_START: i32 = 6000;
 const TIME_GRAVE_STONE_END: i32 = 7000;
 const TIME_LAWN_MOWER_DURATION: i32 = 250;
 const LOST_TIME_BRAIN_GRAPHIC_START: i32 = 6000;
+const LOST_TIME_BRAIN_GRAPHIC_SHAKE: i32 = 7000;
+const LOST_TIME_BRAIN_GRAPHIC_CANCEL_SHAKE: i32 = 8000;
 const LOST_TIME_BRAIN_GRAPHIC_END: i32 = 11000;
 const LOST_TIME_END: i32 = 11000;
 const TIME_LAWN_MOWER_START: [i32; 6] = [6300, 6250, 6200, 6150, 6100, 6050];
@@ -163,8 +167,14 @@ pub(super) fn crazy_dave_dialog_start(board: &Board) -> i32 {
         // Behaviour per ruslan831 decomp, CutScene::StartLevelIntro: 4-1's
         // fog story, and 5-1's roof warning.
         801
+    } else if level == super::fog::STORMY_NIGHT_LEVEL {
+        // 4-5's stormy night: he warns about the lightning.
+        1101
     } else if first_time && level == 41 {
         1201
+    } else if !first_time && level == 1 {
+        // Back at the start: he reminds the player how the game works.
+        1601
     } else if board.is_final_boss_level() {
         // Behaviour per ruslan831 decomp, CutScene::StartLevelIntro: on the
         // last level he warns about the boss and is carried off. (The
@@ -176,7 +186,15 @@ pub(super) fn crazy_dave_dialog_start(board: &Board) -> i32 {
 }
 
 /// `CutScene::StartLevelIntro`.
-pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Music, player_name: &str) {
+pub fn start_level_intro(
+    board: &mut Board,
+    effects: &mut EffectSystem,
+    res: &mut GameResources,
+    images: &mut Assets<Image>,
+    music: &mut Music,
+    sounds: &mut Sounds,
+    player_name: &str,
+) {
     let seed_bank_height = res.image("IMAGE_SEEDBANK").map_or(0, |i| i.height as i32);
     board.seed_bank.x = SEED_BANK_OFFSET_X;
     board.seed_bank.y = -seed_bank_height;
@@ -193,6 +211,7 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
     // Whack-a-zombie's graves come up when Crazy Dave says so.
     let graves = board.stage_has_grave_stones() && !whack;
     let dave_start = crazy_dave_dialog_start(board);
+    let stage_has_fog = board.stage_has_fog();
     board.enable_grave_stones = false;
     let cs = &mut board.cut_scene;
     *cs = CutScene::default();
@@ -219,7 +238,11 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
         // He's taken a good while: the bungee carries him off.
         cs.crazy_dave_time += 4000;
     }
-    cs.fog_time = 0;
+    cs.fog_time = if stage_has_fog {
+        TIME_FOG_ROLL_IN - cs.sod_time - cs.lawn_mower_time - TIME_READY_SET_PLANT_START + 2000
+    } else {
+        0
+    };
     cs.boss_time = if level == super::FINAL_LEVEL && board.mode == GameMode::Adventure { 4000 } else { 0 };
 
     board.x = if cs.is_scrolled_left_at_start() { BOARD_OFFSET } else { 0 };
@@ -238,7 +261,7 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
     }
     if non_scrolling {
         // IsNonScrollingCutscene with no Crazy Dave: CancelIntro.
-        start_non_scrolling_intro(board);
+        start_non_scrolling_intro(board, effects, res, images, sounds);
         return;
     }
 
@@ -255,8 +278,14 @@ pub fn start_level_intro(board: &mut Board, res: &GameResources, music: &mut Mus
 
 /// `CutScene::CancelIntro` for levels that don't scroll: the lawn is set up
 /// and play starts in a moment.
-fn start_non_scrolling_intro(board: &mut Board) {
-    place_lawn_items(board);
+fn start_non_scrolling_intro(
+    board: &mut Board,
+    effects: &mut EffectSystem,
+    res: &mut GameResources,
+    images: &mut Assets<Image>,
+    sounds: &mut Sounds,
+) {
+    place_lawn_items(board, effects, res, images, sounds);
     board.enable_grave_stones = true;
     board.x = 0;
     board.show_bowling_line = board.is_wallnut_bowling_level();
@@ -343,7 +372,17 @@ pub fn update_zombies_won(
         }
         sounds.play_foley(FoleyType::Scream);
     }
-    // TODO: the brains graphic shakes between 7000 and 8000 (SetShakeOverride).
+    // The brains graphic jitters while it's being eaten.
+    if time == LOST_TIME_BRAIN_GRAPHIC_SHAKE
+        && let Some(reanim) = cs.zombies_won_reanim.and_then(|id| effects.get_mut(id))
+    {
+        reanim.set_shake_override("ZombiesWon", 1.0);
+    }
+    if time == LOST_TIME_BRAIN_GRAPHIC_CANCEL_SHAKE
+        && let Some(reanim) = cs.zombies_won_reanim.and_then(|id| effects.get_mut(id))
+    {
+        reanim.set_shake_override("ZombiesWon", 0.0);
+    }
     if time == LOST_TIME_BRAIN_GRAPHIC_END
         && let Some(reanim) = cs.zombies_won_reanim.and_then(|id| effects.get_mut(id))
     {
@@ -363,13 +402,20 @@ fn show_shovel(board: &mut Board) {
 }
 
 /// `CutScene::PlaceLawnItems`.
-fn place_lawn_items(board: &mut Board) {
+fn place_lawn_items(
+    board: &mut Board,
+    effects: &mut EffectSystem,
+    res: &mut GameResources,
+    images: &mut Assets<Image>,
+    sounds: &mut Sounds,
+) {
     if board.cut_scene.placed_lawn_items {
         return;
     }
     board.cut_scene.placed_lawn_items = true;
     board.init_lawn_mowers();
-    // TODO: the rake.
+    let mut fx = super::zombie::Fx { effects, res, images, sounds };
+    board.place_rake(&mut fx);
 }
 
 /// `CutScene::AddFlowerPots`: the roof starts with pots in its first columns.
@@ -594,7 +640,7 @@ fn animate_board(
 
     // The final boss level sets up its lawn before anything else.
     if time == pan_left_start || (board.is_final_boss_level() && time > 0) {
-        place_lawn_items(board);
+        place_lawn_items(board, effects, res, images, sounds);
         add_flower_pots(board, effects, res, images, sounds);
     }
 
@@ -605,6 +651,14 @@ fn animate_board(
     }
     if board.is_final_boss_level() && time == bank_on_start {
         music.make_sure_music_is_playing(board.game_music());
+    }
+
+    // The fog rolls back in as the scene is revealed.
+    if board.fog.blown_count_down > 0 && time > TIME_FOG_ROLL_IN + cs.sod_time + cs.grave_stone_time + dave {
+        if board.fog.blown_count_down > 200 {
+            board.fog.blown_count_down = 200;
+        }
+        board.fog.blown_count_down -= 1;
     }
 
     // The mowers roll in, bottom row first.

@@ -533,6 +533,16 @@ fn handle_dialog_events(
                 commands.insert_resource(LoadSavedGame(false));
                 app.next_state.set(AppState::Board);
             }
+            // `GameOverDialog`: Try Again (the footer) starts the level over,
+            // its top-right button goes back to the main menu.
+            DialogEvent::Button(DialogId::GameOver, button) => {
+                app.dialogs.kill_dialog(DialogId::GameOver);
+                if button == DialogButton::Yes {
+                    app.next_state.set(AppState::Board);
+                } else {
+                    app.do_back_to_main(board.as_deref());
+                }
+            }
             DialogEvent::Button(id, DialogButton::Yes) => app.button_depress(id, true, board.as_deref()),
             DialogEvent::Button(id, DialogButton::No) => app.button_depress(id, false, board.as_deref()),
             DialogEvent::Button(DialogId::UserDialog, b) => app.user_dialog_button(b),

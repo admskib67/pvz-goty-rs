@@ -826,7 +826,7 @@ pub fn draw_reanimator_frame(
     draw_reanimation(g, &reanim, resources);
 }
 
-fn to_affine(m: Matrix3) -> Affine2 {
+pub(crate) fn to_affine(m: Matrix3) -> Affine2 {
     Affine2::from_cols_array(&[m.m00, m.m10, m.m01, m.m11, m.m02, m.m12])
 }
 

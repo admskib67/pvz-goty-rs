@@ -299,6 +299,10 @@ pub struct Plant {
     pub on_bungee: OnBungee,
     /// The plantern's glow over the fog.
     light: Option<ParticleSystemId>,
+    /// Lit up under the shovel's cursor (`mHighlighted`).
+    pub highlighted: bool,
+    /// The potato mine's glow as a zombie nears (`mLightReanimID`).
+    glow: Option<ReanimationId>,
     /// The squash's square, where it jumps from (`mStartRow` and its column).
     home: (i32, i32),
     /// The zombie it's jumping on (`mTargetZombieID`) and the x it jumps to.
@@ -406,6 +410,8 @@ impl Plant {
             on_water: false,
             bob: 0.0,
             light: None,
+            highlighted: false,
+            glow: None,
             blink_countdown: 0,
             launch_rate: def.launch_rate,
             launch_counter: 0,
@@ -680,7 +686,7 @@ impl Plant {
                 self.set_sleeping(false, effects, res, images, rng);
             }
         }
-        self.update_abilities(zombies, actions, effects, row_y, open_rows, rng);
+        self.update_abilities(zombies, actions, effects, res, images, row_y, open_rows, rng);
         self.animate(actions, effects, res, images, rng);
         if self.health < 0 {
             self.die(effects);
@@ -909,7 +915,15 @@ impl Plant {
     }
 
     /// `Plant::UpdatePotato`.
-    fn update_potato(&mut self, zombies: &DataArray<Zombie>, actions: &mut Vec<PlantAction>, effects: &mut EffectSystem, rng: &mut MtRand) {
+    fn update_potato(
+        &mut self,
+        zombies: &DataArray<Zombie>,
+        actions: &mut Vec<PlantAction>,
+        effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
+        rng: &mut MtRand,
+    ) {
         match self.state {
             PlantState::NotReady => {
                 if self.state_countdown == 0 {
@@ -924,12 +938,37 @@ impl Plant {
                 if self.body.and_then(|b| effects.get(b)).is_some_and(|b| b.loop_count > 0) {
                     let rate = rng.range_f32(12.0, 15.0);
                     self.play_body_reanim(effects, "anim_armed", LoopType::Loop, 0, rate);
-                    // TODO: the glow that grows as a zombie nears (anim_glow).
+                    // Its light shows through the dirt, beating faster as a
+                    // zombie comes close (`anim_glow`, attached to `anim_light`).
+                    let ty = self.seed.definition().reanim;
+                    let glow = effects.add_reanimation(0.0, 0.0, ty, res, images).ok().map(|(id, light)| {
+                        light.loop_type = LoopType::Loop;
+                        light.anim_rate = rate - 2.0;
+                        light.set_frames_for_layer("anim_glow");
+                        light.frame_count = 10;
+                        light.show_only_track("anim_glow");
+                        light.set_truncate_disappearing_frames(Some("anim_glow"), false);
+                        light.render_order = self.render_order + 2;
+                        id
+                    });
+                    if let Some(id) = glow {
+                        if let Some(body) = self.body {
+                            effects.attach_to_another(id, body, "anim_light");
+                        }
+                        self.glow = Some(id);
+                    }
                     self.state = PlantState::PotatoArmed;
                     self.blink_countdown = 400 + rng.next_range(4000) as i32;
                 }
             }
-            PlantState::PotatoArmed if self.find_potato_target(zombies) => self.do_special(actions, effects),
+            PlantState::PotatoArmed => {
+                if self.find_potato_target(zombies) {
+                    self.do_special(actions, effects);
+                } else if let Some(glow) = self.glow.and_then(|g| effects.get_mut(g)) {
+                    let distance = self.distance_to_closest_zombie(zombies);
+                    glow.frame_count = animate_curve(200, 50, distance, 10, 3, TodCurve::Linear) as usize;
+                }
+            }
             _ => {}
         }
     }
@@ -1027,7 +1066,7 @@ impl Plant {
     /// `Plant::FindTargetZombie` for the potato mine: a zombie on its square
     /// (or biting something next to it).
     fn find_potato_target(&self, zombies: &DataArray<Zombie>) -> bool {
-        let attack = IRect::new(self.x, self.y, PLANT_SIZE - 25, PLANT_SIZE);
+        let attack = self.attack_rect();
         zombies.iter().any(|(_, z)| {
             if !z.in_row(self.row) || !z.effected_by_damage(77) || !z.has_head || z.is_vaulting() {
                 return false;
@@ -1035,6 +1074,22 @@ impl Plant {
             let extra = if z.is_eating { 30 } else { 0 };
             rect_overlap(attack, z.zombie_rect()) >= -extra
         })
+    }
+
+    /// `Plant::DistanceToClosestZombie`: how far the closest zombie in the row
+    /// is from what the plant can reach (0 when it's in reach), 1000 if none.
+    fn distance_to_closest_zombie(&self, zombies: &DataArray<Zombie>) -> i32 {
+        let attack = self.attack_rect();
+        let mut closest = 1000;
+        for (_, z) in zombies.iter() {
+            if z.row == self.row && z.effected_by_damage(77) {
+                let distance = -rect_overlap(attack, z.zombie_rect());
+                if distance < closest {
+                    closest = distance.max(0);
+                }
+            }
+        }
+        closest
     }
 
     /// `Plant::DoSpecial`, for the instant and mine plants.
@@ -1099,6 +1154,12 @@ impl Plant {
         self.body
     }
 
+    /// How many frames the potato mine's glow cycles through (tests).
+    #[cfg(test)]
+    pub(crate) fn glow_frames(&self, effects: &EffectSystem) -> Option<usize> {
+        self.glow.and_then(|g| effects.get(g)).map(|r| r.frame_count)
+    }
+
     /// `Plant::GetPlantAttackRect`, for the plants ported so far.
     pub(super) fn attack_rect(&self) -> IRect {
         self.attack_rect_for(Weapon::Primary)
@@ -1119,6 +1180,7 @@ impl Plant {
             SeedType::Fumeshroom => IRect::new(self.x + 60, self.y, 340, PLANT_SIZE),
             SeedType::Gloomshroom => IRect::new(self.x - 80, self.y - 80, 240, 240),
             SeedType::Squash => IRect::new(self.x + 20, self.y, PLANT_SIZE - 35, PLANT_SIZE),
+            SeedType::Potatomine => IRect::new(self.x, self.y, PLANT_SIZE - 25, PLANT_SIZE),
             SeedType::Spikeweed | SeedType::Spikerock => IRect::new(self.x + 20, self.y, PLANT_SIZE - 50, PLANT_SIZE),
             SeedType::Tanglekelp => IRect::new(self.x + 20, self.y, PLANT_SIZE - 50, PLANT_SIZE),
             SeedType::Torchwood => IRect::new(self.x + 50, self.y, 30, PLANT_SIZE),
@@ -1127,11 +1189,14 @@ impl Plant {
     }
 
     /// `Plant::UpdateAbilities`.
+    #[allow(clippy::too_many_arguments, reason = "it hands the plant's update what each ability needs")]
     fn update_abilities(
         &mut self,
         zombies: &DataArray<Zombie>,
         actions: &mut Vec<PlantAction>,
         effects: &mut EffectSystem,
+        res: &mut GameResources,
+        images: &mut Assets<Image>,
         row_y: &[i32; super::MAX_GRID_SIZE_Y],
         open_rows: &[bool; super::MAX_GRID_SIZE_Y],
         rng: &mut MtRand,
@@ -1148,7 +1213,7 @@ impl Plant {
             return;
         }
         if self.seed == SeedType::Potatomine {
-            self.update_potato(zombies, actions, effects, rng);
+            self.update_potato(zombies, actions, effects, res, images, rng);
         }
         if self.seed == SeedType::Chomper {
             self.update_chomper(zombies, actions, effects);
@@ -2564,11 +2629,17 @@ impl Plant {
         if let Some(body) = effects.get_mut(body) {
             body.set_position(offset_x, offset_y);
             body.override_scale(scale_x, scale_y);
-            // UpdateReanimColor: a bitten plant flashes.
-            body.extra_additive = (self.eaten_flash_countdown > 0).then(|| {
-                let gray = (self.eaten_flash_countdown * 3).clamp(0, 255) as u8;
-                [gray, gray, gray, 255]
-            });
+            // UpdateReanimColor: highlighted under the shovel, or a bitten
+            // plant flashing.
+            body.extra_additive = if self.highlighted {
+                let alpha = if self.imitater_type.is_some() { 92 } else { 196 };
+                Some([255, 255, 255, alpha])
+            } else {
+                (self.eaten_flash_countdown > 0).then(|| {
+                    let gray = (self.eaten_flash_countdown * 3).clamp(0, 255) as u8;
+                    [gray, gray, gray, 255]
+                })
+            };
         }
     }
 
@@ -2614,12 +2685,37 @@ impl Plant {
                 "anim_blink_thrice"
             };
         }
-        // Peashooters blink on their head; most plants on their body.
-        // TODO: the threepeater's, split pea's and twin sunflower's several faces.
-        let attach_to = match self.seed {
-            Peashooter | Snowpea | Repeater | Leftpeater | Gatlingpea | Splitpea => self.head,
+        // Plants with several heads blink a random one, on that head's face
+        // track; peashooters blink on their head, the rest on their body.
+        let mut face_track = None;
+        let mut attach_to = match self.seed {
+            Peashooter | Snowpea | Repeater | Leftpeater | Gatlingpea => self.head,
             _ => Some(body_id),
         };
+        match self.seed {
+            Threepeater => {
+                let (head, blink, face) = match rng.next_range(3) {
+                    0 => (self.head, "anim_blink1", "anim_face1"),
+                    1 => (self.extra_heads[0], "anim_blink2", "anim_face2"),
+                    _ => (self.extra_heads[1], "anim_blink3", "anim_face3"),
+                };
+                track_to_play = blink;
+                face_track = Some(face);
+                if head.is_some() {
+                    attach_to = head;
+                }
+            }
+            Splitpea => {
+                let front = rng.next_range(2) == 0;
+                attach_to = if front { self.head } else { self.extra_heads[0] };
+                face_track = Some("anim_face");
+            }
+            Twinsunflower => {
+                (track_to_play, face_track) =
+                    if rng.next_range(2) == 0 { ("anim_blink", Some("anim_face")) } else { ("anim_blink2", Some("anim_face2")) };
+            }
+            _ => {}
+        }
         let Some(attach_to) = attach_to else { return };
         if !has_track(track_to_play) {
             return;
@@ -2631,8 +2727,15 @@ impl Plant {
         blink.loop_type = LoopType::PlayOnceFullLastFrameAndHold;
         blink.anim_rate = 15.0;
         blink.color_override = color;
+        let wanted = face_track.unwrap_or("anim_face");
         let face = effects.get(attach_to).map(|r| {
-            if r.definition.find_track("anim_face").is_some() { "anim_face" } else { "anim_idle" }
+            if r.definition.find_track(wanted).is_some() {
+                wanted
+            } else if r.definition.find_track("anim_face").is_some() {
+                "anim_face"
+            } else {
+                "anim_idle"
+            }
         });
         if let Some(face) = face {
             effects.attach_to_another(blink_id, attach_to, face);
@@ -2665,7 +2768,15 @@ impl Plant {
     pub fn die(&mut self, effects: &mut EffectSystem) {
         self.dead = true;
         let extra_heads = std::mem::take(&mut self.extra_heads);
-        let owned = [self.body.take(), self.head.take(), self.blink.take(), self.sleeping.take(), extra_heads[0], extra_heads[1]];
+        let owned = [
+            self.body.take(),
+            self.head.take(),
+            self.blink.take(),
+            self.sleeping.take(),
+            self.glow.take(),
+            extra_heads[0],
+            extra_heads[1],
+        ];
         for id in owned.into_iter().flatten() {
             effects.kill(id);
         }
