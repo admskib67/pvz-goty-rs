@@ -35,7 +35,7 @@ mod plant;
 mod save;
 mod scary_potter;
 pub(crate) use save::{
-    board_from_save, erase_save, has_save, load_save_data, need_save_game, save_dir, try_to_save_game,
+    board_from_save, erase_save, has_save, has_save_for, load_save_data, need_save_game, save_dir, try_to_save_game, ContinueMode,
 };
 pub(crate) mod pool;
 pub use beghouled::Beghouled;
@@ -512,6 +512,11 @@ pub struct Board {
     /// `mNextSurvivalStageCounter`: ticks of the "more zombies" pause
     /// between two survival stages.
     pub next_survival_stage_counter: i32,
+    /// Between-stage seed repick (`CutScene::IsSurvivalRepick`): the chooser
+    /// is open and the next stage's waves wait for it.
+    pub survival_repick: bool,
+    /// The repick chooser just closed; start its stage on this tick.
+    pending_survival_repick_start: bool,
     /// It's Raining Seeds: ticks until the next packet falls.
     raining_seeds_counter: i32,
     /// It's Raining Seeds: ticks between rain splashes.
@@ -767,6 +772,8 @@ impl Board {
             level,
             survival_stage: 0,
             next_survival_stage_counter: 0,
+            survival_repick: false,
+            pending_survival_repick_start: false,
             raining_seeds_counter: if mode == GameMode::MiniGame(MiniGame::RainingSeeds) { 100 } else { 0 },
             rain_splash_counter: 0,
             portal_relocate_counter: 0,
@@ -963,12 +970,13 @@ impl Board {
     /// A fresh board for a save file's level, before the save is applied.
     /// Like `--lvl`, the shape is a copy of the player on that level.
     pub(super) fn new_for_save(
+        mode: GameMode,
         shape: PlayerInfo,
         resources: &mut GameResources,
         images: &mut Assets<Image>,
         rng: &mut sexy::rand::MtRand,
     ) -> Self {
-        Self::new(GameMode::Adventure, Some(&shape), resources, images, rng)
+        Self::new(mode, Some(&shape), resources, images, rng)
     }
 
     /// `Board::PickBackground` (adventure mode) and `LoadBackgroundImages`.
@@ -1320,12 +1328,12 @@ fn new_game(
     let from_save = load.as_deref().is_some_and(|l| l.0);
     commands.remove_resource::<LoadSavedGame>();
     if from_save
-        && mode == GameMode::Adventure
+        && matches!(mode, GameMode::Adventure | GameMode::Survival { .. })
         && let Some(dir) = save_dir()
         && let Some(id) = profiles.player().map(|p| p.id)
-        && let Some(data) = load_save_data(&dir, id, GameMode::Adventure)
+        && let Some(data) = load_save_data(&dir, id, mode)
         && let Some(board) =
-            board_from_save(&data, &profiles, &mut resources, &mut images, &mut effects, &mut sounds)
+            board_from_save(&data, mode, &profiles, &mut resources, &mut images, &mut effects, &mut sounds)
     {
         // Like Board::LoadGame: straight into the level, no intro.
         music.stop_all_music();
@@ -1344,7 +1352,7 @@ fn new_game(
     // PreNewGame erases the mode's save before a fresh game (never for a
     // `--lvl` copy, which must leave the player's save alone).
     if !board.level_overridden
-        && board.mode == GameMode::Adventure
+        && matches!(board.mode, GameMode::Adventure | GameMode::Survival { .. })
         && let Some(dir) = save_dir()
         && let Some(id) = profiles.player().map(|p| p.id)
     {
@@ -1458,6 +1466,14 @@ fn update_board(
     // LawnApp::NeedPauseGame: an open dialog pauses the game.
     board.paused = dialogs.is_modal();
     let outcome = board.tick(&mut effects, &mut resources, &mut images, &mut music, &mut sounds);
+    // `Board::UpdateLevelEndSequence`: TryToSaveGame one tick before the
+    // between-stage repick, so quitting there resumes the run.
+    if board.next_survival_stage_counter == 1
+        && board.is_survival()
+        && let Some(dir) = crate::board::save_dir()
+    {
+        let _ = crate::board::try_to_save_game(board, &profiles, &dir);
+    }
     for (seen, &now) in defeated.0.iter_mut().zip(&board.defeated_zombies) {
         *seen |= now;
     }
@@ -1508,7 +1524,7 @@ fn update_board(
         commands.insert_resource(BoardResult::Lost);
         // The run is over: no Continue from a lost level.
         if !board.level_overridden
-            && board.mode == GameMode::Adventure
+            && matches!(board.mode, GameMode::Adventure | GameMode::Survival { .. })
             && let Some(dir) = save_dir()
             && let Some(id) = profiles.player().map(|p| p.id)
         {
@@ -1532,7 +1548,7 @@ fn update_board(
         // LawnApp::CheckForGameEnd: the award screen shows what was won.
         // The run is over: a finished level leaves no save behind.
         if !board.level_overridden
-            && board.mode == GameMode::Adventure
+            && matches!(board.mode, GameMode::Adventure | GameMode::Survival { .. })
             && let Some(dir) = save_dir()
             && let Some(id) = profiles.player().map(|p| p.id)
         {
@@ -1589,6 +1605,15 @@ impl Board {
         }
         cutscene::update(self, effects, resources, images, music, sounds);
         self.update_seed_chooser();
+        if self.pending_survival_repick_start {
+            self.pending_survival_repick_start = false;
+            self.start_repicked_stage(effects, resources, images, sounds, music);
+        }
+        if self.survival_repick {
+            // The lawn is frozen while the player re-picks seeds; the next
+            // stage starts when CloseSeedChooser runs.
+            return outcome;
+        }
         if self.paused {
             return outcome;
         }
@@ -1651,7 +1676,7 @@ impl Board {
         if std::mem::take(&mut self.boss_music_fade) {
             music.fade_out(200);
         }
-        self.update_level_end_sequence(effects, resources, images, sounds);
+        self.update_level_end_sequence(effects, resources, images, sounds, music);
         self.process_delete_queue();
         outcome.game_over = std::mem::take(&mut self.pending_game_over);
         outcome.unlocked = self.pending_unlock.take();

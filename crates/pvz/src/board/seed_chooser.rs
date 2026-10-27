@@ -182,6 +182,26 @@ impl SeedChooser {
         self.imitater_panel
     }
 
+    /// Fills the bank with the first `count` choosable seeds, for tests that
+    /// need the chooser's Close path without clicking every packet.
+    #[cfg(test)]
+    pub fn fill_bank(&mut self, count: usize) {
+        let mut filled = 0;
+        for (index, seed) in self.seeds.iter_mut().enumerate() {
+            if filled == count {
+                break;
+            }
+            if seed.state != ChosenSeedState::InChooser || seed.imitater_slot {
+                continue;
+            }
+            seed.state = ChosenSeedState::InBank;
+            seed.index_in_bank = filled;
+            filled += 1;
+            let _ = index;
+        }
+        self.in_bank = filled;
+    }
+
     /// `LandFlyingSeed`.
     fn land(seed: &mut ChosenSeed, in_flight: &mut i32) {
         match seed.state {
@@ -505,6 +525,14 @@ impl Board {
         }
         chooser.mouse_visible = false;
         self.cut_scene.end_seed_choosing();
+        // `CutScene::IsSurvivalRepick` ends here; the board starts the stage
+        // on its next tick (it has the assets for the flash).
+        if self.survival_repick {
+            self.survival_repick = false;
+            self.seed_chooser = None;
+            self.cut_scene.seed_choosing = false;
+            self.pending_survival_repick_start = true;
+        }
     }
 
     /// `SeedChooserScreen::Draw`, in screen coordinates.

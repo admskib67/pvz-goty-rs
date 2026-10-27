@@ -553,6 +553,7 @@ impl GameSelector {
                 let save = crate::board::save_dir()
                     .is_some_and(|dir| profiles.player().is_some_and(|p| crate::board::has_save(&dir, p.id)));
                 if save {
+                    commands.insert_resource(crate::board::ContinueMode(crate::board::GameMode::Adventure));
                     do_continue_dialog(dialogs, resources, true);
                 } else {
                     self.clicked_adventure(effects, resources, images, music, sounds);

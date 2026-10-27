@@ -26,7 +26,7 @@ use crate::dialog::{ButtonMode, DialogId, Dialogs};
 use crate::graphics::{Graphics, Justify, SexyColor, SexyRect};
 use crate::input::GameCursor;
 use crate::install::userdata_dir;
-use crate::lawn_app::lawn_message_box;
+use crate::lawn_app::{do_continue_dialog, lawn_message_box};
 use crate::player::ProfileMgr;
 use crate::resources::GameResources;
 use crate::widgets::LabelButton;
@@ -421,8 +421,19 @@ fn challenge_input(
                 }
                 let Some((lawn, difficulty)) = mode_for(index) else { return };
                 sounds.play_sample("SOUND_GRAVEBUTTON");
-                commands.insert_resource(SelectedMode(Some(GameMode::Survival { lawn, difficulty })));
-                next_state.set(AppState::Board);
+                let mode = GameMode::Survival { lawn, difficulty };
+                commands.insert_resource(SelectedMode(Some(mode)));
+                // Each survival tile has its own saved run
+                // (`GetSavedGameName(mode, profile)`).
+                let save = crate::board::save_dir().is_some_and(|dir| {
+                    crate::board::has_save_for(&dir, player.id, mode)
+                });
+                if save {
+                    commands.insert_resource(crate::board::ContinueMode(mode));
+                    do_continue_dialog(&mut dialogs, &resources, false);
+                } else {
+                    next_state.set(AppState::Board);
+                }
                 return;
             }
         }

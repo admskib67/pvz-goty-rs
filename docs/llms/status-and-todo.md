@@ -21,14 +21,14 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
   - Vasebreaker (9 + endless): pots per the decomp tables, broken for usable seed packets, zombies or 1–3 suns; leaf hints, night lawn, no seed bank/mowers/waves, endless repopulates and keeps its best streak.
   - I, Zombie (9 + endless): 5 brains, pre-placed plants per level, zombie packets (cached zombie art and decomp costs) placed on the player's side of the line (bungees on the other), brain eating with the 50-sun loss rule, endless reuses level 9's layout with its streak.
   - Not ported in this area: the Vasebreaker mallet animation and plantern "see inside" transparency; the endless I, Zombie random formations (level 9's layout is reused).
-- **Saving a level in progress** (`board::save`, `tests/save.rs`): leaving through the menu, or quitting the app, saves an adventure level in progress (`TryToSaveGame`/`NeedSaveGame`, `userdata/game{id}_{mode}.dat` as TOML); Adventure offers the Continue dialog (resume, or erase and restart); winning, losing, restarting or starting fresh erases it; `--lvl` copies never save; deleting a profile deletes its saves.
+- **Saving a level in progress** (`board::save`, `tests/save.rs`): leaving through the menu, or quitting the app, saves an adventure or survival run (`TryToSaveGame`/`NeedSaveGame`, `userdata/game{id}_{mode}.dat` as TOML); survival also checkpoints one tick before each between-stage repick. Adventure offers the Continue dialog from its button, and each survival tile offers its own (resume, or erase and start over); winning, losing, restarting or starting fresh erases the run; `--lvl` copies never save; deleting a profile deletes its saves.
 - Windows: builds, setup screen and resource loading verified; everything else untested there.
 
 ## Missing: large pieces
 
 | Area | Notes |
 |------|-------|
-| **Game modes** | `GameMode` has `Adventure`, `Intro`, `Survival`, `MiniGame` and `Puzzle`; adventure, all 20 mini-games, and the puzzle page (Vasebreaker + I, Zombie, 18 trophies) are playable. Left: survival's between-stage seed repick, saved runs, and the listed polish items. |
+| **Game modes** | `GameMode` has `Adventure`, `Intro`, `Survival`, `MiniGame` and `Puzzle`; adventure, all 20 mini-games, and the puzzle page (Vasebreaker + I, Zombie, 18 trophies) are playable. Survival has its between-stage seed repick (music fades out and back in), per-mode saved runs, and the per-tile Continue dialog. |
 | **Zen Garden** | done: three gardens, needs/tools, chocolate, Stinky, wheelbarrow, sales, shop, menu bubble, Dave's tutorial and potted-plant/chocolate drops from zombies. |
 | **Tree of Wisdom** | done: growth, tree food, speech (shop and garden both lead there). |
 | **Achievements** | none. |
@@ -57,8 +57,9 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 
 ## Suggested order
 
-1. Achievements.
-2. Windows visual pass and `.au` decoder; Linux.
+1. Achievements (needs GOTY-specific work; the decomp has no implementation).
+2. Presentation polish: attached particles, boss smoke, survival stage music fade.
+3. Windows visual pass and `.au` decoder; Linux.
 
 ## Code TODO index
 

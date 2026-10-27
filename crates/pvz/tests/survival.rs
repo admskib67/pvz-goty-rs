@@ -95,7 +95,19 @@ fn clearing_a_stage_brings_the_next_one_after_the_advice() {
         "the mower killing the last zombie clears the stage"
     );
     assert!(t.board.zombies.get(zombie).is_none_or(|z| z.is_dead_or_dying()));
-    assert!(t.run_until(700, |b| b.survival_stage == 1), "the next stage begins");
+    assert!(
+        t.run_until(700, |b| b.survival_stage == 1 && b.survival_repick),
+        "the next stage opens the seed chooser"
+    );
+    assert!(t.board.seed_chooser.is_some(), "the chooser is up");
+    // Pick the first packets and press Start, as the player would.
+    t.with(|board, _, _, _, _| {
+        let count = board.seed_bank.num_packets;
+        board.seed_chooser.as_mut().expect("repick chooser").fill_bank(count);
+        assert!(board.seed_chooser_start().is_none(), "no warnings for the default picks");
+    });
+    t.tick();
+    assert!(!t.board.survival_repick, "the chooser closed");
     assert_eq!(t.board.waves.current_wave, 0, "its waves start over");
     assert_eq!(t.board.waves.num_waves, 10);
     assert!(!t.board.has_level_award_dropped(), "no award between stages");

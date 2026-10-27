@@ -13,7 +13,8 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use crate::audio::{Music, Sounds};
-use crate::board::{Board, LoadSavedGame, erase_save, need_save_game, save_dir, try_to_save_game};
+use crate::board::{Board, GameMode, LoadSavedGame, erase_save, need_save_game, save_dir, try_to_save_game};
+use crate::board::ContinueMode;
 use crate::dialog::{ButtonMode, DialogButton, DialogEvent, DialogId, DialogSlider, Dialogs, LawnDialog};
 use crate::install::{self, Config};
 use crate::options::Settings;
@@ -468,7 +469,9 @@ fn handle_dialog_events(
     mut music: Option<ResMut<Music>>,
     mut sounds: Sounds,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    continue_mode: Option<Res<ContinueMode>>,
 ) {
+    let continue_mode = continue_mode.as_deref().map(|m| m.0);
     let events = dialogs.take_events();
     let options_were_open = dialogs.get(DialogId::NewOptions).is_some();
     let (Some(res), Some(mut profiles)) = (res, profiles) else { return };
@@ -534,16 +537,22 @@ fn handle_dialog_events(
             DialogEvent::Button(DialogId::Continue, DialogButton::Continue) => {
                 app.dialogs.kill_dialog(DialogId::Continue);
                 commands.insert_resource(LoadSavedGame(true));
+                commands.remove_resource::<ContinueMode>();
                 app.next_state.set(AppState::Board);
             }
             DialogEvent::Button(DialogId::Continue, DialogButton::NewGame) => {
                 app.dialogs.kill_dialog(DialogId::Continue);
+                let mode = continue_mode.unwrap_or(GameMode::Adventure);
                 if let (Some(player), Some(dir)) = (app.profiles.player(), save_dir()) {
-                    let (id, mode) = (player.id, crate::board::GameMode::Adventure);
-                    erase_save(&dir, id, mode);
+                    erase_save(&dir, player.id, mode);
                 }
                 commands.insert_resource(LoadSavedGame(false));
+                commands.remove_resource::<ContinueMode>();
                 app.next_state.set(AppState::Board);
+            }
+            DialogEvent::Button(DialogId::Continue, _) => {
+                app.dialogs.kill_dialog(DialogId::Continue);
+                commands.remove_resource::<ContinueMode>();
             }
             // A restart counts as a loss for the boss level's intro.
             DialogEvent::Button(DialogId::ConfirmRestart, DialogButton::Yes) => {

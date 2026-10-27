@@ -222,11 +222,12 @@ impl Board {
         res: &mut GameResources,
         images: &mut Assets<Image>,
         sounds: &mut Sounds,
+        music: &mut crate::audio::Music,
     ) {
         if let Some((ty, count, x, y)) = self.pending_fan_out.take() {
             self.fan_out_coins(ty, count, x, y, effects, res, images, sounds);
         }
-        self.update_survival_stage(effects, res, images, sounds);
+        self.update_survival_stage(effects, res, images, sounds, music);
         if self.board_fade_out_counter < 0 {
             return;
         }

@@ -7,6 +7,8 @@
 //! `SaveFileExists`, `GetSavedGameName`) and `Lawn/Widget/GameSelector.cpp`
 //! (the Adventure button) and `ContinueDialog.cpp`.
 //!
+//! Adventure and survival runs save; the other modes don't.
+//!
 //! The original dumps the board's memory almost verbatim (its `DataArray`s,
 //! reanimations, particles and all) into `userdata/game{id}_{mode}.dat`.
 //! That layout is tied to the 32-bit game's structs, so this port saves a
@@ -63,23 +65,33 @@ fn save_path_for(dir: &Path, profile_id: u32, mode: GameMode) -> PathBuf {
     dir.join(save_file_name(profile_id, mode))
 }
 
+/// The mode the open Continue dialog belongs to (the adventure screen and
+/// each survival tile can have their own save).
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct ContinueMode(pub GameMode);
+
 /// Where saves live: the app's `userdata` folder, beside the profiles.
 pub(crate) fn save_dir() -> Option<PathBuf> {
     userdata_dir()
 }
 
-/// `Board::NeedSaveGame`: adventure levels in progress. The original also
-/// excludes the ice/upsell/intro/zen/tree modes; only Adventure (and the
-/// never-saved Intro) exists here.
+/// `Board::NeedSaveGame`: adventure and survival levels in progress. The
+/// original also excludes the ice/upsell/intro/zen/tree modes; those either
+/// don't exist or aren't saved here.
 pub(crate) fn need_save_game(board: &Board) -> bool {
-    board.mode == GameMode::Adventure
+    matches!(board.mode, GameMode::Adventure | GameMode::Survival { .. })
         && board.scene == super::GameScene::Playing
         && !board.level_overridden
 }
 
 /// `LawnApp::SaveFileExists`, for adventure mode.
 pub(crate) fn has_save(dir: &Path, profile_id: u32) -> bool {
-    save_path_for(dir, profile_id, GameMode::Adventure).is_file()
+    has_save_for(dir, profile_id, GameMode::Adventure)
+}
+
+/// `SaveFileExists` for a specific mode (a survival tile asks for its own).
+pub(crate) fn has_save_for(dir: &Path, profile_id: u32, mode: GameMode) -> bool {
+    save_path_for(dir, profile_id, mode).is_file()
 }
 
 /// Erases a mode's save (`EraseFile(GetSavedGameName(...))`).
@@ -130,9 +142,9 @@ pub(crate) struct CoinSave {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct WaveSave {
-    num_waves: i32,
-    current_wave: i32,
-    total_spawned: i32,
+    pub(crate) num_waves: i32,
+    pub(crate) current_wave: i32,
+    pub(crate) total_spawned: i32,
     zombie_count_down: i32,
     zombies_in_wave: Vec<Vec<i32>>,
 }
@@ -157,8 +169,17 @@ pub(crate) struct SaveData {
     pub(crate) mowers: Vec<MowerSave>,
     pub(crate) coins: Vec<CoinSave>,
     pub(crate) waves: WaveSave,
-    pub(crate) seed_packets: Vec<Option<i32>>,
+    /// -1 for an empty packet (TOML has no null in arrays).
+    pub(crate) seed_packets: Vec<i32>,
     pub(crate) grid_items: Vec<GridItemSave>,
+    /// Survival runs: the stage and the between-stage state. Defaults keep
+    /// old adventure saves readable.
+    #[serde(default)]
+    pub(crate) survival_stage: i32,
+    #[serde(default)]
+    pub(crate) next_survival_stage_counter: i32,
+    #[serde(default)]
+    pub(crate) survival_repick: bool,
 }
 
 fn mower_kind_to_int(kind: LawnMowerType) -> i32 {
@@ -322,8 +343,11 @@ impl SaveData {
                 .packets
                 .iter()
                 .take(board.seed_bank.num_packets)
-                .map(|p| p.packet_type.map(|s| s as i32))
+                .map(|p| p.packet_type.map_or(-1, |s| s as i32))
                 .collect(),
+            survival_stage: board.survival_stage,
+            next_survival_stage_counter: board.next_survival_stage_counter,
+            survival_repick: board.survival_repick,
             grid_items: board
                 .grid_items
                 .iter()
@@ -377,6 +401,7 @@ pub(crate) fn load_save_data(dir: &Path, profile_id: u32, mode: GameMode) -> Opt
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn board_from_save(
     data: &SaveData,
+    mode: GameMode,
     profiles: &ProfileMgr,
     resources: &mut GameResources,
     images: &mut Assets<Image>,
@@ -388,17 +413,22 @@ pub(crate) fn board_from_save(
     // the loaded level must not rewrite the profile's own level.
     let mut shape = player.clone();
     shape.level = data.level;
-    let mut board = Board::new_for_save(shape, resources, images, sounds.rng());
+    let mut board = Board::new_for_save(mode, shape, resources, images, sounds.rng());
     board.sun_money = data.sun_money;
     board.main_counter = data.main_counter;
     board.player_coins = data.player_coins;
     board.scene = super::GameScene::Playing;
     board.sod_position = 1000;
+    board.survival_stage = data.survival_stage;
+    board.next_survival_stage_counter = data.next_survival_stage_counter;
     // No intro: no chooser, no Dave, no tutorial arrow.
     board.seed_chooser = None;
     board.dave = super::crazy_dave::CrazyDave::new();
     board.tutorial_state = super::tutorial::TutorialState::Off;
 
+    if data.survival_repick && board.is_survival() {
+        board.open_survival_repick();
+    }
     let mut fx = Fx { effects: &mut *effects, res: &mut *resources, images: &mut *images, sounds: &mut *sounds };
     board.plants.clear();
     for p in &data.plants {
@@ -468,8 +498,8 @@ pub(crate) fn board_from_save(
                 .collect()
         })
         .collect();
-    for (packet, saved) in board.seed_bank.packets.iter_mut().zip(&data.seed_packets) {
-        packet.set_packet_type(saved.and_then(SeedType::from_index));
+    for (packet, &saved) in board.seed_bank.packets.iter_mut().zip(&data.seed_packets) {
+        packet.set_packet_type(SeedType::from_index(saved));
     }
     board.grid_items.clear();
     for g in &data.grid_items {

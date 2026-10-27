@@ -10,7 +10,7 @@ use crate::plant::SeedType;
 use crate::player::ProfileMgr;
 use crate::zombie::ZombieType;
 
-use super::super::save::{SaveData, board_from_save, erase_save, has_save, load_save_data, try_to_save_game};
+use super::super::save::{SaveData, board_from_save, erase_save, has_save, has_save_for, load_save_data, try_to_save_game};
 use super::super::{GameMode, need_save_game};
 use super::{TestBoard, test_board};
 
@@ -53,7 +53,7 @@ fn quitting_mid_level_saves_and_continue_rebuilds_it() {
     // And rebuilds the level: same level, sun, plants and zombies, playing.
     let profiles = saver_profiles(temp_dir("shape").as_path());
     let loaded = t.with(|_, effects, res, images, sounds| {
-        board_from_save(&back, &profiles, res, images, effects, sounds).expect("the save loads")
+        board_from_save(&back, GameMode::Adventure, &profiles, res, images, effects, sounds).expect("the save loads")
     });
     assert_eq!(loaded.level, t.board.level);
     assert_eq!(loaded.sun_money, t.board.sun_money);
@@ -92,6 +92,54 @@ fn save_files_are_written_found_and_erased() {
 
     erase_save(&dir, id, GameMode::Adventure);
     assert!(!has_save(&dir, id), "starting over erases it");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn survival_runs_save_and_resume_at_their_stage() {
+    let Some(mut t) = TestBoard::survival(crate::board::SurvivalLawn::Pool, crate::board::SurvivalDifficulty::Hard) else { return };
+    t.board.survival_stage = 2;
+    t.board.waves.current_wave = 7;
+    t.board.waves.total_spawned_waves = 27;
+    t.plant(SeedType::Peashooter, 2, 1);
+    t.zombie(ZombieType::Normal, 2, 500.0);
+    let mode = t.board.mode;
+    let dir = temp_dir("survival");
+    let _ = std::fs::remove_dir_all(&dir);
+    let profiles = saver_profiles(&dir);
+    let id = profiles.player().map(|p| p.id).expect("a current player");
+
+    assert!(need_save_game(&t.board), "a survival run in progress is saved");
+    let snapshot = SaveData::from_board(&t.board);
+    if let Err(e) = toml::to_string(&snapshot) {
+        panic!("survival save serializes: {e}");
+    }
+    assert!(try_to_save_game(&t.board, &profiles, &dir), "the run writes");
+    assert!(has_save_for(&dir, id, mode), "its own tile finds it");
+    let data = load_save_data(&dir, id, mode).expect("the run reads back");
+    assert_eq!(data.survival_stage, 2);
+    assert_eq!(data.waves.current_wave, 7);
+    assert_eq!(data.waves.total_spawned, 27);
+
+    let loaded = t.with(|_, effects, res, images, sounds| {
+        board_from_save(&data, mode, &profiles, res, images, effects, sounds).expect("the run loads")
+    });
+    assert!(matches!(loaded.mode, GameMode::Survival { lawn: crate::board::SurvivalLawn::Pool, difficulty: crate::board::SurvivalDifficulty::Hard }));
+    assert_eq!(loaded.survival_stage, 2);
+    assert_eq!(loaded.background, crate::board::BackgroundType::Pool);
+    assert_eq!(loaded.waves.current_wave, 7);
+    assert_eq!(loaded.waves.num_waves, 20, "hard stages have twenty waves");
+    assert_eq!(loaded.plants.len(), t.board.plants.len());
+    // A save taken with the repick chooser up resumes with it up.
+    t.board.survival_repick = true;
+    let repick = SaveData::from_board(&t.board);
+    let reloaded = t.with(|_, effects, res, images, sounds| {
+        board_from_save(&repick, mode, &profiles, res, images, effects, sounds).expect("the repick save loads")
+    });
+    assert!(reloaded.survival_repick);
+    assert!(reloaded.seed_chooser.is_some());
+    erase_save(&dir, id, mode);
+    assert!(!has_save_for(&dir, id, mode));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

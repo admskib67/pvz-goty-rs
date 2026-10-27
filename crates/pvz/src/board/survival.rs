@@ -11,12 +11,8 @@
 //! A survival run is five stages on normal and hard (ten and twenty waves per
 //! stage, so each stage is one or two flags) and never ends on endless.
 //! Clearing a stage shows the "more zombies" advice, then the next stage's
-//! waves begin on the same lawn with the plants left standing. The original
-//! also reopens the seed chooser for a repick between stages; this port keeps
-//! the seed bank as it is.
-//!
-//! Not yet: `RepickSeedPackets` (the between-stage seed chooser), the stage
-//! advice's music fade, and the "start onslaught" button.
+//! seed chooser reopens (`IsSurvivalRepick`): the player re-picks the bank and
+//! the waves begin on the same lawn with the plants left standing.
 
 use bevy::prelude::*;
 use sexy::rand::MtRand;
@@ -150,6 +146,7 @@ impl Board {
         res: &mut GameResources,
         images: &mut Assets<Image>,
         sounds: &mut Sounds,
+        music: &mut crate::audio::Music,
     ) {
         if self.next_survival_stage_counter == 0 {
             return;
@@ -181,21 +178,49 @@ impl Board {
             }
             return;
         }
-        let fx = Fx { effects, res, images, sounds };
         self.survival_stage += 1;
         self.clear_advice(None);
         self.waves.progress_meter_width = 0;
         self.level_award_spawned = false;
-        self.init_survival_waves(fx.sounds.rng());
+        // `Board::FadeOutLevel`: the stage's music fades into the repick.
+        music.fade_out(500);
+        // `CutScene::IsSurvivalRepick`: the next stage starts with a seed
+        // chooser, not immediately.
+        self.open_survival_repick();
+    }
+
+    /// Opens the between-stage seed chooser on the current lawn.
+    pub(super) fn open_survival_repick(&mut self) {
+        self.seed_chooser = Some(super::seed_chooser::SeedChooser::new(
+            &self.owned_seeds,
+            self.has_seven_chooser_rows(),
+            0,
+        ));
+        self.cut_scene.seed_choosing = true;
+        if let Some(chooser) = &mut self.seed_chooser {
+            chooser.mouse_visible = true;
+        }
+        self.survival_repick = true;
+    }
+
+    /// The repick chooser closed: start the stage's waves and flash the screen.
+    pub(super) fn start_repicked_stage(&mut self, effects: &mut EffectSystem, res: &mut GameResources, images: &mut Assets<Image>, sounds: &mut Sounds, music: &mut crate::audio::Music) {
+        self.survival_repick = false;
+        self.seed_chooser = None;
+        self.cut_scene.seed_choosing = false;
+        self.waves = WaveState::default();
+        self.waves.zombie_allowed = [false; crate::zombie::NUM_ZOMBIE_TYPES];
+        self.init_survival_waves(sounds.rng());
+        music.make_sure_music_is_playing(self.game_music());
         let order = make_render_order(render_layer::TOP, 0, 0);
-        fx.effects.add_particle(
+        effects.add_particle(
             BOARD_WIDTH as f32 / 2.0,
             BOARD_HEIGHT as f32 / 2.0,
             order,
             ParticleEffect::ScreenFlash,
-            fx.res,
-            fx.images,
-            fx.sounds.rng(),
+            res,
+            images,
+            sounds.rng(),
         );
     }
 }
