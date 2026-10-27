@@ -30,7 +30,7 @@ use crate::graphics::{Graphics, SexyRect};
 
 use super::{BackgroundType, Board, GameScene, MAX_GRID_SIZE_Y, PlantRowType, make_render_order, render_layer};
 
-const ZOMBIE_COUNTDOWN_FIRST_WAVE: i32 = 1800;
+pub(super) const ZOMBIE_COUNTDOWN_FIRST_WAVE: i32 = 1800;
 const ZOMBIE_COUNTDOWN: i32 = 2500;
 const ZOMBIE_COUNTDOWN_RANGE: i32 = 600;
 const ZOMBIE_COUNTDOWN_BEFORE_FLAG: i32 = 4500;
@@ -143,7 +143,7 @@ impl Default for WaveState {
 
 impl Board {
     /// `Board::GetNumWavesPerFlag`.
-    fn num_waves_per_flag(&self) -> i32 {
+    pub(super) fn num_waves_per_flag(&self) -> i32 {
         if self.first_time_adventure && self.waves.num_waves < 10 { self.waves.num_waves } else { 10 }
     }
 
@@ -158,6 +158,11 @@ impl Board {
 
     /// `Board::InitZombieWaves`.
     pub(super) fn init_zombie_waves(&mut self, rng: &mut MtRand) {
+        if self.is_survival() {
+            // `Challenge::InitZombieWaves` owns challenge mode's tables.
+            self.init_survival_waves(rng);
+            return;
+        }
         self.waves = WaveState::default();
         for i in 0..NUM_ZOMBIE_TYPES {
             self.waves.zombie_allowed[i] = can_spawn_on_level(ZombieType::from_index(i), self.level);
@@ -198,23 +203,38 @@ impl Board {
     }
 
     /// `Board::PickZombieWaves`.
-    fn pick_zombie_waves(&mut self, rng: &mut MtRand) {
-        let mut num_waves = waves_for_level(self.level);
+    pub(super) fn pick_zombie_waves(&mut self, rng: &mut MtRand) {
+        let survival = self.survival();
+        let mut num_waves = if survival.is_some() { self.waves.num_waves } else { waves_for_level(self.level) };
         // Behaviour per ruslan831 decomp, Board::PickZombieWaves: a replayed
-        // mini-boss level keeps its own waves.
-        if !self.first_time_adventure && !self.is_mini_boss_level() {
+        // mini-boss level keeps its own waves. Survival's stage length is
+        // set by its difficulty instead.
+        if !self.first_time_adventure && survival.is_none() && !self.is_mini_boss_level() {
             num_waves = if num_waves < 10 { 20 } else { num_waves + 10 };
         }
         self.waves.num_waves = num_waves;
         self.waves.zombies_in_wave = vec![Vec::new(); num_waves as usize];
-        let intro = self.introduced_zombie_type();
+        // Challenge modes have no "new zombie" to introduce.
+        let intro = if survival.is_some() { None } else { self.introduced_zombie_type() };
 
         for wave in 0..num_waves {
             let mut picker = ZombiePicker::default();
             let is_flag_wave = self.is_flag_wave(wave);
             let is_final_wave = wave == num_waves - 1;
 
-            picker.zombie_points = if !self.first_time_adventure && self.level != 5 { wave * 2 / 5 + 1 } else { wave / 3 + 1 };
+            picker.zombie_points = if let Some((_, difficulty)) = survival {
+                // Board::PickZombieWaves: survival's later stages pick more,
+                // harder zombies by shifting the wave count.
+                if self.survival_stage > 0 {
+                    (self.survival_stage * difficulty.waves_per_stage() + wave) * 2 / 5 + 1
+                } else {
+                    wave / 3 + 1
+                }
+            } else if !self.first_time_adventure && self.level != 5 {
+                wave * 2 / 5 + 1
+            } else {
+                wave / 3 + 1
+            };
             if is_flag_wave {
                 let plain = picker.zombie_points.min(8);
                 picker.zombie_points = (picker.zombie_points as f32 * 2.5) as i32;
@@ -240,10 +260,12 @@ impl Board {
                 // PutInMissingZombies: every kind this level has, at least once.
                 for i in 0..NUM_ZOMBIE_TYPES {
                     let ty = ZombieType::from_index(i);
-                    if ty != ZombieType::Yeti
-                        && can_spawn_on_level(ty, self.level)
-                        && !self.waves.zombies_in_wave[wave as usize].contains(&ty)
-                    {
+                    let allowed = if survival.is_some() {
+                        self.waves.zombie_allowed[i]
+                    } else {
+                        ty != ZombieType::Yeti && can_spawn_on_level(ty, self.level)
+                    };
+                    if allowed && !self.waves.zombies_in_wave[wave as usize].contains(&ty) {
                         self.put_zombie_in_wave(ty, wave, &mut picker);
                     }
                 }

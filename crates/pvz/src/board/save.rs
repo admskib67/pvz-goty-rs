@@ -41,9 +41,10 @@ const SAVE_VERSION: u32 = 2;
 
 fn mode_index(mode: GameMode) -> i32 {
     match mode {
-        // Matches the original's `GAMEMODE_ADVENTURE` (0); the other modes
-        // don't exist yet, so they get nothing to collide with.
+        // `ConstEnums.h`'s GameMode order: adventure, then the five normal
+        // survival stages, the five hard ones, the endless ones.
         GameMode::Adventure => 0,
+        GameMode::Survival { lawn, difficulty } => 1 + difficulty.index() * 5 + lawn.index(),
         GameMode::Intro => 81,
     }
 }

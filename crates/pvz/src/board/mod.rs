@@ -37,6 +37,7 @@ pub(crate) mod pool;
 mod projectile;
 mod seed_bank;
 mod seed_chooser;
+mod survival;
 mod tooltip;
 mod tutorial;
 mod waves;
@@ -129,12 +130,98 @@ pub fn packet_upgrade_cost(bought: i32) -> i32 {
 }
 pub const FINAL_LEVEL: i32 = 50;
 
-/// `GameMode`. Only adventure mode so far.
+/// `GameMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameMode {
     Adventure,
     /// The first-ever adventure's opening cinematic (`GAMEMODE_INTRO`).
     Intro,
+    /// Survival (`GAMEMODE_SURVIVAL_*`): the chosen lawn and difficulty.
+    Survival { lawn: SurvivalLawn, difficulty: SurvivalDifficulty },
+}
+
+/// The five survival lawns (`GAMEMODE_SURVIVAL_*_STAGE_1` to `_STAGE_5`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurvivalLawn {
+    Day,
+    Night,
+    Pool,
+    Fog,
+    Roof,
+}
+
+impl SurvivalLawn {
+    pub const ALL: [Self; 5] = [Self::Day, Self::Night, Self::Pool, Self::Fog, Self::Roof];
+
+    /// The lawn's index in `SurvivalLawn::ALL`, matching the original's
+    /// stage numbers (stage 1 is the day lawn).
+    pub fn index(self) -> i32 {
+        Self::ALL.iter().position(|&l| l == self).unwrap_or(0) as i32
+    }
+
+    pub fn from_index(index: i32) -> Option<Self> {
+        Self::ALL.get(usize::try_from(index).ok()?).copied()
+    }
+
+    pub fn background(self) -> BackgroundType {
+        match self {
+            Self::Day => BackgroundType::Day,
+            Self::Night => BackgroundType::Night,
+            Self::Pool => BackgroundType::Pool,
+            Self::Fog => BackgroundType::Fog,
+            Self::Roof => BackgroundType::Roof,
+        }
+    }
+
+    /// The tile's label string.
+    pub fn name(self, difficulty: SurvivalDifficulty) -> &'static str {
+        match (self, difficulty) {
+            (Self::Day, SurvivalDifficulty::Normal) => "[SURVIVAL_DAY_NORMAL]",
+            (Self::Night, SurvivalDifficulty::Normal) => "[SURVIVAL_NIGHT_NORMAL]",
+            (Self::Pool, SurvivalDifficulty::Normal) => "[SURVIVAL_POOL_NORMAL]",
+            (Self::Fog, SurvivalDifficulty::Normal) => "[SURVIVAL_FOG_NORMAL]",
+            (Self::Roof, SurvivalDifficulty::Normal) => "[SURVIVAL_ROOF_NORMAL]",
+            (Self::Day, SurvivalDifficulty::Hard) => "[SURVIVAL_DAY_HARD]",
+            (Self::Night, SurvivalDifficulty::Hard) => "[SURVIVAL_NIGHT_HARD]",
+            (Self::Pool, SurvivalDifficulty::Hard) => "[SURVIVAL_POOL_HARD]",
+            (Self::Fog, SurvivalDifficulty::Hard) => "[SURVIVAL_FOG_HARD]",
+            (Self::Roof, SurvivalDifficulty::Hard) => "[SURVIVAL_ROOF_HARD]",
+            (Self::Day, SurvivalDifficulty::Endless) => "[SURVIVAL_DAY_ENDLESS]",
+            (Self::Night, SurvivalDifficulty::Endless) => "[SURVIVAL_NIGHT_ENDLESS]",
+            (Self::Pool, SurvivalDifficulty::Endless) => "[SURVIVAL_POOL_ENDLESS]",
+            (Self::Fog, SurvivalDifficulty::Endless) => "[SURVIVAL_FOG_ENDLESS]",
+            (Self::Roof, SurvivalDifficulty::Endless) => "[SURVIVAL_ROOF_ENDLESS]",
+        }
+    }
+}
+
+/// Survival's three difficulties (`GAMEMODE_SURVIVAL_*_STAGE_*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurvivalDifficulty {
+    Normal,
+    Hard,
+    Endless,
+}
+
+impl SurvivalDifficulty {
+    pub const ALL: [Self; 3] = [Self::Normal, Self::Hard, Self::Endless];
+
+    pub fn index(self) -> i32 {
+        Self::ALL.iter().position(|&d| d == self).unwrap_or(0) as i32
+    }
+
+    pub fn from_index(index: i32) -> Option<Self> {
+        Self::ALL.get(usize::try_from(index).ok()?).copied()
+    }
+
+    /// `Board::GetNumWavesPerSurvivalStage`.
+    pub fn waves_per_stage(self) -> i32 {
+        match self {
+            Self::Normal => 10,
+            Self::Hard | Self::Endless => 20,
+        }
+    }
+
 }
 
 /// `GameScenes`, for the parts of the game that are on the board.
@@ -308,6 +395,12 @@ pub struct Board {
     pub x: i32,
     pub y: i32,
     pub level: i32,
+    /// `Challenge::mSurvivalStage`: how many survival stages (each worth
+    /// its flags) the run has cleared.
+    pub survival_stage: i32,
+    /// `mNextSurvivalStageCounter`: ticks of the "more zombies" pause
+    /// between two survival stages.
+    pub next_survival_stage_counter: i32,
     /// `LawnApp::IsFirstTimeAdventureMode`: the player hasn't finished adventure yet.
     pub first_time_adventure: bool,
     pub background: BackgroundType,
@@ -489,6 +582,12 @@ pub struct LoadSavedGame(pub bool);
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct LevelOverride(pub Option<i32>);
 
+/// `LawnApp::mGameMode` for the next board: the challenge screen picks
+/// survival here; adventure leaves it unset. It stays set so that a restart
+/// or a "Try Again" begins the same mode again.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct SelectedMode(pub Option<GameMode>);
+
 fn adventure_level(player: Option<&PlayerInfo>) -> i32 {
     player.map_or(1, |p| p.level)
 }
@@ -505,6 +604,10 @@ impl Board {
         let level = match mode {
             GameMode::Adventure => adventure_level(player),
             GameMode::Intro => 1,
+            // `Challenge::InitLevel` runs challenge modes on level 50 so
+            // that every zombie definition is on the table; the survival
+            // lawn then replaces the background and the zombie table.
+            GameMode::Survival { .. } => FINAL_LEVEL,
         };
             let first_time_adventure = mode != GameMode::Intro && !player.is_some_and(PlayerInfo::has_finished_adventure);
         let mut board = Self {
@@ -513,6 +616,8 @@ impl Board {
             x: 0,
             y: 0,
             level,
+            survival_stage: 0,
+            next_survival_stage_counter: 0,
             first_time_adventure,
             background: BackgroundType::Day,
             plant_row: [PlantRowType::Normal; MAX_GRID_SIZE_Y],
@@ -674,6 +779,9 @@ impl Board {
         self.background = if self.mode == GameMode::Intro {
             // The cinematic's lawn is the pool's.
             BackgroundType::Pool
+        } else if let GameMode::Survival { lawn, .. } = self.mode {
+            // `Challenge::InitLevel`: the survival lawn picks the background.
+            lawn.background()
         } else {
             match level {
             l if l <= LEVELS_PER_AREA => BackgroundType::Day,
@@ -891,7 +999,7 @@ impl Board {
             MusicTune::MinigameLoonboon
         } else if self.mode == GameMode::Adventure && matches!(self.level, 10 | 20 | 30) {
             MusicTune::Conveyer
-        } else if self.level == FINAL_LEVEL {
+        } else if self.mode == GameMode::Adventure && self.level == FINAL_LEVEL {
             MusicTune::FinalBossBrainiacManiac
         } else if self.stage_has_fog() {
             MusicTune::FogRigormormist
@@ -945,6 +1053,7 @@ fn new_game(
     level_override: Res<LevelOverride>,
     load: Option<Res<LoadSavedGame>>,
     mut play_intro: ResMut<PlayIntro>,
+    selected_mode: Option<Res<SelectedMode>>,
     last_result: Option<Res<BoardResult>>,
 ) {
     // `Board::Board` copies the app's last result before it's cleared.
@@ -963,11 +1072,20 @@ fn new_game(
     // `--lvl-2-1` plays a level as a copy of the player who has reached it.
     let player_copy = level_override.0.and_then(|level| profiles.player().map(|p| PlayerInfo { level, ..p.clone() }));
     let player = player_copy.as_ref().or(profiles.player());
-    let mode = if std::mem::take(&mut play_intro.0) { GameMode::Intro } else { GameMode::Adventure };
+    // `LawnApp::mGameMode`: the challenge screen picks survival; `--lvl` and
+    // the intro cinematic stay adventure's.
+    let mode = if std::mem::take(&mut play_intro.0) {
+        GameMode::Intro
+    } else if level_override.0.is_some() {
+        GameMode::Adventure
+    } else {
+        selected_mode.as_deref().and_then(|m| m.0).unwrap_or(GameMode::Adventure)
+    };
     // PreNewGame's TryLoadGame: the Continue dialog resumes the save.
     let from_save = load.as_deref().is_some_and(|l| l.0);
     commands.remove_resource::<LoadSavedGame>();
     if from_save
+        && mode == GameMode::Adventure
         && let Some(dir) = save_dir()
         && let Some(id) = profiles.player().map(|p| p.id)
         && let Some(data) = load_save_data(&dir, id, GameMode::Adventure)
@@ -985,6 +1103,7 @@ fn new_game(
     // PreNewGame erases the mode's save before a fresh game (never for a
     // `--lvl` copy, which must leave the player's save alone).
     if !board.level_overridden
+        && board.mode == GameMode::Adventure
         && let Some(dir) = save_dir()
         && let Some(id) = profiles.player().map(|p| p.id)
     {
@@ -1127,10 +1246,15 @@ fn update_board(
         commands.insert_resource(BoardResult::Lost);
         // The run is over: no Continue from a lost level.
         if !board.level_overridden
+            && board.mode == GameMode::Adventure
             && let Some(dir) = save_dir()
             && let Some(id) = profiles.player().map(|p| p.id)
         {
             erase_save(&dir, id, board.mode);
+        }
+        // An endless run's best flags are kept even when it ends.
+        if board.is_survival() {
+            crate::challenge::record_endless_run(&profiles, board);
         }
         do_game_over_dialog(&mut dialogs, &resources, board);
     }
@@ -1145,10 +1269,19 @@ fn update_board(
         // LawnApp::CheckForGameEnd: the award screen shows what was won.
         // The run is over: a finished level leaves no save behind.
         if !board.level_overridden
+            && board.mode == GameMode::Adventure
             && let Some(dir) = save_dir()
             && let Some(id) = profiles.player().map(|p| p.id)
         {
             erase_save(&dir, id, board.mode);
+        }
+        // A won survival run earns its lawn's trophy and goes back to the
+        // challenge screen (LawnApp::ShowChallengeScreen).
+        if board.is_survival() {
+            crate::challenge::record_survival_win(&profiles, board);
+            board.finish_survival();
+            next_state.set(AppState::Challenges);
+            return;
         }
         let (first_time, level) = (board.first_time_adventure, board.level);
         board.finish_level(&mut profiles);

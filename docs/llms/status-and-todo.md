@@ -13,6 +13,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 - **Plant pass**: the chomper bites gargantuars and the boss for 40 instead of swallowing them (and misses bouncing pogos); the spikeweeds' height follows the row and stage; the magnet-shroom pulls ladders off plants and the gold magnets take turns; the loaded cob cannon's cob flashes; a plant being woken by a coffee bean squashes and bounces back; a plant flashes while an upgrade for it (or a cob cannon over its kernel-pult) is held over it; garlic has its 400 health; the left repeater fires its second pea; the gargantuars' ice trap is drawn larger and a hypnotised gargantuar smashes the zombie in front of it; and the missing planting advice keys (`LILYPAD_ON_WATER`, `TANGLEKELP_ON_WATER`, `SEASHROOM_ON_WATER`, `POTATO_MINE_ON_LILY`, `PLANTING_NEEDS_GROUND`, `PLANTING_NEED_SLEEPING`, `CANT_PLANT_THERE` on pool craters).
 - **Content pass**: the mode-unlocking presents (3-2's mini-games, 4-6's puzzle), the pool/roof/night crater art, 4-5 at night (stormy night is 4-10, not 4-5), ice-shrooms freezing the pool water, red-tinted explode-o-nut and mirrored left-repeater seed art, the award's starburst and pickup particles, the zombies' full shadow-offset table (a backward-facing football was 52 px off) with the pool's water shadow, tiny zombies' particle scaling, and the boss level skipping Dave when it's retried after a loss.
 - **Presentation pass**: the huge-wave banner's letter animations and the music's drum burst, the hand cursor (hidden for the hammer), the shovel's plant highlight, the cursor preview's water bob, the selector hand's clip, the rake (store item: swings at the first zombie), bonus mowers rolling back in, the Game Over dialog's top-right Main Menu button and the door overlay on a lost level, the level-1 sod-row flash, the whack-a-zombie packet tutorial, the fog roll-in and 3-5/4-5 talks, and the doom-shroom's shaking heads.
+- **Survival** (`board::survival`, `challenge.rs`, `tests/survival.rs`): the challenge screen's survival page (from the main menu once adventure is done) with the five lawns × normal/hard/endless, trophy-based unlocking (the first three lawns are free, each trophy opens one more, endless waits for ten) and the `0/10` tally. A run is five stages on normal and hard (ten and twenty waves per stage, stage points scaling with `mSurvivalStage`) and endless never ends; clearing a stage shows the "more zombies" advice and starts the next stage on the same lawn with the plants kept; the last stage drops the silver-sunflower trophy and returns to the challenge screen; losing an endless run records its flags (`userdata/challenge{id}.dat`). The stage tables follow `InitZombieWavesSurvival` (normals and cones on stage one, pails from hard; random kinds later, normal stops at the snorkel, no bungees outside endless/roof, no Zamboni on the night lawn). Survival runs are not saved or resumed.
 - **Saving a level in progress** (`board::save`, `tests/save.rs`): leaving through the menu, or quitting the app, saves an adventure level in progress (`TryToSaveGame`/`NeedSaveGame`, `userdata/game{id}_{mode}.dat` as TOML); Adventure offers the Continue dialog (resume, or erase and restart); winning, losing, restarting or starting fresh erases it; `--lvl` copies never save; deleting a profile deletes its saves.
 - Windows: builds, setup screen and resource loading verified; everything else untested there.
 
@@ -20,7 +21,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 
 | Area | Notes |
 |------|-------|
-| **Game modes** | `GameMode` has only `Adventure` and `Intro`. Missing: mini-games (~20), puzzle (Vasebreaker, I, Zombie), survival (day/night/pool/fog/roof, normal/hard/endless), their selector panels, locks and best scores. |
+| **Game modes** | `GameMode` has `Adventure`, `Intro` and `Survival`. Missing: mini-games (~20) and puzzle (Vasebreaker, I, Zombie), their selector panels, locks and best scores; survival's between-stage seed repick, its "start onslaught" button and saved runs. |
 | **Zen Garden** | garden screens, potted plants and their growth/watering, Stinky, tools, marigold sales, "needs water" bubble on the menu. `PlayerInfo` already stores Zen plants as raw 88-byte structs. |
 | **Tree of Wisdom** | growth, tree food, speech. The store records buying the tree but can't go there. |
 | **Achievements** | none. |
@@ -50,7 +51,7 @@ Snapshot of branch `core` on 2026-10-26, from the code (`TODO` comments, `GameMo
 
 ## Suggested order
 
-1. Survival and mini-games (reuse `Board` with a `GameMode` per mode), then puzzle.
+1. Mini-games (reuse `Board` with a `GameMode` per mode), then puzzle.
 2. Zen Garden and Tree of Wisdom, then the store's Zen items.
 3. Achievements; Windows visual pass and `.au` decoder; Linux.
 

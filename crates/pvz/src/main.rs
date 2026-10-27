@@ -2,6 +2,7 @@ mod almanac;
 mod audio;
 mod award;
 mod board;
+mod challenge;
 mod credits;
 mod credits_timing;
 mod devshot;
@@ -55,6 +56,8 @@ pub enum AppState {
     Award,
     /// Crazy Dave's store.
     Store,
+    /// The challenge screen: survival's five lawns.
+    Challenges,
     /// The credits movie.
     Credits,
 }
@@ -154,7 +157,7 @@ fn main() {
             almanac::AlmanacPlugin,
             devshot::DevShotPlugin,
         ))
-        .add_plugins(credits::CreditsPlugin)
+        .add_plugins((credits::CreditsPlugin, challenge::ChallengePlugin))
         .add_systems(Startup, spawn_camera)
         .add_systems(OnEnter(AppState::Boot), boot)
         .run();

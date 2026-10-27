@@ -599,7 +599,7 @@ impl Board {
             };
             let rng = sounds.rng();
             effects.add_particle(puff.0, puff.1, puff.2, puff.3, res, images, rng);
-            if self.level == 50 {
+            if self.mode == super::GameMode::Adventure && self.level == super::FINAL_LEVEL {
                 self.pending_fan_out = Some((super::coin::CoinType::Diamond, 3, x, y));
                 sounds.play_sample("SOUND_DIAMOND");
             } else if ty == super::coin::CoinType::MoneyBag {

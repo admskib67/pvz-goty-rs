@@ -341,7 +341,12 @@ impl DialogActions<'_, '_, '_> {
         }
         self.dialogs.kill_dialog(DialogId::NewOptions);
         self.profiles.save_current_details();
-        self.next_state.set(AppState::GameSelector);
+        // A challenge returns to its own screen, not the main menu.
+        if board.is_some_and(crate::board::Board::is_survival) {
+            self.next_state.set(AppState::Challenges);
+        } else {
+            self.next_state.set(AppState::GameSelector);
+        }
     }
 
     /// `UserDialog::ButtonDepress` for Rename and Delete.

@@ -111,6 +111,14 @@ impl Board {
         {
             return false;
         }
+        // A survival stage that isn't the last one doesn't end the run: the
+        // next stage's waves come after the advice.
+        if self.is_survival() && !self.is_final_survival_stage() {
+            if self.next_survival_stage_counter == 0 {
+                self.begin_next_survival_stage(effects, res, sounds);
+            }
+            return false;
+        }
         self.level_award_spawned = true;
         // RemoveAllZombies.
         for (_, z) in self.zombies.iter_mut() {
@@ -127,6 +135,7 @@ impl Board {
         sounds.play_foley(FoleyType::SpawnSun);
         let (x, y) = (center.0 as f32, center.1 as f32);
         let ty = match self.level {
+            _ if self.is_survival() => CoinType::SilverSunflower,
             9 | 19 | 29 | 39 | 49 => CoinType::Note,
             50 if finished => CoinType::MoneyBag,
             50 => CoinType::SilverSunflower,
@@ -205,6 +214,7 @@ impl Board {
         if let Some((ty, count, x, y)) = self.pending_fan_out.take() {
             self.fan_out_coins(ty, count, x, y, effects, res, images, sounds);
         }
+        self.update_survival_stage(effects, res, images, sounds);
         if self.board_fade_out_counter < 0 {
             return;
         }
@@ -285,6 +295,12 @@ impl Board {
         sounds.play_sample("SOUND_LOSEMUSIC");
         self.tutorial_arrow_remove();
         self.refresh_seed_packet_from_cursor(res);
+    }
+
+    /// A won survival run is over: the board says so, but the player's
+    /// adventure level doesn't move.
+    pub(super) fn finish_survival(&mut self) {
+        self.level_complete = false;
     }
 
     /// `LawnApp::UpdatePlayerProfileForFinishingLevel` + `CheckForGameEnd`

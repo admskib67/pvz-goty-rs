@@ -549,6 +549,7 @@ impl GameSelector {
             // PreNewGame(GAMEMODE_ADVENTURE, true): a save resumes through
             // the Continue dialog; otherwise the level starts fresh.
             ButtonId::Adventure => {
+                commands.insert_resource(crate::board::SelectedMode(None));
                 let save = crate::board::save_dir()
                     .is_some_and(|dir| profiles.player().is_some_and(|p| crate::board::has_save(&dir, p.id)));
                 if save {
@@ -564,6 +565,8 @@ impl GameSelector {
             // KillGameSelector + ShowStoreScreen: the store opens over the
             // menu's place and the main menu comes back when it closes.
             ButtonId::Store => next_state.set(AppState::Store),
+            // KillGameSelector + ShowChallengeScreen(CHALLENGE_PAGE_SURVIVAL).
+            ButtonId::Survival => next_state.set(AppState::Challenges),
             ButtonId::Options => {
                 let finished_adventure = profiles.player().is_some_and(PlayerInfo::has_finished_adventure);
                 do_new_options(dialogs, resources, settings, OptionsFrom::GameSelector { finished_adventure });
@@ -763,6 +766,16 @@ fn selector_input(
             Ok("almanac") => result.events.push(ButtonEvent::Depress(ButtonId::Almanac)),
             Ok("store") => result.events.push(ButtonEvent::Depress(ButtonId::Store)),
             Ok("credits") => next_state.set(AppState::Credits),
+            // `survival` opens the challenge screen's survival page; `survival-day`
+            // starts a normal day survival run straight away (eye checks).
+            Ok("survival") => next_state.set(AppState::Challenges),
+            Ok("survival-day") => {
+                commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::Survival {
+                    lawn: crate::board::SurvivalLawn::Day,
+                    difficulty: crate::board::SurvivalDifficulty::Normal,
+                })));
+                next_state.set(AppState::Board);
+            }
             Ok("almanac-plants") => do_almanac_dialog(&mut dialogs, &resources, AlmanacStart::Plant(SeedType::Peashooter)),
             Ok("almanac-zombies") => do_almanac_dialog(&mut dialogs, &resources, AlmanacStart::Zombie(ZombieType::Normal)),
             _ => {}

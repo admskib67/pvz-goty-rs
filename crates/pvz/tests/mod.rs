@@ -24,6 +24,7 @@ mod plants;
 mod roof;
 mod roof_zombies;
 mod save;
+mod survival;
 mod world3;
 mod zombies;
 
@@ -45,7 +46,7 @@ use crate::zombie::ZombieType;
 
 use super::plant::Plant;
 use super::zombie::Zombie;
-use super::{Board, GameMode};
+use super::{Board, GameMode, SurvivalDifficulty, SurvivalLawn};
 
 #[test]
 fn render_order_sorts_rows_within_layers() {
@@ -227,6 +228,20 @@ impl TestBoard {
     fn build(stage: &str, adjust: impl FnOnce(&mut PlayerInfo), intro: bool) -> Option<Self> {
         let (area, sub) = stage.split_once('-').expect("stage like \"2-1\"");
         let level = (area.parse::<i32>().unwrap() - 1) * 10 + sub.parse::<i32>().unwrap();
+        Self::create(GameMode::Adventure, level, adjust, intro)
+    }
+
+    /// A survival run on `lawn` at `difficulty`, as if the player picked it
+    /// on the challenge screen: play starts at once with the first stage's
+    /// waves set up.
+    pub fn survival(lawn: SurvivalLawn, difficulty: SurvivalDifficulty) -> Option<Self> {
+        Self::create(GameMode::Survival { lawn, difficulty }, super::FINAL_LEVEL, |p| {
+            p.finished_adventure = 1;
+            p.has_unlocked_survival_mode = true;
+        }, false)
+    }
+
+    fn create(mode: GameMode, level: i32, adjust: impl FnOnce(&mut PlayerInfo), intro: bool) -> Option<Self> {
         let mut shared = shared()?;
         let mut world = World::new();
         world.insert_resource(SoundSystem::default());
@@ -238,7 +253,7 @@ impl TestBoard {
         adjust(&mut player);
         let Shared { resources, images } = &mut *shared;
         let mut rng = MtRand::new(1234);
-        let mut board = Board::new(GameMode::Adventure, Some(&player), resources, images, &mut rng);
+        let mut board = Board::new(mode, Some(&player), resources, images, &mut rng);
         if intro {
             board.draw_count = 1;
             let mut music = Music::silent();
