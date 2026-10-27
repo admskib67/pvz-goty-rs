@@ -60,7 +60,7 @@ PVZ_SCREENSHOT=/tmp/shot{}.png PVZ_SCREENSHOT_FRAME=400,450,500 \
 cargo run -p pvz -- --lvl 3-1
 ```
 
-Variants: `PVZ_AUTO_START=1|adventure|options|help|store|almanac|almanac-plants|almanac-zombies|credits|survival|minigames|survival-day|minigame-war|minigame-bowling|minigame-pogo|minigame-bobsled|minigame-column|minigame-invisighoul|minigame-boss|minigame-speed|minigame-stars|minigame-rain|minigame-portal|minigame-laststand|minigame-slot`, `PVZ_DEV_SCENE=butter|boss|boss-stomp|boss-rv|boss-bungee|pool`, `PVZ_CREDITS_JUMP=2:88`, `PVZ_SCREENSHOT_FRAME=<n>`. macOS black captures are a capture flake — retake, don't debug the game.
+Variants: `PVZ_AUTO_START=1|adventure|options|help|store|almanac|almanac-plants|almanac-zombies|credits|survival|minigames|survival-day|minigame-war|minigame-bowling|minigame-pogo|minigame-bobsled|minigame-column|minigame-invisighoul|minigame-boss|minigame-speed|minigame-stars|minigame-rain|minigame-portal|minigame-laststand|minigame-slot|minigame-beghouled`, `PVZ_DEV_SCENE=butter|boss|boss-stomp|boss-rv|boss-bungee|pool`, `PVZ_CREDITS_JUMP=2:88`, `PVZ_SCREENSHOT_FRAME=<n>`. macOS black captures are a capture flake — retake, don't debug the game.
 
 ## Code Conventions & Common Patterns
 

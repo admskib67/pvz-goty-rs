@@ -43,6 +43,8 @@ pub struct SeedPacket {
     pub slot_next: Option<SlotSymbol>,
     pub slot_countdown: i32,
     pub slot_position: f32,
+    /// Beghouled's Shuffle/Crater button packet (`SEED_BEGHOULED_BUTTON_*`).
+    pub button: Option<super::beghouled::BeghouledButton>,
 }
 
 impl Default for SeedPacket {
@@ -61,6 +63,7 @@ impl Default for SeedPacket {
             slot_next: None,
             slot_countdown: 0,
             slot_position: 0.0,
+            button: None,
         }
     }
 }
@@ -123,6 +126,12 @@ impl SeedPacket {
 
     /// `SeedPacket::Draw`.
     fn draw(&self, board: &Board, res: &GameResources, g: &mut Graphics) {
+        if let Some(button) = self.button {
+            let Some(seeds) = res.image("IMAGE_SEEDS") else { return };
+            let cel = if button == super::beghouled::BeghouledButton::Shuffle { 4 } else { 3 };
+            g.draw_image_cel(seeds, 0.0, 0.0, cel, 0);
+            return;
+        }
         if board.minigame() == Some(super::MiniGame::SlotMachine) {
             self.draw_slot(board, res, g);
             return;
@@ -136,7 +145,7 @@ impl SeedPacket {
                 (self.refresh_time - self.refresh_counter) as f32 / self.refresh_time as f32
             };
         }
-        let cost = seed.cost();
+        let cost = board.plant_cost(seed);
         let conveyor = board.has_conveyor_belt_seed_bank();
         let mut grayness = 255;
         if board.scene != GameScene::Playing {

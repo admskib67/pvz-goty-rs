@@ -652,7 +652,7 @@ pub struct Zombie {
     pub award_check: bool,
     /// The plant it finished eating this tick (its type and column), for
     /// the board's count and advice.
-    pub ate_plant: Option<(crate::plant::SeedType, i32)>,
+    pub ate_plant: Option<(crate::plant::SeedType, i32, i32)>,
     /// `mScaleZombie`: 1, or 0.5 for Little Trouble's tiny zombies. Only the
     /// body is drawn at this size; the zombie's rectangle stays the same.
     pub scale: f32,
@@ -3821,7 +3821,7 @@ impl Zombie {
     fn squish_all_in_square(&mut self, plants: &mut DataArray<Plant>, col: i32, row: i32, fx: &mut Fx) {
         for (_, plant) in plants.iter_mut() {
             if plant.col == col && plant.row == row && !plant.dead && plant.seed != crate::plant::SeedType::Spikerock {
-                self.ate_plant = Some((plant.seed, plant.col));
+                self.ate_plant = Some((plant.seed, plant.col, plant.row));
                 if plant.squish(fx.effects) {
                     fx.sounds.play_foley(FoleyType::Squish);
                 }
@@ -4550,7 +4550,7 @@ impl Zombie {
         if plant.health <= 0 {
             fx.sounds.play_sample("SOUND_GULP");
             plant.die(fx.effects);
-            self.ate_plant = Some((plant.seed, plant.col));
+            self.ate_plant = Some((plant.seed, plant.col, plant.row));
         }
     }
 

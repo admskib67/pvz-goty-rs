@@ -103,8 +103,11 @@ impl Board {
     /// levels 2-4 a hint when a peashooter far up the lawn is lost.
     pub(super) fn after_plants_eaten(&mut self, res: &GameResources) {
         let eaten: Vec<_> = self.zombies.iter_mut().filter_map(|(_, z)| z.ate_plant.take()).collect();
-        for (seed, col) in eaten {
+        for (seed, col, row) in eaten {
             self.plants_eaten += 1;
+            if self.beghouled.is_some() {
+                self.beghouled_plant_eaten(col, row, res);
+            }
             if self.first_time_adventure
                 && (2..=4).contains(&self.level)
                 && col > 4

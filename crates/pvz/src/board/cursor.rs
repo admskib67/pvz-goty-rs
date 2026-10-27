@@ -428,6 +428,18 @@ impl Board {
     }
 
     /// `SeedBank::MouseHitTest`: the packet under the mouse.
+    fn beghouled_packet_at(&self, p: IVec2) -> Option<usize> {
+        let bank = &self.seed_bank;
+        let local = p - IVec2::new(bank.x, bank.y);
+        bank.packets[..bank.num_packets].iter().position(|packet| {
+            (packet.packet_type.is_some() || packet.button.is_some())
+                && local.x >= packet.x + packet.offset_x
+                && local.x < packet.x + packet.offset_x + 50
+                && local.y >= packet.y
+                && local.y < packet.y + 70
+        })
+    }
+
     pub(super) fn seed_packet_at(&self, p: IVec2) -> Option<usize> {
         let bank = &self.seed_bank;
         let local = p - IVec2::new(bank.x, bank.y);
@@ -541,6 +553,14 @@ impl Board {
                 return;
             }
         }
+        // Beghouled's bank is a shop: upgrades, shuffle and crater buttons.
+        if self.is_beghouled()
+            && !right
+            && let Some(index) = self.beghouled_packet_at(ip)
+        {
+            self.beghouled_packet_clicked(index, effects, res, images, sounds);
+            return;
+        }
         // MouseHitTest: the seed bank and sun only count with an empty hand.
         if !right
             && !self.is_plant_in_cursor()
@@ -548,6 +568,16 @@ impl Board {
         {
             self.coin_mouse_down(id, effects, res, images, sounds);
             return;
+        }
+        // Beghouled: a press on the lawn starts a piece drag.
+        if self.is_beghouled() && !right && !self.has_level_award_dropped() {
+            let (col, row) = (self.pixel_to_grid_x(ip.x), self.pixel_to_grid_y(ip.x, ip.y));
+            if (0..super::beghouled::COLS as i32).contains(&col) && (0..super::beghouled::ROWS as i32).contains(&row) {
+                if let Some(state) = &mut self.beghouled {
+                    state.drag = Some((col, row));
+                }
+                return;
+            }
         }
         // Slot Machine: the handle is the only thing to click on the bank.
         if self.minigame() == Some(super::MiniGame::SlotMachine) && !right && self.scene == GameScene::Playing {

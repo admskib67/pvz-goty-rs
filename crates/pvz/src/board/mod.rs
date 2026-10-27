@@ -15,6 +15,7 @@
 //! the grid helpers; `LawnApp::NewGame`, `MakeNewBoard`, `StartPlaying`,
 //! `DoConfirmBackToMain` and `DoBackToMain`.
 
+mod beghouled;
 mod bungee;
 mod coin;
 mod crazy_dave;
@@ -35,6 +36,7 @@ pub(crate) use save::{
     board_from_save, erase_save, has_save, load_save_data, need_save_game, save_dir, try_to_save_game,
 };
 pub(crate) mod pool;
+pub use beghouled::Beghouled;
 pub use minigame::MiniGame;
 mod projectile;
 mod seed_bank;
@@ -416,6 +418,8 @@ pub struct Board {
     pub last_stand_onslaught: bool,
     /// Last Stand's Start/CONTINUE ONSLAUGHT button (`mStoreButton`).
     onslaught_button: Option<MenuButton>,
+    /// Beghouled's puzzle grid (`Challenge`'s Beghouled fields).
+    pub beghouled: Option<Beghouled>,
     /// Slot Machine: the handle's reanimation, whether the reels are
     /// spinning, and how many pulls have been made.
     slot_handle: Option<crate::reanim::ReanimationId>,
@@ -646,6 +650,7 @@ impl Board {
             rain_splash_counter: 0,
             portal_relocate_counter: 0,
             last_stand_onslaught: false,
+            beghouled: None,
             slot_handle: None,
             slot_rolling: false,
             slot_roll_count: 0,
@@ -761,7 +766,10 @@ impl Board {
         board.init_fog();
         let level_seed = board.level_rand_seed(player.map_or(0, |p| p.id), player.map_or(0, |p| p.finished_adventure));
         board.add_level_grave_stones(&mut sexy::rand::MtRand::new(level_seed), rng);
-        board.sun_money = if board.minigame() == Some(MiniGame::LastStand) {
+        board.sun_money = if board.is_beghouled() {
+            // `InitLevel`: the puzzle pays for upgrades with matched suns.
+            0
+        } else if board.minigame() == Some(MiniGame::LastStand) {
             // `InitLevel`: Last Stand's budget.
             5000
         } else if board.first_time_adventure && level == 1 {
@@ -928,6 +936,7 @@ impl Board {
     /// `ChooseSeedsOnCurrentLevel`: early adventure levels hand out the plants.
     pub fn choose_seeds_on_current_level(&self) -> bool {
         self.minigame() != Some(MiniGame::SlotMachine)
+            && !self.is_beghouled()
             && !self.has_conveyor_belt_seed_bank()
             && !self.is_whack_a_zombie_level()
             && !self.is_challenge_without_seed_bank()
@@ -941,6 +950,9 @@ impl Board {
         }
         if self.minigame() == Some(MiniGame::SlotMachine) {
             return 3;
+        }
+        if self.is_beghouled() {
+            return 0;
         }
         if self.has_conveyor_belt_seed_bank() {
             return 10;
@@ -1177,6 +1189,7 @@ fn new_game(
     let mut board = Board::new(mode, player, &mut resources, &mut images, sounds.rng());
     board.start_portal_combat(&mut effects, &mut resources, &mut images);
     board.start_slot_machine(&mut effects, &mut resources, &mut images);
+    board.start_beghouled(&mut effects, &mut resources, &mut images, sounds.rng());
     board.prev_result_restart = was_lost;
     board.level_overridden = level_override.0.is_some();
     // PreNewGame erases the mode's save before a fresh game (never for a
@@ -2568,6 +2581,22 @@ fn board_input(
         board.mouse_down(p, true, &mut effects, &mut resources, &mut images, &mut sounds);
     }
     if mouse.just_released(MouseButton::Left)
+        && board.is_beghouled()
+        && let Some(from) = board.beghouled.as_ref().and_then(|b| b.drag)
+    {
+        if let Some(state) = &mut board.beghouled {
+            state.drag = None;
+        }
+        if let Some(p) = board.mouse {
+            let ip = p.floor().as_ivec2();
+            let to = (board.pixel_to_grid_x(ip.x), board.pixel_to_grid_y(ip.x, ip.y));
+            if to != from && (to.0 - from.0).abs() + (to.1 - from.1).abs() == 1 {
+                board.beghouled_swap(from, to, &mut effects, &mut resources, &mut images, &mut sounds);
+            }
+        }
+        return;
+    }
+    if mouse.just_released(MouseButton::Left)
         && board.menu_button.is_mouse_over()
         && board.can_interact_with_board_buttons()
     {
@@ -2946,6 +2975,18 @@ fn draw_backdrop(board: &Board, res: &GameResources, g: &mut Graphics) {
         && let Some(graveyard) = image("IMAGE_NIGHT_GRAVE_GRAPHIC")
     {
         g.draw_image(graveyard, 1092.0, 40.0);
+    }
+    // Beghouled's eaten squares (`mBeghouledEated`): a crater blocks a refill.
+    if let Some(state) = board.beghouled()
+        && let Some(crater) = image("IMAGE_CRATER")
+    {
+        for row in 0..crate::board::beghouled::ROWS as i32 {
+            for col in 0..crate::board::beghouled::COLS as i32 {
+                if state.is_eated(col, row) {
+                    g.draw_image(crater, board.grid_to_pixel_x(col) as f32, board.grid_to_pixel_y(col, row) as f32);
+                }
+            }
+        }
     }
     // `Challenge::DrawArtChallenge`: Seeing Stars' ghost picture.
     if board.minigame() == Some(MiniGame::SeeingStars) {

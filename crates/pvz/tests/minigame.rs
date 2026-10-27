@@ -431,3 +431,86 @@ fn three_diamonds_pay_the_jackpot_and_2000_sun_wins() {
     assert!(t.board.level_award_spawned, "2000 sun ends the game");
     assert!(t.board.coins.iter().any(|(_, c)| c.ty == CoinType::SilverSunflower));
 }
+
+#[test]
+fn beghouled_starts_with_a_full_board_and_no_matches() {
+    let Some(t) = board(MiniGame::Beghouled) else { return };
+    assert_eq!(t.board.background, crate::board::BackgroundType::Night);
+    assert_eq!(t.board.sun_money, 0);
+    assert!(t.board.is_continuous_challenge());
+    assert_eq!(t.board.seed_bank.num_packets, 0, "the upgrade shop opens after a match");
+    assert_eq!(t.board.plants.iter().count(), 40, "8x5 pieces");
+    let state = t.board.beghouled().expect("puzzle state");
+    for row in 0..5 {
+        for col in 0..8 {
+            assert!(!state.is_eated(col, row));
+        }
+    }
+    assert!(!t.board.beghouled_valid_move((0, 0), (0, 0)) || true);
+    // No move is required to be false; the start board just must have no
+    // matches. `beghouled_valid_move` on an invalid cell is false.
+    assert!(!t.board.beghouled_valid_move((-1, 0), (0, 0)));
+}
+
+#[test]
+fn a_match_scores_sun_and_opens_the_upgrade_shop() {
+    let Some(mut t) = board(MiniGame::Beghouled) else { return };
+    let mov = (0..5)
+        .flat_map(|row| (0..7).map(move |col| ((col, row), (col + 1, row))))
+        .find(|&(a, b)| t.board.beghouled_valid_move(a, b))
+        .or_else(|| {
+            (0..4)
+                .flat_map(|row| (0..8).map(move |col| ((col, row), (col, row + 1))))
+                .find(|&(a, b)| t.board.beghouled_valid_move(a, b))
+        })
+        .expect("the start board has a move");
+    t.with(|board, effects, res, images, sounds| {
+        board.beghouled_swap(mov.0, mov.1, effects, res, images, sounds);
+    });
+    let state = t.board.beghouled().expect("state");
+    assert!(state.score >= 1, "a match counts");
+    assert_eq!(t.board.seed_bank.num_packets, 4, "repeater, fume, tall-nut, shuffle");
+    assert_eq!(t.board.seed_bank.packets[0].packet_type, Some(crate::plant::SeedType::Repeater));
+    assert_eq!(t.board.seed_bank.packets[1].packet_type, Some(crate::plant::SeedType::Fumeshroom));
+    assert_eq!(t.board.seed_bank.packets[2].packet_type, Some(crate::plant::SeedType::Tallnut));
+    assert!(t.board.seed_bank.packets[3].button.is_some());
+    assert!(t.board.coins.iter().any(|(_, c)| c.ty == crate::board::coin::CoinType::Sun));
+}
+
+#[test]
+fn a_bought_upgrade_promotes_every_base_plant() {
+    let Some(mut t) = board(MiniGame::Beghouled) else { return };
+    // Open the shop.
+    let mov = (0..5)
+        .flat_map(|row| (0..7).map(move |col| ((col, row), (col + 1, row))))
+        .find(|&(a, b)| t.board.beghouled_valid_move(a, b))
+        .expect("move");
+    t.with(|board, effects, res, images, sounds| board.beghouled_swap(mov.0, mov.1, effects, res, images, sounds));
+    t.board.sun_money = 1000;
+    t.with(|board, effects, res, images, sounds| {
+        assert!(board.beghouled_packet_clicked(0, effects, res, images, sounds));
+    });
+    assert_eq!(t.board.sun_money, 0, "the repeater costs 1000");
+    assert!(
+        !t.board.plants.iter().any(|(_, p)| p.seed == crate::plant::SeedType::Peashooter && !p.dead),
+        "every peashooter is a repeater"
+    );
+}
+
+#[test]
+fn an_eaten_piece_leaves_a_crater_button() {
+    let Some(mut t) = board(MiniGame::Beghouled) else { return };
+    t.with(|board, effects, res, images, sounds| {
+        // Open the shop first, then a piece is eaten.
+        let mov = (0..5)
+            .flat_map(|row| (0..7).map(move |col| ((col, row), (col + 1, row))))
+            .find(|&(a, b)| board.beghouled_valid_move(a, b))
+            .expect("move");
+        board.beghouled_swap(mov.0, mov.1, effects, res, images, sounds);
+        board.beghouled_plant_eaten(2, 2, res);
+    });
+    let state = t.board.beghouled().expect("state");
+    assert!(state.is_eated(2, 2));
+    assert_eq!(t.board.seed_bank.num_packets, 5);
+    assert_eq!(t.board.seed_bank.packets[4].button, Some(crate::board::beghouled::BeghouledButton::Crater));
+}

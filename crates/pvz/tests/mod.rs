@@ -268,6 +268,7 @@ impl TestBoard {
             let mut effects = EffectSystem::default();
             board.start_portal_combat(&mut effects, resources, images);
             board.start_slot_machine(&mut effects, resources, images);
+            board.start_beghouled(&mut effects, resources, images, &mut rng);
         }
         if intro {
             board.draw_count = 1;
