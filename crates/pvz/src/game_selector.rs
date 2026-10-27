@@ -17,6 +17,7 @@ use crate::graphics::{Graphics, SexyColor};
 use crate::input::GameCursor;
 use crate::almanac::{AlmanacStart, do_almanac_dialog};
 use crate::award::AwardScreen;
+use crate::particle::{ParticleEffect, draw_particle_system};
 use crate::plant::SeedType;
 use crate::zombie::ZombieType;
 use crate::lawn_app::{PlayerChanged, confirm_quit, do_continue_dialog, do_create_user_dialog, do_user_dialog, lawn_message_box};
@@ -124,10 +125,13 @@ pub struct GameSelector {
     leaf_reanim: ReanimationId,
     leaf_counter: i32,
     hand_reanim: Option<ReanimationId>,
+    /// `mHasTrophy`: adventure has been finished, so the sunflower stands here.
+    has_trophy: bool,
+    trophy_sparkle: Option<crate::reanim::ParticleSystemId>,
     buttons: Buttons,
 }
 
-const SELECTOR_IMAGES: [&str; 28] = [
+const SELECTOR_IMAGES: [&str; 29] = [
     "IMAGE_REANIM_SELECTORSCREEN_ADVENTURE_BUTTON",
     "IMAGE_REANIM_SELECTORSCREEN_ADVENTURE_HIGHLIGHT",
     "IMAGE_REANIM_SELECTORSCREEN_STARTADVENTURE_BUTTON",
@@ -147,6 +151,7 @@ const SELECTOR_IMAGES: [&str; 28] = [
     "IMAGE_SELECTORSCREEN_OPTIONS2",
     "IMAGE_SELECTORSCREEN_HELP1",
     "IMAGE_SELECTORSCREEN_HELP2",
+    "IMAGE_SUNFLOWER_TROPHY",
     "IMAGE_SELECTORSCREEN_QUIT1",
     "IMAGE_SELECTORSCREEN_QUIT2",
     "IMAGE_SELECTORSCREEN_STORE",
@@ -330,6 +335,8 @@ fn build_selector(
         leaf_reanim,
         leaf_counter: 50,
         hand_reanim: None,
+        has_trophy: false,
+        trophy_sparkle: None,
         buttons: Buttons {
             adventure,
             minigame,
@@ -371,7 +378,10 @@ impl GameSelector {
             self.puzzle_locked &= !player.has_unlocked_puzzle_mode;
             self.survival_locked &= !player.has_unlocked_survival_mode;
         }
-        // TODO: trophy and its sparkle once particles exist.
+        self.has_trophy = player.is_some_and(PlayerInfo::has_finished_adventure);
+        if let Some(sparkle) = self.trophy_sparkle.take() {
+            effects.remove_particle(sparkle);
+        }
         self.sync_buttons(player, effects);
     }
 
@@ -581,12 +591,24 @@ fn update_selector(
     mut next_state: ResMut<NextState<AppState>>,
     mut effects: ResMut<EffectSystem>,
     mut dialogs: ResMut<Dialogs>,
-    resources: Res<GameResources>,
-    profiles: Res<ProfileMgr>,
+    mut resources: ResMut<GameResources>,
+    mut profiles: ResMut<ProfileMgr>,
     mut play_intro: ResMut<crate::board::PlayIntro>,
+    mut images: ResMut<Assets<Image>>,
     mut sounds: Sounds,
 ) {
     let gs = &mut *selector;
+
+    // The trophy's sparkle keeps going.
+    if let Some(system) = gs.trophy_sparkle.and_then(|id| effects.particle_mut(id)) {
+        system.update(sounds.rng());
+    }
+    // `AddTrophySparkle`: the sunflower's sparkle, once the selector is up.
+    if gs.has_trophy && gs.trophy_sparkle.is_none() && !matches!(gs.state, SelectorState::Open) {
+        let rng = sounds.rng();
+        gs.trophy_sparkle =
+            effects.add_particle(85.0, 380.0, crate::board::render_layer::TOP, ParticleEffect::TrophySparkle, &mut resources, &mut images, rng);
+    }
 
     if gs.starting_game {
         gs.starting_game_counter += 1;
@@ -631,13 +653,30 @@ fn update_selector(
                 selector.play("anim_sign", LoopType::PlayOnceAndHold, 0, 30.0);
                 gs.state = SelectorState::Idle;
             }
-            // TODO: the adventure-complete message (mNeedsMessageOnGameSelector).
         }
         SelectorState::NewUser if dialogs.get(DialogId::CreateUser).is_none() => {
             selector.play("anim_sign", LoopType::PlayOnceAndHold, 0, 30.0);
             gs.state = SelectorState::ShowSign;
         }
-        SelectorState::ShowSign if selector.loop_count > 0 => gs.state = SelectorState::Idle,
+        SelectorState::ShowSign if selector.loop_count > 0 => {
+            gs.state = SelectorState::Idle;
+            // `mNeedsMessageOnGameSelector`: adventure was finished.
+            let needs = profiles.player().is_some_and(|p| p.needs_message_on_game_selector != 0);
+            if needs {
+                if let Some(player) = profiles.player_mut() {
+                    player.needs_message_on_game_selector = 0;
+                }
+                profiles.save_current_details();
+                dialogs.do_dialog(
+                    &resources,
+                    DialogId::Message,
+                    &resources.translate("[ADVENTURE_COMPLETE_HEADER]"),
+                    &resources.translate("[ADVENTURE_COMPLETE_BODY]"),
+                    &resources.translate("[DIALOG_BUTTON_OK]"),
+                    ButtonMode::Footer,
+                );
+            }
+        }
         _ => {}
     }
 
@@ -834,7 +873,18 @@ fn draw_selector(
         g.set_color(SexyColor::rgba(255, 245, 200, 255));
         g.draw_string_matrix(font, to_affine(sign * offset), &welcome);
     }
-    // TODO: the sunflower trophy once adventure can be finished.
+    // The sunflower trophy once adventure has been finished. (Gold takes
+    // achievements, which aren't ported: the silver cel is used.)
+    if gs.has_trophy
+        && gs.state != SelectorState::Open
+        && let Some(trophy) = resources.image("IMAGE_SUNFLOWER_TROPHY")
+    {
+        let left = reanim.current_transform(reanim.find_track("SelectorScreen_BG_Left"));
+        g.draw_image_cel(trophy, left.x + 10.0, left.y + 390.0, 0, 0);
+    }
+    if let Some(sparkle) = gs.trophy_sparkle.and_then(|id| effects.particle(id)) {
+        draw_particle_system(&mut g, sparkle, &resources);
+    }
 
     // Widgets stacked over the screen, back to front.
     let b = &gs.buttons;

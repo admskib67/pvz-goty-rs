@@ -924,7 +924,9 @@ fn draw_store(
         }
     };
     let sign_y = animate_curve(50, 110, store.store_time, -150, 0, TodCurve::EaseInOut);
-    image(g, "IMAGE_STORE_BACKGROUND", 0, 0);
+    // `LawnApp::IsNight`: the store is drawn at night for the night worlds.
+    let night = matches!(player.level, 11..=20 | 31..=40 | 50);
+    image(g, if night { "IMAGE_STORE_BACKGROUNDNIGHT" } else { "IMAGE_STORE_BACKGROUND" }, 0, 0);
     let hatch_up = store.hatch_timer == 0 && store.hatch_open;
     if hatch_up {
         image(g, "IMAGE_STORE_CAR", 196, 138);

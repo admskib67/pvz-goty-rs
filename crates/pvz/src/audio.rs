@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bevy::audio::{AddAudioSource, AudioSource, ChannelCount, Decodable, SampleRate, Source, Volume};
+use bevy::audio::{AddAudioSource, AudioSink, AudioSinkPlayback, AudioSource, ChannelCount, Decodable, SampleRate, Source, Volume};
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use sexy::rand::MtRand;
@@ -33,10 +33,20 @@ impl Plugin for AudioPlugin {
             .init_resource::<UpdateCount>()
             .add_systems(Startup, start_music_stream)
             .add_systems(FixedFirst, |mut count: ResMut<UpdateCount>| count.0 += 1)
+            .add_systems(FixedUpdate, pause_foleys_with_the_board.run_if(resource_exists::<crate::board::Board>))
             .add_systems(FixedUpdate, |mut music: ResMut<Music>, board: Option<Res<crate::board::Board>>| {
                 let zombies = board.as_deref().filter(|b| !b.paused).map(crate::board::count_zombies_on_screen);
                 music.update(zombies);
             });
+    }
+}
+
+/// Pauses and resumes the foley the board's pause menu should silence.
+fn pause_foleys_with_the_board(mut sounds: Sounds, board: Option<Res<crate::board::Board>>, mut was_paused: Local<bool>) {
+    let paused = board.as_deref().is_some_and(|b| b.paused);
+    if paused != *was_paused {
+        sounds.pause_foleys(paused);
+        *was_paused = paused;
     }
 }
 
@@ -929,6 +939,7 @@ pub struct Sounds<'w, 's> {
     rng: ResMut<'w, GameRng>,
     tick: Res<'w, UpdateCount>,
     playing: Query<'w, 's, (), With<AudioPlayer<AudioSource>>>,
+    sinks: Query<'w, 's, &'static mut AudioSink>,
 }
 
 impl Sounds<'_, '_> {
@@ -944,9 +955,33 @@ impl Sounds<'_, '_> {
         Some(self.commands.spawn((AudioPlayer(handle), settings)).id())
     }
 
-    /// `SexyAppBase::SetSfxVolume`, for sounds started from now on.
+    /// `SexyAppBase::SetSfxVolume`: applies to the sounds already playing too.
     pub fn set_sfx_volume(&mut self, volume: f32) {
         self.system.sfx_volume = volume;
+        for mut sink in &mut self.sinks {
+            sink.set_volume(Volume::Linear(volume));
+        }
+    }
+
+    /// `TodFoley::GamePause`: foley flagged `MUTE_ON_PAUSE` stops and resumes
+    /// with the board.
+    pub fn pause_foleys(&mut self, paused: bool) {
+        let entities: Vec<Entity> = self
+            .system
+            .foley
+            .iter()
+            .filter(|(foley, _)| foley.params().flags & foley_flags::MUTE_ON_PAUSE != 0)
+            .flat_map(|(_, data)| data.instances.iter().flatten().map(|i| i.entity))
+            .collect();
+        for entity in entities {
+            if let Ok(sink) = self.sinks.get_mut(entity) {
+                if paused {
+                    sink.pause();
+                } else {
+                    sink.play();
+                }
+            }
+        }
     }
 
     /// `PlaySample`: plays a sound once.

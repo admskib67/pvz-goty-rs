@@ -2265,8 +2265,14 @@ fn board_input(
             }
         } else if board.cut_scene.seed_choosing {
             let screen = p + Vec2::new(board.x as f32, board.y as f32);
-            if let Some(warning) = board.seed_chooser_mouse_down(screen.floor().as_ivec2(), &mut sounds) {
-                do_chooser_warning_dialog(&mut dialogs, &resources, warning);
+            match board.seed_chooser_mouse_down(screen.floor().as_ivec2(), &mut sounds) {
+                Some(seed_chooser::ChooserClick::Warning(warning)) => {
+                    do_chooser_warning_dialog(&mut dialogs, &resources, warning);
+                }
+                Some(seed_chooser::ChooserClick::Almanac) => {
+                    crate::almanac::do_almanac_dialog(&mut dialogs, &resources, crate::almanac::AlmanacStart::Index);
+                }
+                None => {}
             }
         } else {
             board.mouse_down(p, false, &mut effects, &mut resources, &mut images, &mut sounds);

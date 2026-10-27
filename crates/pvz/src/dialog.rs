@@ -1151,6 +1151,7 @@ fn dialog_input(
                     Key::Delete => Some(EditKey::Delete),
                     Key::Home => Some(EditKey::Home),
                     Key::End => Some(EditKey::End),
+                    Key::Character(c) if ctrl && c.eq_ignore_ascii_case("z") => Some(EditKey::Undo),
                     Key::Enter => Some(EditKey::Return),
                     Key::Escape => {
                         if has_no {

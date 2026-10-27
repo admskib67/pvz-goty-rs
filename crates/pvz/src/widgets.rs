@@ -572,11 +572,14 @@ pub enum EditKey {
     Home,
     End,
     Return,
+    /// `Ctrl+Z`.
+    Undo,
 }
 
 /// A one-line text box (`EditWidget`, with `LawnEditWidget`'s
 /// capitalized first letter). Coordinates are relative to its parent.
-/// Not ported: clipboard, undo and password characters.
+/// Not ported: clipboard (no OS clipboard here) and password characters
+/// (nothing asks for a password).
 #[derive(Debug, Clone)]
 pub struct EditWidget {
     pub x: i32,
@@ -597,6 +600,9 @@ pub struct EditWidget {
     pub has_focus: bool,
     auto_cap_first_letter: bool,
     had_double_click: bool,
+    /// `mUndoText`/`mUndoCursor`: what the last edit replaced.
+    undo_text: Vec<char>,
+    undo_cursor: i32,
 }
 
 /// `gLawnEditWidgetColors`: no background or outline.
@@ -624,6 +630,8 @@ impl EditWidget {
             has_focus: false,
             auto_cap_first_letter: true,
             had_double_click: false,
+            undo_text: Vec::new(),
+            undo_cursor: 0,
         }
     }
 
@@ -701,6 +709,16 @@ impl EditWidget {
         font: &Font,
         allow: impl Fn(char) -> bool,
     ) -> bool {
+        // `Ctrl+Z` puts back what the last edit changed.
+        if matches!(key, Some(EditKey::Undo)) {
+            std::mem::swap(&mut self.text, &mut self.undo_text);
+            self.cursor_pos = std::mem::replace(&mut self.undo_cursor, self.cursor_pos);
+            self.hilite_pos = -1;
+            self.focus_cursor(false, font);
+            return false;
+        }
+        // Remember the text before it changes (`mUndoText`).
+        let before = self.text.clone();
         let mut remove_hilite = !shift;
         if shift && self.hilite_pos == -1 {
             self.hilite_pos = self.cursor_pos;
@@ -794,6 +812,10 @@ impl EditWidget {
             }
         }
 
+        if self.text != before {
+            self.undo_text = before;
+            self.undo_cursor = old_cursor;
+        }
         if self.max_chars != -1 && self.text.len() as i32 > self.max_chars {
             self.text.truncate(self.max_chars as usize);
         }

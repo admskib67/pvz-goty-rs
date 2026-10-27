@@ -24,7 +24,8 @@ impl Plugin for TitlePlugin {
         app.add_systems(OnEnter(AppState::Title), start_title)
             .add_systems(OnExit(AppState::Title), end_title)
             .add_systems(FixedUpdate, update_title.run_if(resource_exists::<TitleScreen>))
-            .add_systems(Update, (title_input, draw_title).chain().run_if(resource_exists::<TitleScreen>));
+            .add_systems(Update, (title_input, draw_title).chain().run_if(resource_exists::<TitleScreen>))
+            .add_systems(Update, dismiss_resource_error.run_if(resource_exists::<ResourceError>));
     }
 }
 
@@ -89,6 +90,16 @@ impl Default for TitleScreen {
     }
 }
 
+/// The resource error dialog is up: a click quits the game.
+#[derive(Resource)]
+struct ResourceError;
+
+fn dismiss_resource_error(mouse: Res<ButtonInput<MouseButton>>, keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {
+    if mouse.any_just_pressed([MouseButton::Left, MouseButton::Right]) || keys.get_just_pressed().next().is_some() {
+        exit.write(AppExit::error());
+    }
+}
+
 /// Development aid: continue past the title screen as soon as loading is
 /// done; `adventure` goes straight on into the player's next adventure level,
 /// and `options` or `help` presses that main menu button.
@@ -101,7 +112,6 @@ fn start_title(
     mut commands: Commands,
     game_pak: Res<GamePak>,
     mut images: ResMut<Assets<Image>>,
-    mut exit: MessageWriter<AppExit>,
 ) {
     let files = game_pak.get().expect("an install is chosen before the title screen");
     let resources = GameResources::new(files).and_then(|mut res| {
@@ -115,9 +125,30 @@ fn start_title(
             commands.insert_resource(EffectSystem::default());
         }
         Err(e) => {
-            // TODO: show this on screen like the original's resource error dialog.
             error!("couldn't load game resources: {e}");
-            exit.write(AppExit::error());
+            // `LawnApp`'s resource error: say what's wrong, then quit on a click.
+            commands.insert_resource(ResourceError);
+            commands
+                .spawn((
+                    Node {
+                        width: percent(100),
+                        height: percent(100),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    BackgroundColor(Color::BLACK),
+                ))
+                .with_children(|parent| {
+                    parent.spawn((
+                        Text::new(format!(
+                            "There is a problem loading the game's resources.\n\n{e}\n\nClick to quit."
+                        )),
+                        TextFont { font_size: FontSize::Px(22.0), ..default() },
+                        TextColor(Color::WHITE),
+                        TextLayout::justify(Justify::Center),
+                    ));
+                });
         }
     }
 }

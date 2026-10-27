@@ -27,6 +27,18 @@ const SEED_PACKET_WIDTH: i32 = 50;
 const SEED_PACKET_HEIGHT: i32 = 70;
 /// The PLAY button (`mStartButton`): x, y, width, height.
 const START_BUTTON: (i32, i32, i32, i32) = (154, 545, 156, 42);
+/// `mAlmanacButton`: `[ALMANAC_BUTTON]`, at the bottom right of the chooser.
+const ALMANAC_BUTTON: (i32, i32) = (560, 572);
+/// `IMAGE_SEEDCHOOSER_BUTTON2`'s size.
+const ALMANAC_BUTTON_SIZE: (i32, i32) = (111, 26);
+/// What a click in the chooser asked for besides picking seeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ChooserClick {
+    /// `OnStartButton` has a question before play starts.
+    Warning(ChooserWarning),
+    /// The Almanac button was pressed.
+    Almanac,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChosenSeedState {
@@ -350,7 +362,7 @@ impl Board {
 
     /// `SeedChooserScreen::MouseDown`, at a point in screen coordinates.
     /// Returns a warning to ask about before play starts, if any.
-    pub(super) fn seed_chooser_mouse_down(&mut self, p: IVec2, sounds: &mut Sounds) -> Option<ChooserWarning> {
+    pub(super) fn seed_chooser_mouse_down(&mut self, p: IVec2, sounds: &mut Sounds) -> Option<ChooserClick> {
         let num_packets = self.seed_bank.num_packets;
         let chooser = self.seed_chooser.as_mut().filter(|c| c.mouse_visible)?;
         chooser.land_all();
@@ -390,11 +402,21 @@ impl Board {
             return None;
         }
 
+        // `CanShowAlmanac`: the Almanac button.
+        if (!self.first_time_adventure || self.level >= 15)
+            && p.x >= ALMANAC_BUTTON.0
+            && p.x < ALMANAC_BUTTON.0 + ALMANAC_BUTTON_SIZE.0
+            && p.y >= ALMANAC_BUTTON.1
+            && p.y < ALMANAC_BUTTON.1 + ALMANAC_BUTTON_SIZE.1
+        {
+            sounds.play_sample("SOUND_TAP");
+            return Some(ChooserClick::Almanac);
+        }
         let (bx, by, bw, bh) = START_BUTTON;
         if p.x >= bx && p.x < bx + bw && p.y >= by && p.y < by + bh {
             sounds.play_sample("SOUND_TAP");
             chooser.warnings_accepted = 0;
-            return self.seed_chooser_start();
+            return self.seed_chooser_start().map(ChooserClick::Warning);
         }
         // The imitater's button opens its panel, once it has been bought and isn't in use.
         let (ix, iy) = IMITATER_BUTTON;
@@ -574,6 +596,31 @@ impl Board {
             let ascent = font.font.ascent;
             let y = by + (bh - ascent / 6 - 1 + ascent) / 2 - 1;
             g.tod_draw_string(font, bx + bw / 2, y, &label, color, Justify::Center);
+        }
+        // `CanShowAlmanac`: the Almanac button, bottom right.
+        if (!self.first_time_adventure || self.level >= 15)
+            && let Some(button) = res.image("IMAGE_SEEDCHOOSER_BUTTON2")
+        {
+            let (ax, ay) = ALMANAC_BUTTON;
+            g.draw_image(button, ax as f32, ay as f32);
+            let over = mouse.is_some_and(|(mx, my)| {
+                mx >= ax as f32
+                    && mx < (ax + ALMANAC_BUTTON_SIZE.0) as f32
+                    && my >= ay as f32
+                    && my < (ay + ALMANAC_BUTTON_SIZE.1) as f32
+            });
+            if over
+                && chooser.mouse_visible
+                && let Some(glow) = res.image("IMAGE_SEEDCHOOSER_BUTTON2_GLOW")
+            {
+                g.draw_image(glow, ax as f32, ay as f32);
+            }
+            let label = res.translate("[ALMANAC_BUTTON]");
+            if let Some(font) = res.font("FONT_BRIANNETOD12") {
+                let ascent = font.font.ascent;
+                let y = ay + (ALMANAC_BUTTON_SIZE.1 - ascent / 6 - 1 + ascent) / 2 - 1;
+                g.tod_draw_string(font, ax + ALMANAC_BUTTON_SIZE.0 / 2, y, &label, SexyColor::rgba(42, 42, 90, 255), Justify::Center);
+            }
         }
         // ShowToolTip: the plant under the mouse, when nothing's moving.
         if chooser.mouse_visible

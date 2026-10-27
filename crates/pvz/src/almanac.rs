@@ -9,15 +9,14 @@
 //! they never mix with a board underneath.
 //!
 //! Behaviour per ruslan831 decomp, `Lawn/Widget/AlmanacDialog.cpp`. Not
-//! ported: the pool's animated water behind the water plants, the hand
-//! cursor, and live portraits of the zombies that aren't ported yet (they
-//! stand still).
+//! ported: the hand cursor.
 
 use bevy::prelude::*;
 use sexy::data_array::DataArray;
 
 use crate::audio::{Music, MusicTune, Sounds};
 use crate::board::figures::{Fx, Plant, PlantAction, ZOMBIE_WAVE_UI, Zombie, ZombieEnv, draw_cached_zombie};
+use crate::board::pool::PoolWater;
 use crate::board::{MAX_GRID_SIZE_Y, draw_seed_packet_at};
 use crate::dialog::{DialogId, DialogKind, Dialogs, LawnDialog};
 use crate::graphics::{Graphics, Justify, SexyColor, SexyRect};
@@ -169,6 +168,8 @@ pub struct Almanac {
     /// `SeedTypeAvailable` for each listed plant.
     has_seed: [bool; NUM_ALMANAC_SEEDS],
     mouse: Option<IVec2>,
+    /// `PoolEffectDraw`: the water behind the water plants.
+    water: Option<PoolWater>,
 }
 
 /// The player as the almanac sees them: `--lvl` stands in for their level.
@@ -204,6 +205,14 @@ impl Almanac {
                 error!("{e}");
             }
         }
+
+        // The water plants are shown on the pool's animated water.
+        for id in ["IMAGE_POOL", "IMAGE_POOL_BASE", "IMAGE_POOL_SHADING", "IMAGE_POOL_BASE_NIGHT", "IMAGE_POOL_SHADING_NIGHT"] {
+            if let Err(e) = res.load_image(id, images) {
+                error!("{e}");
+            }
+        }
+        let water = PoolWater::new(res, images);
 
         let label_button = |label: &str, image, over, (x, y, w, h), text_offset| {
             let mut b = LabelButton::new(res.translate(label), "FONT_BRIANNETOD12", BUTTON_TEXT, image);
@@ -252,6 +261,7 @@ impl Almanac {
             knowledge: Knowledge { level: player.level, finished_adventure: player.finished_adventure, defeated: defeated.0 },
             has_seed,
             mouse: None,
+            water,
         };
         match start {
             AlmanacStart::Index => almanac.set_page(Page::Index, res, images, sounds),
@@ -438,6 +448,9 @@ impl Almanac {
         if let Some(zombie) = &mut self.zombie {
             zombie.update_street(&mut self.effects);
         }
+        if let Some(water) = &mut self.water {
+            water.tick(images);
+        }
     }
 
     /// `Draw`.
@@ -511,6 +524,15 @@ impl Almanac {
         };
         if let Some(ground) = res.image(ground) {
             g.draw_image(ground, 521.0, 107.0);
+        }
+        if matches!(seed, SeedType::Lilypad | SeedType::Tanglekelp | SeedType::Cattail | SeedType::Seashroom)
+            && let Some(water) = &self.water
+        {
+            g.push_state();
+            g.clip_rect(475.0, 0.0, 397.0, 500.0);
+            g.translate(0.0, -145.0);
+            water.draw(g, res, seed == SeedType::Seashroom);
+            g.pop_state();
         }
         if let Some(plant) = &self.plant {
             plant.draw(g, false, &self.effects, res);

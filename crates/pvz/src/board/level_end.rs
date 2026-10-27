@@ -298,8 +298,16 @@ impl Board {
             if self.level == super::FINAL_LEVEL {
                 player.level = 1;
                 player.finished_adventure += 1;
+                // The selector says well done the first time adventure's done.
+                if player.finished_adventure == 1 {
+                    player.needs_message_on_game_selector = 1;
+                }
             } else {
                 player.level = self.level + 1;
+                // 4-4: Dave owes the player a taco (`mNeedsMagicTacoReward`).
+                if !player.has_finished_adventure() && self.level == 34 {
+                    player.needs_magic_taco_reward = 1;
+                }
             }
         }
         profiles.save_current_details();

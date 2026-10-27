@@ -361,8 +361,9 @@ fn loading_thread_proc(files: &GameFiles, manifest: &Manifest, shared: &LoadingS
         total += manifest.group(group).map_or(0, |g| g.count() as u32) * weight;
     }
     total += THREAD_MUSIC.len() as u32 * MUSIC_TASK_WEIGHT;
-    // TODO: the original also counts reanimation, particle and preload tasks
-    // here; add them as those systems get ported.
+    // The original also counts its reanimation, particle and preload tasks;
+    // this port loads those on demand, so the groups and music above are all
+    // the title screen waits for.
     shared.total.store(total, Ordering::Release);
 
     for (group, weight) in LOADING_GROUPS {
