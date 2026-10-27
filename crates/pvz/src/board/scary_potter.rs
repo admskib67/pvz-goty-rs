@@ -56,7 +56,7 @@ struct PotSpec {
 
 impl Board {
     pub fn is_scary_potter_level(&self) -> bool {
-        matches!(self.mode, GameMode::Puzzle(_))
+        matches!(self.mode, GameMode::Puzzle(level) if level.is_vasebreaker())
     }
 
     fn puzzle_level(&self) -> Option<PuzzleLevel> {

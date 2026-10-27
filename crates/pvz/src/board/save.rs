@@ -333,6 +333,7 @@ impl SaveData {
                         GridItemType::PortalSquare | GridItemType::PortalCircle => 3,
                         // Vasebreaker pots aren't saved.
                         GridItemType::ScaryPot => 4,
+                        GridItemType::IzombieBrain => 5,
                     },
                     col: g.grid_x,
                     row: g.grid_y,

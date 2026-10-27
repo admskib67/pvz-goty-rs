@@ -690,3 +690,57 @@ fn clearing_vasebreaker_one_awards_and_endless_deals_another_round() {
     assert_eq!(t.board.survival_stage, 1, "the endless streak moves on");
     assert!(t.board.grid_items.iter().any(|(_, g)| g.item_type == crate::board::grid_item::GridItemType::ScaryPot));
 }
+
+#[test]
+fn i_zombie_starts_with_brains_plants_and_a_zombie_shop() {
+    let Some(t) = TestBoard::puzzle(crate::board::PuzzleLevel::IZombie(1)) else { return };
+    assert_eq!(t.board.background, crate::board::BackgroundType::Night);
+    assert_eq!(t.board.sun_money, 150);
+    assert_eq!(t.board.seed_bank.num_packets, 3, "normal, pail and football");
+    assert_eq!(t.board.waves.num_waves, 0);
+    assert!(!t.board.seed_bank.packets[0].zombie.is_none());
+    assert_eq!(t.board.grid_items.iter().filter(|(_, g)| g.item_type == crate::board::grid_item::GridItemType::IzombieBrain).count(), 5);
+    assert!(t.board.plants.iter().count() > 10, "the pre-placed lawn");
+    assert!(t.board.lawn_mowers.is_empty(), "no mowers");
+}
+
+#[test]
+fn i_zombie_buys_and_places_a_zombie_on_its_side() {
+    let Some(mut t) = TestBoard::puzzle(crate::board::PuzzleLevel::IZombie(1)) else { return };
+    t.click(100, 20);
+    assert_eq!(t.board.cursor.cursor_type, crate::board::cursor::CursorType::PlantZombie);
+    let (x, y) = t.square_center(4, 0);
+    t.click(x, y);
+    assert_eq!(t.board.sun_money, 100, "a normal zombie costs 50");
+    assert!(t.board.zombies.iter().any(|(_, z)| z.row == 0 && !z.is_dead_or_dying()));
+    // The left of the line is refused.
+    t.click(100, 20);
+    let (x, y) = t.square_center(1, 0);
+    t.click(x, y);
+    assert_eq!(t.board.sun_money, 100);
+    assert_eq!(t.board.zombies.iter().filter(|(_, z)| !z.is_dead_or_dying()).count(), 1);
+}
+
+#[test]
+fn i_zombie_eats_all_five_brains_to_win() {
+    let Some(mut t) = TestBoard::puzzle(crate::board::PuzzleLevel::IZombie(1)) else { return };
+    t.with(|board, effects, res, images, sounds| {
+        for row in 0..5 {
+            board.izombie_place_zombie(crate::zombie::ZombieType::Normal, 0, row, effects, res, images, sounds);
+        }
+        for (_, zombie) in board.zombies.iter_mut() {
+            zombie.place_x(0.0);
+        }
+    });
+    t.ticks(90);
+    assert!(t.board.level_award_spawned, "five brains win the level");
+    assert_eq!(t.board.izombie_score, 5);
+}
+
+#[test]
+fn i_zombie_loses_when_no_zombie_and_under_fifty_sun_remain() {
+    let Some(mut t) = TestBoard::puzzle(crate::board::PuzzleLevel::IZombie(1)) else { return };
+    t.board.sun_money = 40;
+    t.with(|board, effects, res, images, sounds| board.update_izombie(effects, res, images, sounds));
+    assert!(t.board.pending_game_over);
+}

@@ -42,6 +42,8 @@ pub enum GridItemType {
     PortalCircle,
     /// Vasebreaker's pot (`GRIDITEM_SCARY_POT`).
     ScaryPot,
+    /// I, Zombie's brain (`GRIDITEM_IZOMBIE_BRAIN`).
+    IzombieBrain,
 }
 
 /// `GridItemState`, for what's ported so far.
@@ -70,7 +72,7 @@ pub struct GridItem {
     pub grid_y: i32,
     pub render_order: i32,
     /// `mGridItemCounter`: a grave rises from below 0 up to 100.
-    counter: i32,
+    pub counter: i32,
     /// The rake's animation (`mGridItemReanimID`).
     reanim: Option<crate::reanim::ReanimationId>,
     /// What a Vasebreaker pot holds (`mScaryPotType` and its payload).
@@ -184,6 +186,21 @@ impl Board {
 }
 
 impl GridItem {
+    /// I, Zombie's brain on row `grid_y` at the left edge.
+    pub(super) fn izombie_brain(grid_y: i32) -> Self {
+        Self {
+            item_type: GridItemType::IzombieBrain,
+            state: GridItemState::Normal,
+            grid_x: 0,
+            grid_y,
+            render_order: make_render_order(render_layer::PLANT, grid_y, 0),
+            counter: 70,
+            reanim: None,
+            pot: None,
+            dead: false,
+        }
+    }
+
     /// A Vasebreaker pot.
     pub(super) fn scary_pot(grid_x: i32, grid_y: i32, pot: super::scary_potter::ScaryPot) -> Self {
         Self {
@@ -243,6 +260,7 @@ impl GridItem {
                 (make_render_order(render_layer::PARTICLE, grid_y, 0), 0)
             }
             GridItemType::ScaryPot => (make_render_order(render_layer::PLANT, grid_y, 0), 0),
+            GridItemType::IzombieBrain => (make_render_order(render_layer::PLANT, grid_y, 0), 70),
         };
         Self { item_type, state: GridItemState::Normal, grid_x, grid_y, render_order, counter, reanim: None, pot: None, dead: false }
     }
@@ -601,6 +619,15 @@ impl Board {
             GridItemType::Ladder => self.draw_ladder(item, res, g),
             GridItemType::PortalSquare | GridItemType::PortalCircle => {}
             GridItemType::ScaryPot => self.draw_scary_pot(item, res, g),
+            GridItemType::IzombieBrain => {
+                if let Some(brain) = res.image("IMAGE_BRAIN") {
+                    g.draw_image(
+                        brain,
+                        self.grid_to_pixel_x(0) as f32 - 40.0,
+                        self.grid_to_pixel_y(0, item.grid_y) as f32 + 40.0,
+                    );
+                }
+            }
             GridItemType::Rake => {
                 if let Some(reanim) = item.reanim.and_then(|id| effects.get(id)) {
                     crate::reanim::draw_reanimation(g, reanim, res);

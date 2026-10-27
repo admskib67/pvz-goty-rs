@@ -280,6 +280,7 @@ impl TestBoard {
             let mut live = sounds.get_mut(&mut world).expect("sounds");
             board.start_zombiquarium(&mut effects, resources, images, &mut live);
             board.start_scary_potter(&mut effects, resources, images, &mut rng);
+            board.start_izombie(&mut effects, resources, images, &mut rng);
             sounds.apply(&mut world);
         }
         if intro {

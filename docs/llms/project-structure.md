@@ -112,6 +112,7 @@ Safe wrapper over libopenmpt's C API (load from memory, render stereo, order/row
 | `beghouled.rs` | the 8×5 Beghouled / Twist match-3 board and shop |
 | `zombiquarium.rs` | the fish tank's packets, brains and win/loss |
 | `scary_potter.rs` | Vasebreaker's pots and phase completion |
+| `izombie.rs` | I, Zombie's brains, plants, zombie shop and placement |
 | `plant.rs` | `Plant`: every plant's behaviour; acts through `PlantAction`s the board carries out |
 | `zombie.rs` | `Zombie`: walking, eating, damage, every ported zombie type, pool/roof/vehicle logic, drawing; `ZombieEnv` + `Fx` are what it gets from the board |
 | `zombie/boss.rs` | Dr. Zomboss (`update_boss`, `BossState`, `BossRequest`s) |

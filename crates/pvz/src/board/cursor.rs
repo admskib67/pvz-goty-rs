@@ -43,6 +43,8 @@ pub enum CursorType {
     /// Carrying a seed packet picked up off the lawn
     /// (`CURSOR_TYPE_PLANT_FROM_USABLE_COIN`).
     PlantFromUsableCoin,
+    /// Carrying a zombie from I, Zombie's shop.
+    PlantZombie,
 }
 
 /// What the mouse is carrying (`CursorObject`).
@@ -57,11 +59,13 @@ pub struct CursorObject {
     pub imitater: bool,
     /// The falling packet coin this plant came from (`mCoinID`).
     pub usable_coin: Option<sexy::data_array::Id<Coin>>,
+    /// The zombie being placed in I, Zombie.
+    pub zombie: Option<crate::zombie::ZombieType>,
 }
 
 impl Default for CursorObject {
     fn default() -> Self {
-        Self { cursor_type: CursorType::Normal, seed: None, seed_bank_index: None, cob_cannon: None, imitater: false, usable_coin: None }
+        Self { cursor_type: CursorType::Normal, seed: None, seed_bank_index: None, cob_cannon: None, imitater: false, usable_coin: None, zombie: None }
     }
 }
 
@@ -392,7 +396,7 @@ impl Board {
     }
 
     /// `Board::CountSunBeingCollected`.
-    fn count_sun_being_collected(&self) -> i32 {
+    pub(super) fn count_sun_being_collected(&self) -> i32 {
         self.coins.iter().filter(|(_, c)| c.is_being_collected && !c.dead).map(|(_, c)| c.sun_value()).sum()
     }
 
@@ -452,6 +456,18 @@ impl Board {
         })
     }
 
+    fn izombie_packet_at(&self, p: IVec2) -> Option<usize> {
+        let bank = &self.seed_bank;
+        let local = p - IVec2::new(bank.x, bank.y);
+        bank.packets[..bank.num_packets].iter().position(|packet| {
+            packet.zombie.is_some()
+                && local.x >= packet.x + packet.offset_x
+                && local.x < packet.x + packet.offset_x + 50
+                && local.y >= packet.y
+                && local.y < packet.y + 70
+        })
+    }
+
     pub(super) fn seed_packet_at(&self, p: IVec2) -> Option<usize> {
         let bank = &self.seed_bank;
         let local = p - IVec2::new(bank.x, bank.y);
@@ -474,7 +490,10 @@ impl Board {
     }
 
     fn is_plant_in_cursor(&self) -> bool {
-        matches!(self.cursor.cursor_type, CursorType::PlantFromBank | CursorType::PlantFromUsableCoin)
+        matches!(
+            self.cursor.cursor_type,
+            CursorType::PlantFromBank | CursorType::PlantFromUsableCoin | CursorType::PlantZombie
+        )
     }
 
     /// `Board::ClearCursor`.
@@ -571,6 +590,22 @@ impl Board {
             && let Some(index) = self.beghouled_packet_at(ip)
         {
             self.beghouled_packet_clicked(index, effects, res, images, sounds);
+            return;
+        }
+        // I, Zombie: a click on a zombie packet picks it up.
+        if self.is_izombie_level()
+            && !right
+            && let Some(index) = self.izombie_packet_at(ip)
+        {
+            let Some(zombie) = self.seed_bank.packets[index].zombie else { return };
+            let cost = self.plant_cost_for_zombie(zombie);
+            if self.can_take_sun_money(cost) {
+                self.cursor = CursorObject { cursor_type: CursorType::PlantZombie, zombie: Some(zombie), ..Default::default() };
+                sounds.play_sample("SOUND_SEEDLIFT");
+            } else {
+                sounds.play_sample("SOUND_BUZZER");
+                self.out_of_money_counter = 70;
+            }
             return;
         }
         // Vasebreaker: a click on a pot breaks it.
@@ -817,6 +852,25 @@ impl Board {
             board.refresh_seed_packet_from_cursor(res);
             sounds.play_foley(FoleyType::Drop);
         };
+        if let Some(zombie) = self.cursor.zombie {
+            if right {
+                self.cursor = CursorObject::default();
+                sounds.play_foley(FoleyType::Drop);
+                return;
+            }
+            let (col, row) = (self.pixel_to_grid_x(p.x), self.pixel_to_grid_y(p.x, p.y));
+            if !self.izombie_can_place(col, row, zombie) {
+                return;
+            }
+            let cost = self.plant_cost_for_zombie(zombie);
+            if !self.take_sun_money(cost, sounds) {
+                return;
+            }
+            self.izombie_place_zombie(zombie, col, row, effects, res, images, sounds);
+            sounds.play_foley(FoleyType::Plant);
+            self.cursor = CursorObject::default();
+            return;
+        }
         let Some(seed) = self.cursor.seed else { return };
         if right {
             drop(self, sounds, res);

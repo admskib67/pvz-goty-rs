@@ -26,6 +26,7 @@ mod cutscene;
 mod dev_scene;
 mod fog;
 mod grid_item;
+mod izombie;
 mod lawn_mower;
 mod level_end;
 mod message;
@@ -155,10 +156,12 @@ pub enum GameMode {
 pub enum PuzzleLevel {
     Vasebreaker(u8),
     VasebreakerEndless,
+    IZombie(u8),
+    IZombieEndless,
 }
 
 impl PuzzleLevel {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 20] = [
         Self::Vasebreaker(1),
         Self::Vasebreaker(2),
         Self::Vasebreaker(3),
@@ -169,6 +172,16 @@ impl PuzzleLevel {
         Self::Vasebreaker(8),
         Self::Vasebreaker(9),
         Self::VasebreakerEndless,
+        Self::IZombie(1),
+        Self::IZombie(2),
+        Self::IZombie(3),
+        Self::IZombie(4),
+        Self::IZombie(5),
+        Self::IZombie(6),
+        Self::IZombie(7),
+        Self::IZombie(8),
+        Self::IZombie(9),
+        Self::IZombieEndless,
     ];
 
     pub fn index(self) -> usize {
@@ -176,7 +189,29 @@ impl PuzzleLevel {
     }
 
     pub fn is_endless(self) -> bool {
-        self == Self::VasebreakerEndless
+        matches!(self, Self::VasebreakerEndless | Self::IZombieEndless)
+    }
+
+    pub fn is_izombie(self) -> bool {
+        matches!(self, Self::IZombie(_) | Self::IZombieEndless)
+    }
+
+    pub fn is_vasebreaker(self) -> bool {
+        !self.is_izombie()
+    }
+
+    /// The tile's column/row on the puzzle page (`gChallengeDefs`).
+    pub fn row(self) -> i32 {
+        (self.index() / 5) as i32
+    }
+
+    pub fn col(self) -> i32 {
+        (self.index() % 5) as i32
+    }
+
+    /// `mChallengeIconIndex`: Vasebreaker pots or I, Zombie's zombie.
+    pub fn icon(self) -> u32 {
+        if self.is_izombie() { 11 } else { 10 }
     }
 
     /// The tile's label key.
@@ -193,6 +228,17 @@ impl PuzzleLevel {
             Self::Vasebreaker(9) => "[SCARY_POTTER_9]",
             Self::VasebreakerEndless => "[SCARY_POTTER_ENDLESS]",
             Self::Vasebreaker(_) => "[SCARY_POTTER_1]",
+            Self::IZombie(1) => "[I_ZOMBIE_1]",
+            Self::IZombie(2) => "[I_ZOMBIE_2]",
+            Self::IZombie(3) => "[I_ZOMBIE_3]",
+            Self::IZombie(4) => "[I_ZOMBIE_4]",
+            Self::IZombie(5) => "[I_ZOMBIE_5]",
+            Self::IZombie(6) => "[I_ZOMBIE_6]",
+            Self::IZombie(7) => "[I_ZOMBIE_7]",
+            Self::IZombie(8) => "[I_ZOMBIE_8]",
+            Self::IZombie(9) => "[I_ZOMBIE_9]",
+            Self::IZombieEndless => "[I_ZOMBIE_ENDLESS]",
+            Self::IZombie(_) => "[I_ZOMBIE_1]",
         }
     }
 }
@@ -477,6 +523,8 @@ pub struct Board {
     pub aquarium_brains: Vec<(f32, f32)>,
     /// Zombiquarium: whether the tank has already lost.
     aquarium_lost: bool,
+    /// I, Zombie's brains eaten (`mChallengeScore`).
+    pub izombie_score: i32,
     /// Slot Machine: the handle's reanimation, whether the reels are
     /// spinning, and how many pulls have been made.
     slot_handle: Option<crate::reanim::ReanimationId>,
@@ -711,6 +759,7 @@ impl Board {
             beghouled: None,
             aquarium_brains: Vec::new(),
             aquarium_lost: false,
+            izombie_score: 0,
             slot_handle: None,
             slot_rolling: false,
             slot_roll_count: 0,
@@ -910,7 +959,7 @@ impl Board {
         } else if let GameMode::Survival { lawn, .. } = self.mode {
             // `Challenge::InitLevel`: the survival lawn picks the background.
             lawn.background()
-        } else if self.is_scary_potter_level() {
+        } else if self.is_puzzle_level() {
             // `PickBackground`: the puzzle levels are at night.
             BackgroundType::Night
         } else if let Some(game) = self.minigame() {
@@ -1002,7 +1051,7 @@ impl Board {
         self.minigame() != Some(MiniGame::SlotMachine)
             && self.minigame() != Some(MiniGame::Zombiquarium)
             && !self.is_beghouled()
-            && !self.is_scary_potter_level()
+            && !self.is_puzzle_level()
             && !self.has_conveyor_belt_seed_bank()
             && !self.is_whack_a_zombie_level()
             && !self.is_challenge_without_seed_bank()
@@ -1023,7 +1072,7 @@ impl Board {
         if self.minigame() == Some(MiniGame::Zombiquarium) {
             return 2;
         }
-        if self.is_scary_potter_level() {
+        if self.is_puzzle_level() {
             return 0;
         }
         if self.has_conveyor_belt_seed_bank() {
@@ -1122,7 +1171,7 @@ impl Board {
     /// rows get the pool cleaner when it's been bought (see `LawnMower::new`).
     fn init_lawn_mowers(&mut self) {
         // Zombiquarium has no lawn, and the puzzle levels have no mowers.
-        if self.is_aquarium() || self.is_scary_potter_level() {
+        if self.is_aquarium() || self.is_puzzle_level() {
             return;
         }
         // The roof has mowers only once the player has bought the roof cleaner.
@@ -1268,6 +1317,7 @@ fn new_game(
     board.start_beghouled(&mut effects, &mut resources, &mut images, sounds.rng());
     board.start_zombiquarium(&mut effects, &mut resources, &mut images, &mut sounds);
     board.start_scary_potter(&mut effects, &mut resources, &mut images, sounds.rng());
+    board.start_izombie(&mut effects, &mut resources, &mut images, sounds.rng());
     board.prev_result_restart = was_lost;
     board.level_overridden = level_override.0.is_some();
     // PreNewGame erases the mode's save before a fresh game (never for a
@@ -1530,6 +1580,7 @@ impl Board {
         self.update_portal_combat(effects, resources, images, sounds);
         self.update_slot_machine(effects, resources, images, sounds);
         self.update_zombiquarium();
+        self.update_izombie(effects, resources, images, sounds);
         // Last Stand's button is up while the lawn waits for the onslaught.
         if self.onslaught_button.is_some() {
             let waiting = !self.last_stand_onslaught
@@ -1739,6 +1790,7 @@ impl Board {
             let mut shakes = Vec::new();
             let mut boss_requests = Vec::new();
             let aquarium = self.is_aquarium();
+            let izombie = self.is_izombie_level();
             let mut aquarium_events = Vec::new();
             for (id, zombie) in self.zombies.iter_mut() {
                 if aquarium {
@@ -1784,7 +1836,7 @@ impl Board {
                         self.ice_min_x[row] = self.ice_min_x[row].min(x);
                         self.ice_timer[row] = 3000;
                     }
-                    if zombie.reached_house() {
+                    if zombie.reached_house() && !izombie {
                         self.zombies_won_trigger.get_or_insert(id);
                     }
                 } else if zombies_won && zombie.is_winner() {

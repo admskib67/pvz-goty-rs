@@ -47,6 +47,8 @@ pub struct SeedPacket {
     pub button: Option<super::beghouled::BeghouledButton>,
     /// Zombiquarium's Snorkel/Trophy packet (`SEED_ZOMBIQUARIUM_*`).
     pub aquarium: Option<super::zombiquarium::AquariumPacket>,
+    /// I, Zombie's zombie packet (`SEED_ZOMBIE_*`).
+    pub zombie: Option<crate::zombie::ZombieType>,
 }
 
 impl Default for SeedPacket {
@@ -67,6 +69,7 @@ impl Default for SeedPacket {
             slot_position: 0.0,
             button: None,
             aquarium: None,
+            zombie: None,
         }
     }
 }
@@ -129,6 +132,16 @@ impl SeedPacket {
 
     /// `SeedPacket::Draw`.
     fn draw(&self, board: &Board, res: &GameResources, g: &mut Graphics) {
+        if let Some(zombie) = self.zombie {
+            let Some(seeds) = res.image("IMAGE_SEEDS") else { return };
+            g.draw_image_cel(seeds, 0.0, 0.0, 2, 0);
+            super::zombie::draw_cached_zombie(g, res, 4.0, 6.0, zombie, zombie == crate::zombie::ZombieType::Polevaulter);
+            if let Some(font) = res.font("FONT_CONTINUUMBOLD14") {
+                let cost = board.plant_cost_for_zombie(zombie).to_string();
+                g.tod_draw_string(font, 25, 80, &cost, crate::graphics::SexyColor::BLACK, crate::graphics::Justify::Center);
+            }
+            return;
+        }
         if let Some(packet) = self.aquarium {
             let Some(seeds) = res.image("IMAGE_SEEDS") else { return };
             let cel = if packet == super::zombiquarium::AquariumPacket::Snorkel { 7 } else { 8 };

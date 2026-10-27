@@ -96,6 +96,10 @@ pub struct ChallengeProgress {
     scary_potter_beaten: [bool; 9],
     /// The best endless Vasebreaker streak.
     scary_potter_best: i32,
+    /// The I, Zombie levels won, by `PuzzleLevel::index - 10`.
+    izombie_beaten: [bool; 9],
+    /// The best endless I, Zombie streak.
+    izombie_best: i32,
 }
 
 impl ChallengeProgress {
@@ -129,26 +133,46 @@ impl ChallengeProgress {
         self.challenge_beaten.iter().filter(|&&won| won).count() as i32
     }
 
-    /// The puzzle page's trophies: Vasebreaker's nine levels.
+    /// The puzzle page's trophies: nine Vasebreaker and nine I, Zombie levels.
     pub fn puzzle_trophies(&self) -> i32 {
         self.scary_potter_beaten.iter().filter(|&&won| won).count() as i32
+            + self.izombie_beaten.iter().filter(|&&won| won).count() as i32
     }
 
     pub fn has_beaten_puzzle(&self, level: PuzzleLevel) -> bool {
-        !level.is_endless() && self.scary_potter_beaten.get(level.index()).copied().unwrap_or(false)
+        if level.is_endless() {
+            return false;
+        }
+        match level {
+            PuzzleLevel::Vasebreaker(_) => self.scary_potter_beaten.get(level.index()).copied().unwrap_or(false),
+            _ => self.izombie_beaten.get(level.index() - 10).copied().unwrap_or(false),
+        }
     }
 
-    /// A won Vasebreaker level (endless keeps its streak instead).
+    /// A won puzzle level (endless keeps its streak instead).
     pub fn record_puzzle(&mut self, level: PuzzleLevel, streak: i32) {
-        if level.is_endless() {
-            self.scary_potter_best = self.scary_potter_best.max(streak);
-        } else if let Some(won) = self.scary_potter_beaten.get_mut(level.index()) {
-            *won = true;
+        match level {
+            PuzzleLevel::VasebreakerEndless => self.scary_potter_best = self.scary_potter_best.max(streak),
+            PuzzleLevel::IZombieEndless => self.izombie_best = self.izombie_best.max(streak),
+            PuzzleLevel::Vasebreaker(_) => {
+                if let Some(won) = self.scary_potter_beaten.get_mut(level.index()) {
+                    *won = true;
+                }
+            }
+            PuzzleLevel::IZombie(_) => {
+                if let Some(won) = self.izombie_beaten.get_mut(level.index() - 10) {
+                    *won = true;
+                }
+            }
         }
     }
 
     pub fn scary_potter_best(&self) -> i32 {
         self.scary_potter_best
+    }
+
+    pub fn izombie_best(&self) -> i32 {
+        self.izombie_best
     }
 
     pub fn has_beaten(&self, lawn: SurvivalLawn, difficulty: SurvivalDifficulty) -> bool {
@@ -263,7 +287,7 @@ fn in_tile(point: Vec2, rect: (f32, f32, f32, f32)) -> bool {
 
 /// The page a returned challenge run belongs to.
 pub(crate) fn request_page_for(board: &crate::board::Board) -> ChallengePageRequest {
-    ChallengePageRequest(if board.is_scary_potter_level() {
+    ChallengePageRequest(if board.is_puzzle_level() {
         ChallengePage::Puzzle
     } else if board.is_minigame() {
         ChallengePage::Challenge
@@ -296,8 +320,10 @@ pub(crate) fn record_challenge_end(profiles: &ProfileMgr, board: &crate::board::
             return;
         }
         progress.record(lawn, difficulty, board.survival_flags_completed());
-    } else if board.is_scary_potter_level() && board.mode == GameMode::Puzzle(PuzzleLevel::VasebreakerEndless) {
+    } else if board.mode == GameMode::Puzzle(PuzzleLevel::VasebreakerEndless) {
         progress.record_puzzle(PuzzleLevel::VasebreakerEndless, board.survival_stage);
+    } else if board.mode == GameMode::Puzzle(PuzzleLevel::IZombieEndless) {
+        progress.record_puzzle(PuzzleLevel::IZombieEndless, board.survival_stage);
     } else {
         return;
     }
@@ -570,10 +596,9 @@ fn draw_challenge_page(screen: &ChallengeScreen, res: &GameResources, g: &mut Gr
 }
 
 fn puzzle_tile_pos(level: PuzzleLevel) -> (f32, f32) {
-    let index = level.index() as i32;
     (
-        CHALLENGE_TILE.0 + (index % COLUMNS) as f32 * COLUMN_STEP,
-        CHALLENGE_TILE.1 + (index / COLUMNS) as f32 * CHALLENGE_ROW_STEP,
+        CHALLENGE_TILE.0 + level.col() as f32 * COLUMN_STEP,
+        CHALLENGE_TILE.1 + level.row() as f32 * CHALLENGE_ROW_STEP,
     )
 }
 
@@ -593,7 +618,7 @@ fn draw_puzzle_page(screen: &ChallengeScreen, res: &GameResources, g: &mut Graph
                 g.set_colorize_images(true);
                 g.set_color(SexyColor::rgba(92, 92, 92, 255));
             }
-            g.draw_image_cel(thumbs, x + 13.0, y + 4.0, 10, 0);
+            g.draw_image_cel(thumbs, x + 13.0, y + 4.0, level.icon(), 0);
             if locked {
                 g.pop_state();
             }
@@ -610,10 +635,12 @@ fn draw_puzzle_page(screen: &ChallengeScreen, res: &GameResources, g: &mut Graph
                 g.draw_image_scaled(lock, x + 24.0, y + 9.0, 0.7, 0.7);
             }
         } else if level.is_endless()
-            && screen.progress.scary_potter_best() > 0
+            && let Some(best) = (if level.is_izombie() { screen.progress.izombie_best() } else { screen.progress.scary_potter_best() })
+                .gt(&0)
+                .then(|| if level.is_izombie() { screen.progress.izombie_best() } else { screen.progress.scary_potter_best() })
             && let Some(font) = res.font("FONT_CONTINUUMBOLD14")
         {
-            let streak = res.translate("[LONGEST_STREAK]").replace("{STREAK}", &screen.progress.scary_potter_best().to_string());
+            let streak = res.translate("[LONGEST_STREAK]").replace("{STREAK}", &best.to_string());
             let rect = SexyRect::new(x, y + 15.0, 96.0, 200.0);
             g.tod_draw_string_wrapped(font, rect, &streak, SexyColor::WHITE, Justify::CenterMiddle);
         }

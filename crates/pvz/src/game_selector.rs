@@ -821,6 +821,12 @@ fn selector_input(
                 commands.insert_resource(crate::challenge::ChallengePageRequest(crate::challenge::ChallengePage::Puzzle));
                 next_state.set(AppState::Challenges);
             }
+            Ok("puzzle-iz-1") => {
+                commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::Puzzle(
+                    crate::board::PuzzleLevel::IZombie(1),
+                ))));
+                next_state.set(AppState::Board);
+            }
             Ok("puzzle-1") => {
                 commands.insert_resource(crate::board::SelectedMode(Some(crate::board::GameMode::Puzzle(
                     crate::board::PuzzleLevel::Vasebreaker(1),

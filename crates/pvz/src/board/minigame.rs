@@ -311,7 +311,7 @@ impl Board {
     /// Challenge modes (survival and mini-games): level 50's adventure rules
     /// don't apply to them.
     pub fn is_challenge(&self) -> bool {
-        self.is_survival() || self.is_minigame() || self.is_scary_potter_level()
+        self.is_survival() || self.is_minigame() || self.is_puzzle_level()
     }
 
     /// `Board::InitZombieWaves` for a mini-game.
