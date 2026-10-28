@@ -5,8 +5,8 @@
 //!
 //! Downloads the pinned libopenmpt source release (checked against its
 //! SHA-256), compiles it the way its Makefile does, and writes the libraries
-//! plus libopenmpt's licence to `dev/libopenmpt-<os>/<target>/`. Run it once
-//! on each OS and commit the results.
+//! plus libopenmpt's licence to `lib/libopenmpt/libopenmpt-<os>/<target>/`.
+//! Run it once on each OS and commit the results.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -19,7 +19,7 @@ const SHA256: &str = "9273b88b67973cc69e54d748ab1b749399d6d07695f1c37d0c59f88b41
 
 const TARGET: &str = env!("BUILD_TARGET");
 
-/// Folder for this OS, as named in `dev/`.
+/// Folder for this OS, as named in `lib/libopenmpt/`.
 fn os_dir() -> &'static str {
     if cfg!(target_os = "windows") {
         "libopenmpt-win"
@@ -77,8 +77,9 @@ fn configure(build: &mut cc::Build, root: &Path, out: &Path) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Not `canonicalize()`: on Windows it yields `\\?\C:\...` paths, which cl.exe can't open.
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).expect("repo root").to_path_buf();
-    let out = repo.join("dev").join(os_dir()).join(TARGET);
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).expect("repo root").to_path_buf();
+    let libopenmpt = repo.join("lib").join("libopenmpt");
+    let out = libopenmpt.join(os_dir()).join(TARGET);
     let work = repo.join("target").join("build-libopenmpt");
 
     let tarball = download()?;

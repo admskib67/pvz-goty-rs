@@ -1,5 +1,5 @@
 //! Links the prebuilt static libopenmpt for the target from
-//! `dev/libopenmpt-<os>/<target>/`. Those are built per OS with
+//! `lib/libopenmpt/libopenmpt-<os>/<target>/`. Those are built per OS with
 //! `cargo run -p build-libopenmpt` and committed, so building the game needs
 //! no C++ compiler and players need nothing installed.
 
@@ -15,7 +15,7 @@ fn main() {
         other => panic!("libopenmpt isn't set up for target OS {other:?}"),
     };
     let dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
-        .join("../../dev")
+        .join("../../lib/libopenmpt")
         .join(os_dir)
         .join(&target);
     let lib = if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") { "openmpt.lib" } else { "libopenmpt.a" };
@@ -23,7 +23,7 @@ fn main() {
         panic!(
             "\n\nNo prebuilt libopenmpt for {target} in {}.\n\
              Build it on this machine with:\n\n    cargo run -p build-libopenmpt\n\n\
-             then commit the new files under dev/.\n",
+             then commit the new files under lib/libopenmpt/.\n",
             dir.display()
         );
     }

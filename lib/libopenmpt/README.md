@@ -1,9 +1,9 @@
-# dev
+# lib/libopenmpt
 
 Prebuilt native libraries the game links statically, so players install nothing and building the game needs no C++ compiler.
 
 ```
-dev/
+lib/libopenmpt/
 ├── build-libopenmpt/        tool that builds libopenmpt for the current machine
 ├── libopenmpt-darwin/<target>/
 ├── libopenmpt-linux/<target>/

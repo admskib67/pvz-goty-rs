@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "dev/build-libopenmpt"]
+members = ["crates/*", "lib/libopenmpt/build-libopenmpt"]
 
 [workspace.package]
 edition = "2024"

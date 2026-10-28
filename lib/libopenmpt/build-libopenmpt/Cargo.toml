@@ -1,6 +1,6 @@
 [package]
 name = "build-libopenmpt"
-description = "Dev tool: builds libopenmpt for this machine into dev/libopenmpt-<os>/"
+description = "Dev tool: builds libopenmpt for this machine into lib/libopenmpt/libopenmpt-<os>/"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

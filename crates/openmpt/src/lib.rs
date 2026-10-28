@@ -2,7 +2,7 @@
 //! load a module, render it, jump to an order/row and set channel volumes.
 //!
 //! libopenmpt is linked statically from prebuilt libraries in
-//! `dev/libopenmpt-<os>/` (see `dev/README.md`), so nothing has to be
+//! `lib/libopenmpt/libopenmpt-<os>/` (see `lib/libopenmpt/README.md`), so nothing has to be
 //! installed on the player's machine.
 
 use std::ffi::{CStr, c_char, c_int, c_void};
