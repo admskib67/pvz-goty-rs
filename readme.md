@@ -5,6 +5,11 @@
 Vibe-coded reconstruction of Plants vs. Zombies: Game of the Year Edition.
 
 - A valid copy of the game is required
+- Right now all the levels and minigames should be playable
+- This readme is also available in:
+
+| [English](readme.md) | [Español](readme_spanish.md) | [Português](readme_portuguese.md) | [Русский](readme_russian.md) | [中文](readme_chinese.md) | [Français](readme_french.md) | [Deutsch](readme_german.md) |
+| --- | --- | --- | --- | --- | --- | --- |
 
 ![main menu image](./github/main%20menu.png)
 
