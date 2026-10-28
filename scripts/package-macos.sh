@@ -1,24 +1,11 @@
 #!/usr/bin/env bash
-# Build pvz and wrap it in a .app with the Plants vs. Zombies icon.
-# Usage: scripts/package-macos.sh [debug|release]   (default: release)
+# Build the release pvz and wrap it in a .app with the Plants vs. Zombies icon.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PROFILE="${1:-release}"
-
-case "$PROFILE" in
-  debug)   BIN_DIR="debug" ;;
-  release) BIN_DIR="release" ;;
-  *) echo "usage: $0 [debug|release]" >&2; exit 2 ;;
-esac
-
-if [ "$PROFILE" = release ]; then
-  cargo build -p pvz --release
-else
-  cargo build -p pvz
-fi
-BIN="$ROOT/target/$BIN_DIR/pvz"
-APP="$ROOT/target/$BIN_DIR/Plants vs. Zombies.app"
+cargo build -p pvz --release
+BIN="$ROOT/target/release/pvz"
+APP="$ROOT/target/release/Plants vs. Zombies.app"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
