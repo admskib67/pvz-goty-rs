@@ -1,6 +1,5 @@
 # pvz-goty-rs
 
-<img src="./github/pvz-icon.png" width="96" align="right" alt="植物大战僵尸图标">
 
 以 vibe coding 方式重制的《植物大战僵尸：年度版》(Plants vs. Zombies: Game of the Year Edition)。
 

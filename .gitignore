@@ -2,5 +2,10 @@
 # Never commit game data extracted from main.pak.
 /extracted
 *.pak
+# Launcher icons are extracted from the player's game install; see
+# scripts/extract-icons.sh. Never commit the game art itself.
+/github/pvz.icns
+/github/pvz.ico
+/github/pvz-icon.png
 # macOS Finder metadata.
 .DS_Store

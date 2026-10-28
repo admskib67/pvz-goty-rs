@@ -1,7 +1,5 @@
 # pvz-goty-rs
 
-<img src="./github/pvz-icon.png" width="96" align="right" alt="Plants vs. Zombies icon">
-
 Vibe-coded reconstruction of Plants vs. Zombies: Game of the Year Edition.
 
 - A valid copy of the game is required

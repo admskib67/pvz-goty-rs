@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Build the release pvz and wrap it in a .app with the Plants vs. Zombies icon.
+# The icon is extracted from the player's game install; set PVZ_GAME_PATH if
+# the game is not in the default Steam location.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ ! -f "$ROOT/github/pvz.icns" ]; then
+  "$ROOT/scripts/extract-icons.sh"
+fi
 cargo build -p pvz --release
 BIN="$ROOT/target/release/pvz"
 APP="$ROOT/target/release/Plants vs. Zombies.app"
